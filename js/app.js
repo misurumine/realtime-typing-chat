@@ -207,7 +207,11 @@
   let viewerPeerConnection = null; // RTCPeerConnection for viewer
   let pendingIceCandidates = [];
   let selectedResolution = '720p';
-  let selectedFps = 30;
+  let selectedFps = 60; // 60 FPS default for ultra-smooth streaming
+  let selectedStreamMode = 'motion'; // 'motion' (Smooth/Gaming) or 'detail' (Sharp/Text)
+  let streamStatsInterval = null;
+  let lastStatsBytes = 0;
+  let lastStatsTimestamp = 0;
 
   const STORAGE_KEY_STREAM_VOLUME = 'livetype_stream_volume_v1';
 
@@ -352,6 +356,7 @@
   const streamStatusBadge = document.getElementById('streamStatusBadge');
   const selectStreamResolution = document.getElementById('selectStreamResolution');
   const selectStreamFps = document.getElementById('selectStreamFps');
+  const selectStreamMode = document.getElementById('selectStreamMode');
   const btnStreamVolume = document.getElementById('btnStreamVolume');
   const rangeStreamVolume = document.getElementById('rangeStreamVolume');
   const streamVolumeText = document.getElementById('streamVolumeText');
@@ -2865,6 +2870,10 @@
     const hasImage = Boolean(image);
     const hasContent = hasText || hasImage;
 
+    bodyEl.classList.toggle('has-image', hasImage);
+    bodyEl.classList.toggle('has-text', hasText);
+    bodyEl.classList.toggle('has-image-and-text', hasImage && hasText);
+
     const member = roomMembers.get(uid);
     const info = getMemberEngagementInfo(member || { uid, currentText: text, image });
 
@@ -2897,16 +2906,33 @@
       }
 
       if (hasText) {
+        const textWrap = document.createElement('div');
+        textWrap.className = 'live-card-text-wrap';
         const textSpan = document.createElement('span');
+        textSpan.className = 'live-card-text';
         textSpan.textContent = text;
         const cursorSpan = document.createElement('span');
         cursorSpan.className = 'live-cursor';
-        bodyEl.appendChild(textSpan);
-        bodyEl.appendChild(cursorSpan);
-      } else if (!hasImage) {
+        textWrap.appendChild(textSpan);
+        textWrap.appendChild(cursorSpan);
+        bodyEl.appendChild(textWrap);
+      } else if (hasImage) {
+        // If has image but no text yet: show live-cursor on the right if it's the current user (ready to type)
+        if (currentUser && currentUser.uid === uid) {
+          const textWrap = document.createElement('div');
+          textWrap.className = 'live-card-text-wrap';
+          const cursorSpan = document.createElement('span');
+          cursorSpan.className = 'live-cursor';
+          textWrap.appendChild(cursorSpan);
+          bodyEl.appendChild(textWrap);
+        }
+      } else {
+        const textWrap = document.createElement('div');
+        textWrap.className = 'live-card-text-wrap';
         const cursorSpan = document.createElement('span');
         cursorSpan.className = 'live-cursor';
-        bodyEl.appendChild(cursorSpan);
+        textWrap.appendChild(cursorSpan);
+        bodyEl.appendChild(textWrap);
       }
 
       bodyEl.scrollTop = bodyEl.scrollHeight;
@@ -3953,10 +3979,146 @@
     }
   }
 
+  // Quality and Bitrate Estimator for Crisp & Smooth 60 FPS WebRTC
+  function getBitrateBps(resolution, fps) {
+    const targetFps = parseInt(fps, 10) || 60;
+    if (resolution === '1080p') {
+      return targetFps >= 60 ? 7500000 : 5000000; // 7.5 Mbps @ 60fps / 5 Mbps @ 30fps
+    } else if (resolution === '720p') {
+      return targetFps >= 60 ? 4500000 : 3000000; // 4.5 Mbps @ 60fps / 3 Mbps @ 30fps
+    } else if (resolution === '480p') {
+      return 1800000; // 1.8 Mbps
+    } else if (resolution === '360p') {
+      return 900000; // 900 kbps
+    }
+    // 'original'
+    return targetFps >= 60 ? 9000000 : 6500000; // 9 Mbps @ 60fps / 6.5 Mbps @ 30fps
+  }
+
+  function getBitrateKbps(resolution, fps) {
+    return Math.round(getBitrateBps(resolution, fps) / 1000);
+  }
+
+  // SDP Munging: Unlock WebRTC bandwidth ceiling for 1080p/720p 60fps streaming
+  function setSDPBitrate(sdp, bitrateKbps = 7500) {
+    if (!sdp) return sdp;
+    const bitrateBps = bitrateKbps * 1000;
+    let sdpCleaned = sdp.replace(/b=(AS|TIAS):[0-9]+\r\n/g, '');
+    if (/m=video[^\r\n]*\r\n(?:[^\r\n]*\r\n)*?c=IN/.test(sdpCleaned)) {
+      return sdpCleaned.replace(
+        /(m=video[^\r\n]*\r\n(?:[^\r\n]*\r\n)*?c=IN[^\r\n]*\r\n)/,
+        `$1b=AS:${bitrateKbps}\r\nb=TIAS:${bitrateBps}\r\n`
+      );
+    }
+    return sdpCleaned.replace(
+      /(m=video[^\r\n]*\r\n)/,
+      `$1b=AS:${bitrateKbps}\r\nb=TIAS:${bitrateBps}\r\n`
+    );
+  }
+
+  // Prioritize H.264 (Hardware GPU Acceleration - NVENC/Intel QSV/AMD) over CPU VP8/VP9
+  function preferH264Codec(pc) {
+    if (!pc || !pc.getTransceivers || !window.RTCRtpSender || !RTCRtpSender.getCapabilities) return;
+    try {
+      const videoCapabilities = RTCRtpSender.getCapabilities('video');
+      if (!videoCapabilities || !videoCapabilities.codecs) return;
+
+      const h264Codecs = videoCapabilities.codecs.filter(
+        (c) => c.mimeType && c.mimeType.toLowerCase() === 'video/h264'
+      );
+      const otherCodecs = videoCapabilities.codecs.filter(
+        (c) => c.mimeType && c.mimeType.toLowerCase() !== 'video/h264'
+      );
+
+      if (h264Codecs.length > 0) {
+        pc.getTransceivers().forEach((transceiver) => {
+          if (
+            (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'video') ||
+            (transceiver.receiver && transceiver.receiver.track && transceiver.receiver.track.kind === 'video')
+          ) {
+            try {
+              transceiver.setCodecPreferences([...h264Codecs, ...otherCodecs]);
+            } catch (e) {}
+          }
+        });
+      }
+    } catch (err) {
+      console.warn('Could not set codec preferences:', err);
+    }
+  }
+
+  // WebRTC Real-time Inbound Video Stats Monitor (FPS, Mbps, Resolution)
+  function stopStreamStatsMonitor() {
+    if (streamStatsInterval) {
+      clearInterval(streamStatsInterval);
+      streamStatsInterval = null;
+    }
+    lastStatsBytes = 0;
+    lastStatsTimestamp = 0;
+  }
+
+  function startStreamStatsMonitor() {
+    stopStreamStatsMonitor();
+    lastStatsBytes = 0;
+    lastStatsTimestamp = performance.now();
+
+    streamStatsInterval = setInterval(async () => {
+      if (!isWatching || !viewerPeerConnection || !liveStreamVideo) {
+        return;
+      }
+      try {
+        const stats = await viewerPeerConnection.getStats();
+        let inboundVideo = null;
+        stats.forEach((report) => {
+          if (report.type === 'inbound-rtp' && report.kind === 'video') {
+            inboundVideo = report;
+          }
+        });
+
+        if (inboundVideo) {
+          const now = performance.now();
+          const bytes = inboundVideo.bytesReceived || 0;
+          let bitrateMbps = 0;
+
+          if (lastStatsTimestamp && bytes >= lastStatsBytes) {
+            const timeDiffSec = (now - lastStatsTimestamp) / 1000;
+            if (timeDiffSec > 0.4) {
+              const bitsDiff = (bytes - lastStatsBytes) * 8;
+              bitrateMbps = (bitsDiff / timeDiffSec / 1000000).toFixed(1);
+            }
+          }
+
+          lastStatsBytes = bytes;
+          lastStatsTimestamp = now;
+
+          const currentFps = inboundVideo.framesPerSecond !== undefined
+            ? Math.round(inboundVideo.framesPerSecond)
+            : (inboundVideo.frameHeight ? selectedFps : 0);
+          const height = inboundVideo.frameHeight || liveStreamVideo.videoHeight || 720;
+
+          if (streamStatusBadge) {
+            const modeIcon = selectedStreamMode === 'motion' ? '🎮' : '📄';
+            if (bitrateMbps > 0) {
+              streamStatusBadge.textContent = `${height}p @ ${currentFps} FPS • ${bitrateMbps} Mbps ${modeIcon}`;
+            } else {
+              streamStatusBadge.textContent = `${height}p @ ${currentFps} FPS ${modeIcon}`;
+            }
+          }
+        }
+      } catch (e) {}
+    }, 1000);
+  }
+
   function updateQualityDisplay() {
     if (!streamStatusBadge) return;
     const resLabel = selectedResolution === 'original' ? 'Original' : selectedResolution;
-    streamStatusBadge.textContent = `${resLabel} @ ${selectedFps} FPS`;
+    const modeIcon = selectedStreamMode === 'motion' ? '🎮 60FPS' : '📄 Sharp';
+    const estBitrate = (getBitrateBps(selectedResolution, selectedFps) / 1000000).toFixed(1);
+    if (isScreenSharing) {
+      streamStatusBadge.textContent = `${resLabel} @ ${selectedFps} FPS • ~${estBitrate} Mbps (${modeIcon})`;
+    } else if (!isWatching) {
+      streamStatusBadge.textContent = `${resLabel} @ ${selectedFps} FPS • ${modeIcon}`;
+    }
   }
 
   // Update Live Stream Button in the input action row (Icon + Text layout)
@@ -4041,9 +4203,16 @@
       localScreenStream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           cursor: 'always',
-          frameRate: { max: 60 }
+          frameRate: { ideal: 60, max: 60 },
+          width: { ideal: 1920, max: 3840 },
+          height: { ideal: 1080, max: 2160 }
         },
-        audio: true
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 2
+        }
       });
     } catch (err) {
       if (err.name !== 'NotAllowedError') {
@@ -4056,9 +4225,12 @@
     activeStreamerUid = currentUser.uid;
     activeStreamerUsername = currentUser.username;
 
-    // Listen to native browser "Stop sharing" bar
+    // Listen to native browser "Stop sharing" bar & apply smooth 60fps motion hint
     const videoTrack = localScreenStream.getVideoTracks()[0];
     if (videoTrack) {
+      if ('contentHint' in videoTrack) {
+        videoTrack.contentHint = selectedStreamMode === 'detail' ? 'detail' : 'motion';
+      }
       videoTrack.onended = () => {
         stopScreenShare();
       };
@@ -4097,6 +4269,7 @@
 
   // 2. Streamer: Stop Capturing Screen
   function stopScreenShare() {
+    stopStreamStatsMonitor();
     if (!isScreenSharing && !localScreenStream) return;
     isScreenSharing = false;
 
@@ -4167,6 +4340,13 @@
       pendingIceCandidates = [];
       viewerPeerConnection = new RTCPeerConnection(RTC_CONFIG);
 
+      // Setup inbound transceivers with H.264 preference
+      try {
+        viewerPeerConnection.addTransceiver('video', { direction: 'recvonly' });
+        viewerPeerConnection.addTransceiver('audio', { direction: 'recvonly' });
+        preferH264Codec(viewerPeerConnection);
+      } catch (e) {}
+
       viewerPeerConnection.ontrack = (event) => {
         const stream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
         if (liveStreamVideo) {
@@ -4192,13 +4372,14 @@
         }
       };
 
-      // Request stream from streamer with desired resolution & FPS
+      // Request stream from streamer with desired resolution, FPS & mode
       publishJson(topicInbox(activeStreamerUid), {
         type: 'stream_watch_request',
         fromUid: currentUser.uid,
         username: currentUser.username,
         resolution: selectedResolution,
-        fps: selectedFps
+        fps: selectedFps,
+        mode: selectedStreamMode
       });
 
       updateQualityDisplay();
@@ -4213,6 +4394,7 @@
 
   // 4. Viewer: Stop Watching Stream
   function stopWatchingStream() {
+    stopStreamStatsMonitor();
     isWatching = false;
     detachStreamAudio();
     if (viewerPeerConnection) {
@@ -4255,6 +4437,7 @@
 
   // 5. Cleanup all stream state when switching or leaving rooms
   function cleanupStreamState() {
+    stopStreamStatsMonitor();
     detachStreamAudio();
     if (isScreenSharing) {
       stopScreenShare();
@@ -4269,8 +4452,8 @@
     reorderLiveCards();
   }
 
-  // 6. WebRTC Sender Quality Downscaling & Framerate Control
-  async function applyQualityConstraints(pc, resolution, fps) {
+  // 6. WebRTC Sender Quality Downscaling, Framerate & Bitrate Control
+  async function applyQualityConstraints(pc, resolution, fps, mode = selectedStreamMode) {
     if (!pc) return;
     try {
       const senders = pc.getSenders ? pc.getSenders() : [];
@@ -4282,7 +4465,20 @@
         params.encodings = [{}];
       }
 
-      // Calculate resolution scale factor based on original track height
+      // 1. Bitrate Allocation (High Bitrate for crisp & smooth quality)
+      const targetBitrate = getBitrateBps(resolution, fps);
+      params.encodings[0].maxBitrate = targetBitrate;
+
+      // 2. Degradation Preference:
+      // 'maintain-framerate' locks 60 FPS without dropping frames (for smooth video / gaming)
+      // 'maintain-resolution' preserves sharp pixels (for text / documents)
+      if (mode === 'detail') {
+        params.degradationPreference = 'maintain-resolution';
+      } else {
+        params.degradationPreference = 'maintain-framerate';
+      }
+
+      // 3. Resolution Scaling
       let targetHeight = 0;
       if (resolution === '360p') targetHeight = 360;
       else if (resolution === '480p') targetHeight = 480;
@@ -4298,7 +4494,7 @@
         params.encodings[0].scaleResolutionDownBy = 1;
       }
 
-      // Cap maxFramerate (15, 30, 60 FPS)
+      // 4. Cap maxFramerate (15, 30, 60 FPS)
       const targetFps = parseInt(fps, 10);
       if (targetFps && [15, 30, 60].includes(targetFps)) {
         params.encodings[0].maxFramerate = targetFps;
@@ -4327,7 +4523,7 @@
       pc.addTrack(track, localScreenStream);
     });
 
-    await applyQualityConstraints(pc, data.resolution || selectedResolution, data.fps || selectedFps);
+    preferH264Codec(pc);
 
     pc.onicecandidate = (event) => {
       if (event.candidate && currentUser) {
@@ -4347,11 +4543,24 @@
 
     try {
       const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      const modifiedSdp = setSDPBitrate(
+        offer.sdp,
+        getBitrateKbps(data.resolution || selectedResolution, data.fps || selectedFps)
+      );
+      await pc.setLocalDescription({ type: offer.type, sdp: modifiedSdp });
+
+      // Apply quality parameters after local description is set so sender encodings are ready
+      await applyQualityConstraints(
+        pc,
+        data.resolution || selectedResolution,
+        data.fps || selectedFps,
+        data.mode || selectedStreamMode
+      );
+
       publishJson(topicInbox(viewerUid), {
         type: 'stream_signal_offer',
         fromUid: currentUser.uid,
-        sdp: offer
+        sdp: pc.localDescription
       });
     } catch (err) {
       console.warn('Error creating stream offer:', err);
@@ -4372,13 +4581,19 @@
       }
 
       const answer = await viewerPeerConnection.createAnswer();
-      await viewerPeerConnection.setLocalDescription(answer);
+      const modifiedAnswerSdp = setSDPBitrate(
+        answer.sdp,
+        getBitrateKbps(selectedResolution, selectedFps)
+      );
+      await viewerPeerConnection.setLocalDescription({ type: answer.type, sdp: modifiedAnswerSdp });
 
       publishJson(topicInbox(data.fromUid), {
         type: 'stream_signal_answer',
         fromUid: currentUser.uid,
-        sdp: answer
+        sdp: viewerPeerConnection.localDescription
       });
+
+      startStreamStatsMonitor();
     } catch (err) {
       console.warn('Error handling streamer offer:', err);
     }
@@ -4418,7 +4633,7 @@
     if (!isScreenSharing) return;
     const pc = streamPeers.get(data.fromUid);
     if (pc) {
-      await applyQualityConstraints(pc, data.resolution, data.fps);
+      await applyQualityConstraints(pc, data.resolution, data.fps, data.mode);
     }
   }
 
@@ -4428,6 +4643,33 @@
     if (pc) {
       try { pc.close(); } catch (e) {}
       streamPeers.delete(data.fromUid);
+    }
+  }
+
+  // Streamer helper to push updated quality to all viewers & update local videoTrack hint
+  function updateStreamerAllQuality() {
+    if (!isScreenSharing) return;
+    if (localScreenStream) {
+      const vTrack = localScreenStream.getVideoTracks()[0];
+      if (vTrack && 'contentHint' in vTrack) {
+        vTrack.contentHint = selectedStreamMode === 'detail' ? 'detail' : 'motion';
+      }
+    }
+    streamPeers.forEach(async (pc) => {
+      await applyQualityConstraints(pc, selectedResolution, selectedFps, selectedStreamMode);
+    });
+  }
+
+  // Viewer helper to request quality change from active streamer
+  function notifyStreamerQualityChange() {
+    if (isWatching && activeStreamerUid && currentUser) {
+      publishJson(topicInbox(activeStreamerUid), {
+        type: 'stream_quality_change',
+        fromUid: currentUser.uid,
+        resolution: selectedResolution,
+        fps: selectedFps,
+        mode: selectedStreamMode
+      });
     }
   }
 
@@ -4477,13 +4719,10 @@
     selectStreamResolution.addEventListener('change', (e) => {
       selectedResolution = e.target.value;
       updateQualityDisplay();
-      if (isWatching && activeStreamerUid && currentUser) {
-        publishJson(topicInbox(activeStreamerUid), {
-          type: 'stream_quality_change',
-          fromUid: currentUser.uid,
-          resolution: selectedResolution,
-          fps: selectedFps
-        });
+      if (isScreenSharing) {
+        updateStreamerAllQuality();
+      } else {
+        notifyStreamerQualityChange();
       }
       showToast(`⚙️ ปรับความละเอียดเป็น ${selectedResolution} @ ${selectedFps} FPS แล้ว`);
     });
@@ -4492,17 +4731,29 @@
   // FPS Selector
   if (selectStreamFps) {
     selectStreamFps.addEventListener('change', (e) => {
-      selectedFps = parseInt(e.target.value, 10) || 30;
+      selectedFps = parseInt(e.target.value, 10) || 60;
       updateQualityDisplay();
-      if (isWatching && activeStreamerUid && currentUser) {
-        publishJson(topicInbox(activeStreamerUid), {
-          type: 'stream_quality_change',
-          fromUid: currentUser.uid,
-          resolution: selectedResolution,
-          fps: selectedFps
-        });
+      if (isScreenSharing) {
+        updateStreamerAllQuality();
+      } else {
+        notifyStreamerQualityChange();
       }
       showToast(`⚙️ ปรับ Frame Rate เป็น ${selectedFps} FPS แล้ว`);
+    });
+  }
+
+  // Optimization Mode Selector (Smooth/Gaming vs Sharp/Text)
+  if (selectStreamMode) {
+    selectStreamMode.addEventListener('change', (e) => {
+      selectedStreamMode = e.target.value;
+      updateQualityDisplay();
+      if (isScreenSharing) {
+        updateStreamerAllQuality();
+      } else {
+        notifyStreamerQualityChange();
+      }
+      const modeLabel = selectedStreamMode === 'motion' ? '🎮 ลื่นไหล (Smooth 60 FPS)' : '📄 คมชัด (Sharp)';
+      showToast(`⚙️ ปรับโหมดไลฟ์สตรีมเป็น ${modeLabel} แล้ว`);
     });
   }
 

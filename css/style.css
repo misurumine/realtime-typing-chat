@@ -1932,7 +1932,7 @@ html, body {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row; /* Horizontal: Media on Left, Text on Right */
   align-items: flex-start;
   justify-content: flex-start;
   overflow: visible;
@@ -1942,19 +1942,27 @@ html, body {
   line-height: 1.5;
   font-weight: 400;
   color: var(--text-main);
-  gap: 10px;
+  gap: 16px;
   height: auto;
 }
 
 .live-card-image-wrap {
   position: relative;
+  flex-shrink: 0;
   max-width: 100%;
-  display: inline-block;
+  display: flex;
+  align-items: flex-start;
+}
+
+/* Constrain media so text on the right has plenty of room */
+.live-card-body.has-image-and-text .live-card-image-wrap,
+.live-card-body.has-image .live-card-image-wrap {
+  max-width: min(340px, 45%);
 }
 
 .live-card-img {
   max-width: 100%;
-  max-height: 420px;
+  max-height: 320px;
   border-radius: var(--radius-md);
   border: 1.5px solid rgba(255, 255, 255, 0.2);
   object-fit: contain;
@@ -1962,9 +1970,14 @@ html, body {
   display: block;
 }
 
+.live-card-body.has-image-and-text .live-card-img,
+.live-card-body.has-image-and-text .live-card-video {
+  max-height: 260px;
+}
+
 .live-card-video {
   max-width: 100%;
-  max-height: 420px;
+  max-height: 320px;
   border-radius: var(--radius-md);
   border: 1.5px solid rgba(255, 255, 255, 0.2);
   object-fit: contain;
@@ -1979,14 +1992,31 @@ html, body {
   user-select: none;
 }
 
-/* Blinking Live Cursor */
+/* Live Card Text Container: Fills remaining width to the right of Media */
+.live-card-text-wrap {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  word-break: break-word;
+  white-space: pre-wrap;
+  display: block;
+  line-height: inherit;
+}
+
+.live-card-text {
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* Blinking Live Cursor attached directly behind text */
 .live-cursor {
   display: inline-block;
   width: 3px;
-  height: 1.2em;
+  height: 1.15em;
   background: var(--accent);
-  vertical-align: text-bottom;
+  vertical-align: -0.15em;
   margin-left: 2px;
+  border-radius: 1px;
   animation: blinkCursor 0.85s infinite;
 }
 
@@ -2918,6 +2948,19 @@ kbd {
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     padding-right: 0;
     padding-bottom: 8px;
+  }
+  /* Keep text on the right of media on mobile */
+  .live-card-body {
+    flex-direction: row;
+    gap: 10px;
+  }
+  .live-card-body.has-image-and-text .live-card-image-wrap,
+  .live-card-body.has-image .live-card-image-wrap {
+    max-width: 130px;
+  }
+  .live-card-body.has-image-and-text .live-card-img,
+  .live-card-body.has-image-and-text .live-card-video {
+    max-height: 130px;
   }
   .floating-stream-window {
     width: calc(100vw - 20px) !important;

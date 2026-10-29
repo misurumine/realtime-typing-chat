@@ -31,9 +31,6 @@
       <button id="btnOpenTheme" class="btn btn-outline btn-sm" title="ปรับแต่งธีมและสี">
         🎨 ธีมสี
       </button>
-      <button id="btnOpenGoogleDriveModal" class="btn btn-outline btn-sm" title="ตั้งค่าเชื่อมต่อ Google Drive AppData Sync">
-        ☁️ Google Drive
-      </button>
       <button id="btnInstallPwa" class="btn btn-outline btn-sm hidden" title="ติดตั้งลงเครื่อง">
         📲 ติดตั้งแอป
       </button>
@@ -482,9 +479,18 @@
             <div class="hud-control-item">
               <label for="selectStreamFps" class="hud-label">FPS:</label>
               <select id="selectStreamFps" class="hud-select">
-                <option value="60">60 FPS</option>
-                <option value="30" selected>30 FPS</option>
+                <option value="60" selected>60 FPS (ลื่นไหล)</option>
+                <option value="30">30 FPS</option>
                 <option value="15">15 FPS</option>
+              </select>
+            </div>
+
+            <!-- Optimization Mode Selector -->
+            <div class="hud-control-item">
+              <label for="selectStreamMode" class="hud-label">โหมด:</label>
+              <select id="selectStreamMode" class="hud-select" title="โหมดส่งภาพ: ลื่นไหล 60 FPS สำหรับเกม/วิดีโอ หรือ คมชัดสำหรับตัวหนังสือ">
+                <option value="motion" selected>🎮 ลื่นไหล (Smooth)</option>
+                <option value="detail">📄 คมชัด (Sharp)</option>
               </select>
             </div>
 
