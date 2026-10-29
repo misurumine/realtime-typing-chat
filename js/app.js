@@ -5,8 +5,43 @@
    * without renting or running any backend server!
    */
 
-  // Storage Keys (Session persists until explicit Logout)
-  const STORAGE_KEY_USER = 'livetype_user_session_v1';
+  // --- Anti-Macro & Spam Throttle (1s Cooldown on all user actions except typing) ---
+  const ACTION_COOLDOWN_MS = 1000;
+  const lastActionTimestamps = new Map();
+
+  function canExecuteAction(actionKey, showWarning = true) {
+    const now = Date.now();
+    const lastTime = lastActionTimestamps.get(actionKey) || 0;
+    if (now - lastTime < ACTION_COOLDOWN_MS) {
+      if (showWarning) {
+        showToast('⏳ กรุณารอสักครู่ (ป้องกันการกดรัว/สแปม)');
+      }
+      return false;
+    }
+    lastActionTimestamps.set(actionKey, now);
+    return true;
+  }
+
+  // Global Click Throttle: automatically protect all buttons, chips, and modals against Macro spam
+  window.addEventListener(
+    'click',
+    (e) => {
+      // Allow live typing input clicks / focus
+      if (e.target.closest('#liveTypingInput') || e.target.closest('input[type="text"]') || e.target.closest('textarea')) {
+        return;
+      }
+      const clickable = e.target.closest('button, .tag-chip, .btn-sidebar-pill, .btn-picker-tab, .discord-cat-tile, .btn-emote-item, .btn-preset-theme');
+      if (clickable) {
+        // Exclude clear enter button from double suppression if user pressed Enter key
+        const actionId = clickable.id || clickable.className || 'generic_btn';
+        if (!canExecuteAction(`click_${actionId}`, false)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+      }
+    },
+    true
+  );
   const STORAGE_KEY_FRIENDS = 'livetype_friends_list_v1';
   const STORAGE_KEY_THEME = 'livetype_custom_theme_v1';
   const STORAGE_KEY_FAV_GIFS = 'livetype_favorite_gifs_v1';
@@ -378,7 +413,7 @@
       connectionStatus.querySelector('.conn-label').textContent = 'Serverless Online';
 
       // 1. Subscribe to our personal inbox (for direct friend pings & room invitations)
-      mqttClient.subscribe(topicInbox(currentUser.uid), { qos: 0 });
+      mqttClient.subscribe(topicInbox(currentUser.uid), { qos: 1 });
 
       // 2. Subscribe to public room directory for Tag Matchmaking
       mqttClient.subscribe(topicDirectory(), { qos: 0 });
@@ -470,6 +505,25 @@
     if (!mqttClient || !mqttClient.connected) return;
     // Always qos: 0 and retain: false -> zero data stored on broker!
     mqttClient.publish(topic, JSON.stringify(payload), { qos: 0, retain: false });
+  }
+
+  // Guaranteed P2P delivery with auto-retry for critical actions (Friend Requests, Room Invites)
+  function publishReliable(topic, payload, ackId, maxRetries = 5, interval = 900) {
+    let retries = 0;
+    const send = () => {
+      if (acknowledgedPackets.has(ackId)) return;
+      publishJson(topic, { ...payload, ackId });
+      retries++;
+      if (retries < maxRetries && !acknowledgedPackets.has(ackId)) {
+        setTimeout(send, interval);
+      }
+    };
+    send();
+  }
+
+  const acknowledgedPackets = new Set();
+  function markAckReceived(ackId) {
+    if (ackId) acknowledgedPackets.add(ackId);
   }
 
   function broadcastMyPresence(isOnline) {
@@ -745,6 +799,19 @@
   function handleInboxMessage(data) {
     if (!currentUser) return;
 
+    // Send ACK back if packet requested reliable delivery
+    if (data.ackId && data.from && data.from.uid) {
+      publishJson(topicInbox(data.from.uid), {
+        type: 'ack',
+        ackId: data.ackId
+      });
+    }
+
+    if (data.type === 'ack' && data.ackId) {
+      markAckReceived(data.ackId);
+      return;
+    }
+
     // 1. Someone pinged us to check if we are online -> reply directly to their inbox & presence
     if (data.type === 'ping_status' && data.from && data.from.uid) {
       publishJson(topicInbox(data.from.uid), {
@@ -864,6 +931,42 @@
   function handleRoomMessage(data) {
     if (!currentUser || !activeRoomCode) return;
     if (!data || !data.uid) return;
+
+    // Direct room-level friend request/accepted sync (instant fallback in case inbox packet drops)
+    if (data.type === 'room_friend_request' && data.targetUid === currentUser.uid && data.from) {
+      if (!friendsMap.has(data.from.uid) && !incomingFriendRequests.has(data.from.uid)) {
+        incomingFriendRequests.set(data.from.uid, {
+          uid: data.from.uid,
+          username: data.from.username || data.from.uid,
+          avatar: data.from.avatar || PRESET_AVATARS[0],
+          ts: Date.now()
+        });
+        renderFriendRequestsUI();
+        renderAllLiveCards();
+        showToast(`👋 ${data.from.username} ส่งคำขอเป็นเพื่อนถึงคุณ! (กดดูที่เมนู Friend หรือปุ่มบนการ์ด)`);
+      }
+      return;
+    }
+
+    if (data.type === 'room_friend_accepted' && data.targetUid === currentUser.uid && data.from) {
+      sentFriendRequests.delete(data.from.uid);
+      incomingFriendRequests.delete(data.from.uid);
+      friendsMap.set(data.from.uid, {
+        uid: data.from.uid,
+        username: data.from.username || data.from.uid,
+        avatar: data.from.avatar || PRESET_AVATARS[0],
+        online: true,
+        inRoom: Boolean(activeRoomCode),
+        roomCode: activeRoomCode,
+        lastSeen: Date.now()
+      });
+      saveFriendsList();
+      renderFriendRequestsUI();
+      renderFriendsList();
+      renderAllLiveCards();
+      showToast(`🎉 ${data.from.username} ตอบรับคำขอเป็นเพื่อนของคุณแล้ว!`);
+      return;
+    }
 
     // Ignore our own echo for typing/clear since we already update locally immediately
     if (data.uid === currentUser.uid) return;
@@ -1267,16 +1370,24 @@
     }
 
     sentFriendRequests.add(cleanUid);
-    publishJson(topicInbox(cleanUid), {
+    const ackId = `freq_${currentUser.uid}_${cleanUid}_${Date.now()}`;
+    const payload = {
       type: 'friend_request',
       from: {
         uid: currentUser.uid,
         username: currentUser.username,
         avatar: currentUser.avatar
       }
-    });
+    };
+    publishReliable(topicInbox(cleanUid), payload, ackId);
 
+    // Also broadcast on active room channel if in room together for 100% instant sync!
     if (activeRoomCode) {
+      publishJson(topicRoom(activeRoomCode), {
+        type: 'room_friend_request',
+        targetUid: cleanUid,
+        from: payload.from
+      });
       renderAllLiveCards();
     }
     showToast(`📩 ส่งคำขอเป็นเพื่อนไปยัง ${targetUsername || cleanUid} แล้ว รออีกฝ่ายกดรับนะครับ`);
@@ -1305,7 +1416,8 @@
       pingFriend(req.uid);
     }
 
-    publishJson(topicInbox(req.uid), {
+    const ackId = `facc_${currentUser.uid}_${req.uid}_${Date.now()}`;
+    const payload = {
       type: 'friend_accepted',
       from: {
         uid: currentUser.uid,
@@ -1314,7 +1426,17 @@
         inRoom: Boolean(activeRoomCode),
         roomCode: activeRoomCode
       }
-    });
+    };
+    publishReliable(topicInbox(req.uid), payload, ackId);
+
+    // Also broadcast in room if currently inside the same room
+    if (activeRoomCode) {
+      publishJson(topicRoom(activeRoomCode), {
+        type: 'room_friend_accepted',
+        targetUid: req.uid,
+        from: payload.from
+      });
+    }
 
     renderFriendRequestsUI();
     renderFriendsList();
@@ -1970,6 +2092,7 @@
 
   function triggerSendEmoteBubble(emote) {
     if (!currentUser || !activeRoomCode) return;
+    if (!canExecuteAction('send_emote', true)) return;
     spawnEmoteBubbleOnCard(currentUser.uid, emote);
     publishJson(topicRoom(activeRoomCode), {
       type: 'emote_bubble',
@@ -2613,6 +2736,7 @@
 
   function triggerEnterClear() {
     if (!currentUser || !activeRoomCode) return;
+    if (!canExecuteAction('enter_clear', false)) return;
     liveTypingInput.value = '';
     charCounter.textContent = `0 / 250 ตัวอักษร`;
     hideInputImagePreview();
