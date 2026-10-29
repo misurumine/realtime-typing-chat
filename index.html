@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0f19" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="LiveType" />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="./assets/icons/icon.svg" />
+  <link rel="apple-touch-icon" href="./assets/icons/icon.svg" />
+  <title>LiveType — Realtime Live-Typing Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Kanit:wght@300;400;500;600&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./css/style.css" />
+</head>
+<body>
+  <!-- Top Bar -->
+  <header class="topbar">
+    <div class="brand">
+      <img src="./assets/icons/icon.svg" alt="LiveType Logo" class="brand-logo" />
+      <div class="brand-text">
+        <span class="brand-title">LiveType</span>
+        <span class="brand-badge">Zero-History Realtime</span>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <button id="btnInstallPwa" class="btn btn-outline btn-sm hidden" title="ติดตั้งลงเครื่อง">
+        📲 ติดตั้งแอป
+      </button>
+      <div id="connectionStatus" class="conn-indicator online" title="สถานะการเชื่อมต่อ">
+        <span class="dot"></span>
+        <span class="conn-label">Connected</span>
+      </div>
+      <div id="userChip" class="user-chip hidden">
+        <img id="headerAvatar" src="" alt="Avatar" class="avatar-xs" />
+        <div class="user-chip-info">
+          <span id="headerUsername" class="user-chip-name"></span>
+          <span id="headerUid" class="user-chip-uid"></span>
+        </div>
+        <button id="btnEditProfile" class="btn-icon" title="แก้ไขโปรไฟล์">⚙️</button>
+        <button id="btnLogout" class="btn-icon btn-danger-icon" title="ออกจากระบบ (ล้าง UID)">🚪</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Views Container -->
+  <main class="main-container">
+    <!-- VIEW 1: Setup Username & Avatar (No Password Login) -->
+    <section id="viewSetup" class="view active">
+      <div class="setup-card glass-panel">
+        <div class="setup-header">
+          <h1>ยินดีต้อนรับสู่ <span class="gradient-text">LiveType</span></h1>
+          <p>พิมพ์คุยกันสดๆ ทีละตัวอักษร กด Enter เพื่อล้างข้อความทันที ไม่มีการเก็บประวัติใดๆ ทั้งสิ้น</p>
+        </div>
+
+        <form id="formSetup" class="setup-form">
+          <div class="avatar-selector-section">
+            <label class="section-label">เลือกรูปโปรไฟล์ของคุณ</label>
+            <div class="current-avatar-preview-wrap">
+              <img id="setupAvatarPreview" src="" alt="Selected Avatar" class="avatar-xl" />
+              <label for="inputCustomAvatar" class="btn btn-secondary btn-sm upload-btn">
+                📁 เลือกรูปจากเครื่อง
+              </label>
+              <input type="file" id="inputCustomAvatar" accept="image/*" class="hidden" />
+            </div>
+            <div class="preset-avatars-label">หรือเลือกจากไอคอนในโปรแกรม:</div>
+            <div id="presetAvatarGrid" class="preset-avatar-grid"></div>
+          </div>
+
+          <div class="form-group">
+            <label for="inputUsername" class="section-label">ชื่อที่ใช้แสดง (Username)</label>
+            <input
+              type="text"
+              id="inputUsername"
+              class="input-field"
+              placeholder="เช่น Alex, มินนี่, โต๋..."
+              maxlength="24"
+              required
+              autocomplete="off"
+            />
+          </div>
+
+          <div id="existingUidNotice" class="uid-notice hidden">
+            <span>UID ปัจจุบันของคุณ: <strong id="setupUidText" class="mono"></strong></span>
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-lg btn-block">
+            🚀 เริ่มใช้งานทันที
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- VIEW 2: Lobby & Active Chat Workspace -->
+    <section id="viewWorkspace" class="view">
+      <div class="workspace-grid">
+        <!-- Left Sidebar: Profile, UID, Friends List, & Room Entry -->
+        <aside id="sidebarPanel" class="sidebar glass-panel">
+          <!-- My Identity Card -->
+          <div class="my-id-card">
+            <div class="my-id-top">
+              <span class="my-id-label">รหัสประจำตัวของคุณ (UID)</span>
+              <span class="session-badge">คงอยู่จนกว่าจะ Logout</span>
+            </div>
+            <div class="my-id-box">
+              <span id="myUidDisplay" class="uid-code mono">----</span>
+              <button id="btnCopyUid" class="btn btn-secondary btn-sm">📋 คัดลอก</button>
+            </div>
+            <p class="my-id-hint">ส่ง UID นี้ให้เพื่อนแอด หรือแอด UID ของเพื่อนด้านล่างเพื่อคุย 1-ต่อ-1</p>
+          </div>
+
+          <!-- Room Quick Join / Create -->
+          <div class="room-join-card">
+            <div class="section-title-row">
+              <h3>ห้องสนทนา (Room)</h3>
+              <button id="btnCreateRoom" class="btn btn-primary btn-sm">+ สร้างห้องใหม่</button>
+            </div>
+            <form id="formJoinRoom" class="inline-form">
+              <input
+                type="text"
+                id="inputRoomCode"
+                class="input-field mono uppercase"
+                placeholder="กรอกรหัสห้อง 6 หลัก..."
+                maxlength="10"
+                autocomplete="off"
+              />
+              <button type="submit" class="btn btn-secondary">เข้าห้อง</button>
+            </form>
+          </div>
+
+          <!-- Friends List Section -->
+          <div class="friends-section">
+            <div class="section-title-row">
+              <h3>รายชื่อเพื่อน</h3>
+              <button id="btnRefreshFriends" class="btn-icon" title="รีเฟรชสถานะเพื่อน">🔄</button>
+            </div>
+
+            <form id="formAddFriend" class="inline-form">
+              <input
+                type="text"
+                id="inputFriendUid"
+                class="input-field mono uppercase"
+                placeholder="ใส่ UID เพื่อน (เช่น AB12-CD34)"
+                maxlength="15"
+                autocomplete="off"
+              />
+              <button type="submit" class="btn btn-primary">เพิ่มเพื่อน</button>
+            </form>
+
+            <div id="friendsListContainer" class="friends-list">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+
+          <!-- LAN Mobile Access Info -->
+          <div id="lanAccessBox" class="lan-access-box">
+            <div class="lan-title">🌐 โหมด Serverless (ไม่ต้องเช่าเซิร์ฟเวอร์):</div>
+            <div id="lanUrlsList" class="lan-urls">เชื่อมต่อผ่าน P2P / Public Relay อัตโนมัติ คุยข้ามเครือข่ายได้ทั่วโลก</div>
+          </div>
+        </aside>
+
+        <!-- Right Main Area: Live Typing Room -->
+        <section class="chat-stage glass-panel">
+          <!-- Empty State (When not in a room yet) -->
+          <div id="roomEmptyState" class="room-empty-state">
+            <div class="empty-illustration">⚡💬</div>
+            <h2>พร้อมคุยแบบ Realtime Live-Typing</h2>
+            <p>
+              เลือกเพื่อนจากรายชื่อด้านซ้ายเพื่อกด <strong>"ชวนคุย"</strong> แบบ 1-ต่อ-1<br />
+              หรือกด <strong>"สร้างห้องใหม่"</strong> / กรอก <strong>Room Code</strong> เพื่อเข้าห้องสนทนาได้เลย
+            </p>
+            <div class="empty-actions">
+              <button id="btnEmptyCreateRoom" class="btn btn-primary btn-lg">✨ สร้างห้องแชททันที</button>
+              <button id="btnMobileToggleSidebar" class="btn btn-secondary btn-lg mobile-only">👥 ดูรายชื่อเพื่อน / ใส่รหัสห้อง</button>
+            </div>
+          </div>
+
+          <!-- Active Room View -->
+          <div id="roomActiveView" class="room-active-view hidden">
+            <!-- Room Header -->
+            <div class="room-header">
+              <div class="room-header-left">
+                <button id="btnBackToSidebar" class="btn btn-outline btn-sm mobile-only">☰ เพื่อน/เมนู</button>
+                <div class="room-badge-wrap">
+                  <span class="room-label">ROOM CODE:</span>
+                  <span id="activeRoomCode" class="room-code-pill mono">------</span>
+                </div>
+                <button id="btnCopyRoomCode" class="btn btn-secondary btn-sm" title="คัดลอกรหัสห้อง">
+                  📋 รหัสห้อง
+                </button>
+                <button id="btnCopyRoomLink" class="btn btn-secondary btn-sm" title="คัดลอกลิงก์เชิญเข้าห้อง">
+                  🔗 ลิงก์เชิญ
+                </button>
+              </div>
+
+              <div class="room-header-right">
+                <span id="roomMemberCount" class="member-count-badge">1 คนในห้อง</span>
+                <button id="btnLeaveRoom" class="btn btn-danger btn-sm">ออกจากห้อง</button>
+              </div>
+            </div>
+
+            <!-- Live Typing Cards Grid (Everyone types simultaneously!) -->
+            <div id="liveCardsGrid" class="live-cards-grid">
+              <!-- Populated dynamically with each member's live typing card -->
+            </div>
+
+            <!-- Bottom Live Typing Input Bar -->
+            <div class="live-input-bar">
+              <div class="live-input-meta">
+                <span class="live-indicator">
+                  <span class="pulse-dot"></span>
+                  ทุกตัวอักษรที่คุณพิมพ์จะขึ้นแสดงสดทันที • กด <kbd>Enter</kbd> เพื่อล้างข้อความทั้งหมด
+                </span>
+                <span id="charCounter" class="char-counter mono">0 ตัวอักษร</span>
+              </div>
+              <div class="live-input-row">
+                <textarea
+                  id="liveTypingInput"
+                  class="live-textarea"
+                  rows="2"
+                  placeholder="พิมพ์ที่นี่... ตัวอักษรจะส่งไปหาทุกคนแบบสดๆ ทันที (กด Enter เพื่อลบข้อความทั้งหมด)"
+                  autocomplete="off"
+                  autocorrect="off"
+                  spellcheck="false"
+                ></textarea>
+                <button id="btnClearEnter" type="button" class="btn btn-clear-enter" title="ล้างข้อความทันที (Enter)">
+                  <span class="enter-icon">⏎</span>
+                  <span class="enter-text">Enter<br><small>ล้างข้อความ</small></span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <!-- Incoming Room Invitation Modal -->
+  <div id="inviteModal" class="modal-backdrop hidden">
+    <div class="modal-card glass-panel">
+      <div class="modal-header">
+        <h3>📩 คำเชิญเข้าห้องแชทสด</h3>
+      </div>
+      <div class="modal-body">
+        <div class="inviter-profile">
+          <img id="inviteAvatar" src="" alt="Inviter" class="avatar-lg" />
+          <div>
+            <div id="inviteUsername" class="inviter-name"></div>
+            <div id="inviteUid" class="inviter-uid mono"></div>
+          </div>
+        </div>
+        <p>ชวนคุณเข้าร่วมห้องสนทนาสด (<strong id="inviteRoomCode" class="mono"></strong>)</p>
+      </div>
+      <div class="modal-actions">
+        <button id="btnDeclineInvite" class="btn btn-secondary">ปฏิเสธ</button>
+        <button id="btnAcceptInvite" class="btn btn-primary">เข้าร่วมทันที</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- MQTT over WebSockets for 100% Serverless Realtime Pub/Sub across iOS, Android, Windows -->
+  <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+  <script src="./js/app.js"></script>
+</body>
+</html>
