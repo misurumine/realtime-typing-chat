@@ -30,6 +30,10 @@
       if (e.target.closest('#liveTypingInput') || e.target.closest('input[type="text"]') || e.target.closest('textarea')) {
         return;
       }
+      // Never block setup submission button or forms
+      if (e.target.closest('#formSetup') || e.target.closest('#viewSetup')) {
+        return;
+      }
       const clickable = e.target.closest('button, .tag-chip, .btn-sidebar-pill, .btn-picker-tab, .discord-cat-tile, .btn-emote-item, .btn-preset-theme');
       if (clickable) {
         // Exclude clear enter button from double suppression if user pressed Enter key
@@ -42,6 +46,9 @@
     },
     true
   );
+
+  // Storage Keys (Session persists until explicit Logout)
+  const STORAGE_KEY_USER = 'livetype_user_session_v1';
   const STORAGE_KEY_FRIENDS = 'livetype_friends_list_v1';
   const STORAGE_KEY_THEME = 'livetype_custom_theme_v1';
   const STORAGE_KEY_FAV_GIFS = 'livetype_favorite_gifs_v1';
