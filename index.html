@@ -288,6 +288,76 @@
               </div>
             </div>
 
+            <!-- Live Stream Stage (Displayed when someone is streaming in the room) -->
+            <div id="liveStreamStage" class="live-stream-stage hidden">
+              <div class="stream-container" id="streamContainer" title="คลิกที่วิดีโอเพื่อเริ่มดู หรือหยุดดูไลฟ์สด">
+                <video id="liveStreamVideo" autoplay playsinline></video>
+
+                <!-- Click-to-Watch / Click-to-Stop Overlay -->
+                <div id="streamPlaceholderOverlay" class="stream-placeholder-overlay">
+                  <div class="placeholder-icon">📺</div>
+                  <h3 id="streamPlaceholderTitle">มีผู้ใช้งานกำลังไลฟ์สดหน้าจอ</h3>
+                  <p id="streamPlaceholderSub">คลิกที่วิดีโอ หรือกดปุ่มด้านล่างเพื่อเริ่มรับชม</p>
+                  <button type="button" id="btnToggleWatchStream" class="btn btn-primary btn-md">
+                    ▶ ดูไลฟ์สด
+                  </button>
+                </div>
+
+                <!-- Live Stream HUD Bar -->
+                <div class="stream-hud" id="streamHud">
+                  <div class="stream-hud-left">
+                    <span class="live-badge-glow">🔴 LIVE</span>
+                    <span id="streamerNameBadge" class="streamer-name">ชื่อผู้ไลฟ์</span>
+                    <span id="streamStatusBadge" class="stream-status-pill mono">720p @ 30 FPS</span>
+                  </div>
+
+                  <div class="stream-hud-right" id="streamHudControls">
+                    <!-- Resolution Selector -->
+                    <div class="hud-control-item">
+                      <label for="selectStreamResolution" class="hud-label">ความชัด:</label>
+                      <select id="selectStreamResolution" class="hud-select">
+                        <option value="original">Original (ต้นฉบับ)</option>
+                        <option value="1080p">1080p (FHD)</option>
+                        <option value="720p" selected>720p (HD)</option>
+                        <option value="480p">480p (SD)</option>
+                        <option value="360p">360p (ประหยัดเน็ต)</option>
+                      </select>
+                    </div>
+
+                    <!-- FPS Selector -->
+                    <div class="hud-control-item">
+                      <label for="selectStreamFps" class="hud-label">FPS:</label>
+                      <select id="selectStreamFps" class="hud-select">
+                        <option value="60">60 FPS</option>
+                        <option value="30" selected>30 FPS</option>
+                        <option value="15">15 FPS</option>
+                      </select>
+                    </div>
+
+                    <!-- Audio Volume Toggle & 0-200% Booster Slider -->
+                    <div class="hud-control-item stream-volume-wrap">
+                      <button id="btnStreamVolume" type="button" class="btn-icon btn-hud-icon" title="เปิด/ปิดเสียง">🔊</button>
+                      <input
+                        type="range"
+                        id="rangeStreamVolume"
+                        class="hud-volume-slider"
+                        min="0"
+                        max="200"
+                        step="1"
+                        value="100"
+                        title="ปรับระดับเสียง (0% - 200%)"
+                      />
+                      <span id="streamVolumeText" class="hud-volume-text mono" title="ระดับเสียงปัจจุบัน">100%</span>
+                    </div>
+                    <!-- Fullscreen Toggle -->
+                    <button id="btnStreamFullscreen" type="button" class="btn-icon btn-hud-icon" title="เต็มจอ">⛶</button>
+                    <!-- Stop Watching / Stop Streaming Button -->
+                    <button id="btnStopWatchStream" type="button" class="btn btn-secondary btn-sm" title="หยุดดูไลฟ์">⏹ หยุดดู</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <!-- Live Typing Cards Grid (Everyone types simultaneously!) -->
             <div id="liveCardsGrid" class="live-cards-grid">
               <!-- Populated dynamically with each member's live typing card -->
@@ -364,6 +434,11 @@
                 <button id="btnToggleEmotePicker" type="button" class="btn-upload-image" title="ส่งอีโมจิลอยขึ้นจากโปรไฟล์เหมือนฟองสบู่" data-open-tab="emotes">
                   <span class="upload-icon">🫧</span>
                   <span class="upload-text">อีโมจิ</span>
+                </button>
+
+                <button id="btnToggleScreenShare" type="button" class="btn-upload-image btn-stream-action" title="เริ่ม/หยุดไลฟ์สดแชร์หน้าจอ">
+                  <span class="upload-icon stream-icon">🖥️</span>
+                  <span class="upload-text stream-text">ไลฟ์สด</span>
                 </button>
 
                 <textarea

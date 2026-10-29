@@ -34,7 +34,15 @@
       if (e.target.closest('#formSetup') || e.target.closest('#viewSetup')) {
         return;
       }
-      const clickable = e.target.closest('button, .tag-chip, .btn-sidebar-pill, .btn-picker-tab, .discord-cat-tile, .btn-emote-item, .btn-preset-theme');
+      // Never block or throttle emote clicking so user can spam emotes freely!
+      if (e.target.closest('.btn-emote-item') || e.target.closest('#emotePickerGrid')) {
+        return;
+      }
+      // Never block or throttle video player or stream controls
+      if (e.target.closest('#liveStreamStage') || e.target.closest('#btnToggleScreenShare')) {
+        return;
+      }
+      const clickable = e.target.closest('button, .tag-chip, .btn-sidebar-pill, .btn-picker-tab, .discord-cat-tile, .btn-preset-theme');
       if (clickable) {
         // Exclude clear enter button from double suppression if user pressed Enter key
         const actionId = clickable.id || clickable.className || 'generic_btn';
@@ -178,6 +186,49 @@
   let brokerIndex = 0;
   let heartbeatTimer = null;
 
+  // WebRTC Live Screen Streaming State
+  let localScreenStream = null;
+  let isScreenSharing = false;
+  let activeStreamerUid = null;
+  let activeStreamerUsername = null;
+  let isWatching = false;
+  let streamPeers = new Map(); // Map<viewerUid, RTCPeerConnection> for streamer
+  let viewerPeerConnection = null; // RTCPeerConnection for viewer
+  let pendingIceCandidates = [];
+  let selectedResolution = '720p';
+  let selectedFps = 30;
+
+  const STORAGE_KEY_STREAM_VOLUME = 'livetype_stream_volume_v1';
+
+  function loadStreamVolume() {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_STREAM_VOLUME);
+      if (saved !== null) {
+        const parsed = parseInt(saved, 10);
+        if (!isNaN(parsed) && parsed >= 0 && parsed <= 200) {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+    return 100; // default 100%
+  }
+
+  let currentStreamVolume = loadStreamVolume();
+  let previousNonZeroVolume = currentStreamVolume > 0 ? currentStreamVolume : 100;
+
+  // Web Audio Context & Gain Node for 0-200% Audio Amplification
+  let streamAudioCtx = null;
+  let streamGainNode = null;
+  let streamAudioSourceNode = null;
+
+  const RTC_CONFIG = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' }
+    ]
+  };
+
   // DOM Elements
   const viewSetup = document.getElementById('viewSetup');
   const viewWorkspace = document.getElementById('viewWorkspace');
@@ -250,6 +301,23 @@
   const btnLeaveRoom = document.getElementById('btnLeaveRoom');
   const btnMobileToggleSidebar = document.getElementById('btnMobileToggleSidebar');
   const btnBackToSidebar = document.getElementById('btnBackToSidebar');
+  const btnToggleScreenShare = document.getElementById('btnToggleScreenShare');
+  const liveStreamStage = document.getElementById('liveStreamStage');
+  const streamContainer = document.getElementById('streamContainer');
+  const liveStreamVideo = document.getElementById('liveStreamVideo');
+  const streamPlaceholderOverlay = document.getElementById('streamPlaceholderOverlay');
+  const streamPlaceholderTitle = document.getElementById('streamPlaceholderTitle');
+  const streamPlaceholderSub = document.getElementById('streamPlaceholderSub');
+  const btnToggleWatchStream = document.getElementById('btnToggleWatchStream');
+  const streamerNameBadge = document.getElementById('streamerNameBadge');
+  const streamStatusBadge = document.getElementById('streamStatusBadge');
+  const selectStreamResolution = document.getElementById('selectStreamResolution');
+  const selectStreamFps = document.getElementById('selectStreamFps');
+  const btnStreamVolume = document.getElementById('btnStreamVolume');
+  const rangeStreamVolume = document.getElementById('rangeStreamVolume');
+  const streamVolumeText = document.getElementById('streamVolumeText');
+  const btnStreamFullscreen = document.getElementById('btnStreamFullscreen');
+  const btnStopWatchStream = document.getElementById('btnStopWatchStream');
   const liveCardsGrid = document.getElementById('liveCardsGrid');
   const liveTypingInput = document.getElementById('liveTypingInput');
   const btnClearEnter = document.getElementById('btnClearEnter');
@@ -821,6 +889,17 @@
 
     // 1. Someone pinged us to check if we are online -> reply directly to their inbox & presence
     if (data.type === 'ping_status' && data.from && data.from.uid) {
+      if (!friendsMap.has(data.from.uid)) {
+        // Ping sender is not in our friends list -> notify them to mutual unfriend
+        publishJson(topicInbox(data.from.uid), {
+          type: 'friend_removed',
+          from: {
+            uid: currentUser.uid,
+            username: currentUser.username
+          }
+        });
+        return;
+      }
       publishJson(topicInbox(data.from.uid), {
         type: 'pong_status',
         from: {
@@ -899,6 +978,21 @@
       return;
     }
 
+    // 4.1 Friend Removed by the other person -> Mutual unfriend on both sides
+    if (data.type === 'friend_removed' && data.from && data.from.uid) {
+      const removedUid = data.from.uid;
+      const otherUsername = data.from.username || removedUid;
+      if (friendsMap.has(removedUid)) {
+        removeFriend(removedUid, false);
+        showToast(`ℹ️ ${otherUsername} ได้ยกเลิกความเป็นเพื่อนกับคุณ`);
+      } else {
+        sentFriendRequests.delete(removedUid);
+        incomingFriendRequests.delete(removedUid);
+        renderFriendRequestsUI();
+      }
+      return;
+    }
+
     // 5. Incoming 1-on-1 or Group Room Invitation
     if (data.type === 'room_invite' && data.from && data.roomCode) {
       pendingInviteRoomCode = data.roomCode;
@@ -907,6 +1001,33 @@
       inviteUid.textContent = `UID: ${data.from.uid}`;
       inviteRoomCode.textContent = data.roomCode;
       inviteModal.classList.remove('hidden');
+      return;
+    }
+
+    // 6. WebRTC Live Screen Stream Signaling
+    if (data.type === 'stream_watch_request' && data.fromUid) {
+      handleViewerWatchRequest(data);
+      return;
+    }
+    if (data.type === 'stream_signal_offer' && data.sdp) {
+      handleStreamerOffer(data);
+      return;
+    }
+    if (data.type === 'stream_signal_answer' && data.sdp) {
+      handleViewerAnswer(data);
+      return;
+    }
+    if (data.type === 'stream_signal_candidate' && data.candidate) {
+      handleRemoteCandidate(data);
+      return;
+    }
+    if (data.type === 'stream_quality_change' && data.fromUid) {
+      handleQualityChangeRequest(data);
+      return;
+    }
+    if (data.type === 'stream_stop_watch' && data.fromUid) {
+      handleViewerStopWatch(data);
+      return;
     }
   }
 
@@ -975,6 +1096,64 @@
       return;
     }
 
+    // Direct room-level friend removal sync (instant fallback in room)
+    if (data.type === 'room_friend_removed' && data.targetUid === currentUser.uid && data.from) {
+      const removedUid = data.from.uid;
+      const otherUsername = data.from.username || removedUid;
+      if (friendsMap.has(removedUid)) {
+        removeFriend(removedUid, false);
+        showToast(`ℹ️ ${otherUsername} ได้ยกเลิกความเป็นเพื่อนกับคุณ`);
+      } else {
+        sentFriendRequests.delete(removedUid);
+        incomingFriendRequests.delete(removedUid);
+        renderFriendRequestsUI();
+      }
+      return;
+    }
+
+    // Live Screen Streaming Room Broadcasts
+    if (data.type === 'stream_started' || data.type === 'stream_announce') {
+      if (currentUser && data.streamerUid !== currentUser.uid) {
+        activeStreamerUid = data.streamerUid;
+        activeStreamerUsername = data.streamerUsername || 'เพื่อน';
+
+        if (streamerNameBadge) streamerNameBadge.textContent = `${activeStreamerUsername} (กำลังแชร์หน้าจอ)`;
+        if (streamPlaceholderTitle) streamPlaceholderTitle.textContent = `${activeStreamerUsername} กำลังไลฟ์สดหน้าจอ`;
+        if (streamPlaceholderSub) streamPlaceholderSub.textContent = 'คลิกที่วิดีโอ หรือกดปุ่มด้านล่างเพื่อเริ่มรับชม';
+        if (btnToggleWatchStream) btnToggleWatchStream.textContent = '▶ ดูไลฟ์สด';
+        if (btnStopWatchStream) btnStopWatchStream.textContent = '▶ ดูไลฟ์สด';
+
+        if (!isWatching && streamPlaceholderOverlay) {
+          streamPlaceholderOverlay.classList.remove('hidden');
+        }
+
+        if (liveStreamStage) liveStreamStage.classList.remove('hidden');
+        updateScreenShareButtonState();
+        reorderLiveCards();
+
+        if (data.type === 'stream_started') {
+          showToast(`📺 ${activeStreamerUsername} เริ่มต้นไลฟ์สดหน้าจอแล้ว! (คลิกที่วิดีโอเพื่อดู)`);
+        }
+      }
+      return;
+    }
+
+    if (data.type === 'stream_stopped') {
+      if (data.streamerUid === activeStreamerUid) {
+        if (isWatching) {
+          stopWatchingStream();
+        }
+        activeStreamerUid = null;
+        activeStreamerUsername = null;
+        if (liveStreamStage) liveStreamStage.classList.add('hidden');
+        updateScreenShareButtonState();
+        reorderLiveCards();
+
+        showToast('ℹ️ การไลฟ์สดสิ้นสุดลงแล้ว');
+      }
+      return;
+    }
+
     // Ignore our own echo for typing/clear since we already update locally immediately
     if (data.uid === currentUser.uid) return;
 
@@ -986,7 +1165,12 @@
         avatar: data.avatar || PRESET_AVATARS[0],
         tags: Array.isArray(data.tags) ? data.tags : [],
         currentText: data.currentText || '',
-        updatedAt: Date.now()
+        image: null,
+        updatedAt: Date.now(),
+        lastActiveAt: data.currentText ? Date.now() : 0,
+        lastTypingAt: 0,
+        lastEmoteAt: 0,
+        lastEmote: null
       });
       renderAllLiveCards();
       if (isNew) {
@@ -1004,12 +1188,26 @@
         currentText: myMember ? myMember.currentText : liveTypingInput.value,
         image: myMember ? myMember.image : currentImage
       });
+
+      // If we are currently streaming screen, announce to newcomer immediately!
+      if (isScreenSharing && currentUser) {
+        publishJson(topicRoom(activeRoomCode), {
+          type: 'stream_announce',
+          uid: currentUser.uid,
+          streamerUid: currentUser.uid,
+          streamerUsername: currentUser.username,
+          streamerAvatar: currentUser.avatar
+        });
+      }
+
       broadcastActiveRoomToDirectory();
       return;
     }
 
     if (data.type === 'member_sync') {
       const existed = roomMembers.has(data.uid);
+      const prev = roomMembers.get(data.uid);
+      const hasContent = Boolean((data.currentText && data.currentText.length > 0) || data.image);
       roomMembers.set(data.uid, {
         uid: data.uid,
         username: data.username || data.uid,
@@ -1017,13 +1215,18 @@
         tags: Array.isArray(data.tags) ? data.tags : [],
         currentText: data.currentText || '',
         image: data.image || null,
-        updatedAt: Date.now()
+        updatedAt: Date.now(),
+        lastActiveAt: hasContent ? Date.now() : (prev ? prev.lastActiveAt : 0),
+        lastTypingAt: prev ? prev.lastTypingAt : 0,
+        lastEmoteAt: prev ? prev.lastEmoteAt : 0,
+        lastEmote: prev ? prev.lastEmote : null
       });
       if (!existed) {
         renderAllLiveCards();
         broadcastActiveRoomToDirectory();
       } else {
         updateSingleCardContent(data.uid, data.currentText || '', data.image || null);
+        reorderLiveCards();
       }
       return;
     }
@@ -1035,11 +1238,21 @@
         renderAllLiveCards();
         showToast(`🚪 ${leftUser.username} ออกจากห้อง`);
       }
+      if (data.uid === activeStreamerUid) {
+        if (isWatching) stopWatchingStream();
+        activeStreamerUid = null;
+        activeStreamerUsername = null;
+        if (liveStreamStage) liveStreamStage.classList.add('hidden');
+        updateScreenShareButtonState();
+        reorderLiveCards();
+        showToast('ℹ️ ผู้ไลฟ์สดออกจากห้อง การไลฟ์สิ้นสุดลง');
+      }
       return;
     }
 
     if (data.type === 'typing_update') {
       const safeText = String(data.text || '').slice(0, 250);
+      const hasContent = Boolean(safeText.trim().length > 0 || data.image);
       if (!roomMembers.has(data.uid)) {
         // Auto-register member if they typed before join packet arrived
         roomMembers.set(data.uid, {
@@ -1048,7 +1261,11 @@
           avatar: data.avatar || PRESET_AVATARS[0],
           currentText: safeText,
           image: data.image || null,
-          updatedAt: Date.now()
+          updatedAt: Date.now(),
+          lastActiveAt: hasContent ? Date.now() : 0,
+          lastTypingAt: hasContent ? Date.now() : 0,
+          lastEmoteAt: 0,
+          lastEmote: null
         });
         renderAllLiveCards();
       } else {
@@ -1056,7 +1273,14 @@
         m.currentText = safeText;
         m.image = data.image !== undefined ? data.image : m.image;
         m.updatedAt = Date.now();
+        if (hasContent) {
+          m.lastActiveAt = Date.now();
+          m.lastTypingAt = Date.now();
+        } else {
+          m.lastActiveAt = 0;
+        }
         updateSingleCardContent(data.uid, m.currentText, m.image);
+        reorderLiveCards();
       }
       return;
     }
@@ -1066,15 +1290,27 @@
         const m = roomMembers.get(data.uid);
         m.currentText = '';
         m.image = null;
+        m.lastActiveAt = 0;
+        m.lastEmoteAt = 0;
         m.updatedAt = Date.now();
         updateSingleCardContent(data.uid, '', null);
         flashClearCard(data.uid);
+        reorderLiveCards();
       }
       return;
     }
 
     if (data.type === 'emote_bubble' && data.emote) {
+      if (roomMembers.has(data.uid)) {
+        const m = roomMembers.get(data.uid);
+        m.lastEmoteAt = Date.now();
+        m.lastEmote = data.emote;
+        m.lastActiveAt = Date.now();
+      }
       spawnEmoteBubbleOnCard(data.uid, data.emote);
+      reorderLiveCards();
+      setTimeout(() => reorderLiveCards(), 20500);
+      return;
     }
   }
 
@@ -1457,6 +1693,58 @@
     showToast('ปฏิเสธคำขอเป็นเพื่อนแล้ว');
   }
 
+  // --- Remove Friend (Mutual Unfriend) ---
+  function removeFriend(targetUid, sendNotification = true) {
+    if (!currentUser) return;
+    const cleanUid = String(targetUid || '').trim().toUpperCase();
+    if (!cleanUid) return;
+
+    const existingFriend = friendsMap.get(cleanUid);
+    const friendName = existingFriend ? (existingFriend.username || existingFriend.uid) : cleanUid;
+
+    // 1. Unsubscribe from presence topic
+    if (mqttClient && mqttClient.connected) {
+      mqttClient.unsubscribe(topicPresence(cleanUid));
+    }
+
+    // 2. Remove from friendsMap & request caches
+    friendsMap.delete(cleanUid);
+    sentFriendRequests.delete(cleanUid);
+    incomingFriendRequests.delete(cleanUid);
+    saveFriendsList();
+
+    // 3. Re-render UI
+    renderFriendsList();
+    renderFriendRequestsUI();
+    if (activeRoomCode) renderAllLiveCards();
+
+    // 4. Notify the other person reliably so they remove friendship too
+    if (sendNotification) {
+      const ackId = `frem_${currentUser.uid}_${cleanUid}_${Date.now()}`;
+      const payload = {
+        type: 'friend_removed',
+        from: {
+          uid: currentUser.uid,
+          username: currentUser.username
+        }
+      };
+
+      // Send to their personal inbox
+      publishReliable(topicInbox(cleanUid), payload, ackId);
+
+      // Also broadcast in room if currently in the same room
+      if (activeRoomCode) {
+        publishJson(topicRoom(activeRoomCode), {
+          type: 'room_friend_removed',
+          targetUid: cleanUid,
+          from: payload.from
+        });
+      }
+
+      showToast(`🗑️ ยกเลิกความเป็นเพื่อนกับ "${friendName}" เรียบร้อยแล้ว`);
+    }
+  }
+
   function renderFriendRequestsUI() {
     if (!friendRequestsBox || !friendRequestsList || !friendReqBadge) return;
     const count = incomingFriendRequests.size;
@@ -1546,13 +1834,11 @@
       });
 
       item.querySelector('.btn-remove-friend').addEventListener('click', () => {
-        if (mqttClient && mqttClient.connected) {
-          mqttClient.unsubscribe(topicPresence(friend.uid));
+        const friendName = friend.username || friend.uid;
+        if (!confirm(`คุณต้องการลบ "${friendName}" ออกจากรายชื่อเพื่อนหรือไม่?\n(ความเป็นเพื่อนจะถูกยกเลิกทั้งสองฝ่าย)`)) {
+          return;
         }
-        friendsMap.delete(friend.uid);
-        saveFriendsList();
-        renderFriendsList();
-        if (activeRoomCode) renderAllLiveCards();
+        removeFriend(friend.uid, true);
       });
 
       friendsListContainer.appendChild(item);
@@ -1607,6 +1893,7 @@
   function leaveCurrentRoomSilent() {
     if (!activeRoomCode || !currentUser) return;
     const oldCode = activeRoomCode;
+    cleanupStreamState();
     publishJson(topicRoom(oldCode), {
       type: 'member_leave',
       uid: currentUser.uid
@@ -1643,7 +1930,11 @@
       tags: Array.from(selectedTags),
       currentText: '',
       image: null,
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      lastActiveAt: 0,
+      lastTypingAt: 0,
+      lastEmoteAt: 0,
+      lastEmote: null
     });
 
     liveTypingInput.value = '';
@@ -1925,24 +2216,129 @@
     });
   }
 
+  const EMOTE_ACTIVE_DURATION_MS = 20000;
+
+  function getMemberEngagementInfo(member) {
+    if (!member) {
+      return {
+        tier: 3,
+        isStreamer: false,
+        hasContent: false,
+        hasText: false,
+        hasImage: false,
+        hasRecentEmote: false,
+        lastActive: 0
+      };
+    }
+
+    const isStreamer = Boolean(activeStreamerUid && member.uid === activeStreamerUid);
+    const hasText = Boolean(member.currentText && member.currentText.trim().length > 0);
+    const hasImage = Boolean(member.image);
+    const hasContent = hasText || hasImage;
+    const now = Date.now();
+    const hasRecentEmote = Boolean(member.lastEmoteAt && (now - member.lastEmoteAt) < EMOTE_ACTIVE_DURATION_MS);
+
+    let tier = 3; // Tier 3: Non-Active
+    if (isStreamer) {
+      tier = 1; // Tier 1: Streamer (Top)
+    } else if (hasContent || hasRecentEmote) {
+      tier = 2; // Tier 2: Active Engagement (Typing, Emote, GIF/Image)
+    }
+
+    const lastActive = member.lastActiveAt || member.updatedAt || 0;
+    return {
+      tier,
+      isStreamer,
+      hasContent,
+      hasText,
+      hasImage,
+      hasRecentEmote,
+      lastActive
+    };
+  }
+
+  function sortRoomMembers(members) {
+    return members.slice().sort((a, b) => {
+      const infoA = getMemberEngagementInfo(a);
+      const infoB = getMemberEngagementInfo(b);
+
+      // 1. Tier 1 (Streamer) > Tier 2 (Active) > Tier 3 (Non-Active)
+      if (infoA.tier !== infoB.tier) {
+        return infoA.tier - infoB.tier;
+      }
+
+      // 2. Within Tier 2 (Active Engagement): most recent activity first
+      if (infoA.tier === 2) {
+        if (infoB.lastActive !== infoA.lastActive) {
+          return infoB.lastActive - infoA.lastActive;
+        }
+      }
+
+      // 3. Within Tier 3 (Non-Active): prioritize current user, then alphabetical
+      const isSelfA = currentUser && a.uid === currentUser.uid;
+      const isSelfB = currentUser && b.uid === currentUser.uid;
+      if (isSelfA && !isSelfB) return -1;
+      if (!isSelfA && isSelfB) return 1;
+
+      if (infoB.lastActive !== infoA.lastActive) {
+        return infoB.lastActive - infoA.lastActive;
+      }
+
+      return (a.username || '').localeCompare(b.username || '');
+    });
+  }
+
+  function reorderLiveCards() {
+    if (!liveCardsGrid) return;
+    const members = Array.from(roomMembers.values());
+    const sorted = sortRoomMembers(members);
+
+    sorted.forEach((member, index) => {
+      const cardEl = document.getElementById(`live-card-${member.uid}`);
+      if (!cardEl) return;
+
+      // Update CSS order (0 = top, 1, 2, ...)
+      cardEl.style.order = index;
+
+      const info = getMemberEngagementInfo(member);
+      cardEl.classList.toggle('is-streamer', info.isStreamer);
+      cardEl.classList.toggle('is-active-engagement', info.tier === 2);
+      cardEl.classList.toggle('is-idle', info.tier === 3);
+
+      const pillEl = document.getElementById(`status-pill-${member.uid}`);
+      if (pillEl) {
+        if (info.isStreamer) {
+          pillEl.className = 'typing-status-pill streamer-badge';
+          pillEl.innerHTML = '<span class="pulse-dot red"></span> 🔴 กำลังไลฟ์สด';
+        } else if (info.hasContent) {
+          pillEl.className = 'typing-status-pill active';
+          pillEl.innerHTML = '<span class="pulse-dot"></span> ' + (info.hasImage && !info.hasText ? '🖼️ ส่งรูป/GIF สด' : '⚡ กำลังส่งสด...');
+        } else if (info.hasRecentEmote) {
+          pillEl.className = 'typing-status-pill active emote-active';
+          pillEl.textContent = `🫧 ส่งอีโมจิ ${member.lastEmote || ''}`;
+        } else {
+          pillEl.className = 'typing-status-pill idle';
+          pillEl.textContent = '💤 Non-Active';
+        }
+      }
+    });
+  }
+
   function renderAllLiveCards() {
     liveCardsGrid.innerHTML = '';
     roomMemberCount.textContent = `${roomMembers.size} คนในห้อง`;
     const myTagsLower = new Set(Array.from(selectedTags).map((t) => t.toLowerCase()));
 
-    // Always place currentUser card first
-    const sortedMembers = Array.from(roomMembers.values()).sort((a, b) => {
-      if (currentUser && a.uid === currentUser.uid) return -1;
-      if (currentUser && b.uid === currentUser.uid) return 1;
-      return (a.username || '').localeCompare(b.username || '');
-    });
+    // Sort members by engagement: Streamer (#1) -> Active (#2: typing/emote/gif) -> Non-Active (#3)
+    const sortedMembers = sortRoomMembers(Array.from(roomMembers.values()));
 
-    sortedMembers.forEach((member) => {
+    sortedMembers.forEach((member, index) => {
       const isSelf = currentUser && member.uid === currentUser.uid;
       const isAlreadyFriend = friendsMap.has(member.uid);
       const isPendingSent = sentFriendRequests.has(member.uid);
       const hasIncomingReq = incomingFriendRequests.has(member.uid);
-      const hasContent = Boolean((member.currentText && member.currentText.length > 0) || member.image);
+      const info = getMemberEngagementInfo(member);
+      const hasContent = info.hasContent;
       const memberTags = Array.isArray(member.tags) ? member.tags : [];
       const tagsHtml = memberTags
         .slice(0, 5)
@@ -1953,8 +2349,10 @@
         .join('');
 
       let friendActionHtml = '';
-      if (!isSelf && !isAlreadyFriend) {
-        if (hasIncomingReq) {
+      if (!isSelf) {
+        if (isAlreadyFriend) {
+          friendActionHtml = `<button type="button" class="btn-card-add-friend is-friend" data-action="remove" title="คลิกเพื่อยกเลิกความเป็นเพื่อน"><span class="friend-label-normal">✓ เพื่อน</span><span class="friend-label-hover">✕ ลบเพื่อน</span></button>`;
+        } else if (hasIncomingReq) {
           friendActionHtml = `<button type="button" class="btn-card-add-friend" data-action="accept">✓ รับแอดเพื่อน</button>`;
         } else if (isPendingSent) {
           friendActionHtml = `<button type="button" class="btn-card-add-friend pending" disabled>⏳ รอตอบรับ...</button>`;
@@ -1963,9 +2361,21 @@
         }
       }
 
+      let statusPillHtml = '';
+      if (info.isStreamer) {
+        statusPillHtml = `<span class="typing-status-pill streamer-badge" id="status-pill-${member.uid}"><span class="pulse-dot red"></span> 🔴 กำลังไลฟ์สด</span>`;
+      } else if (hasContent) {
+        statusPillHtml = `<span class="typing-status-pill active" id="status-pill-${member.uid}"><span class="pulse-dot"></span> ${member.image && !member.currentText ? '🖼️ ส่งรูป/GIF สด' : '⚡ กำลังส่งสด...'}</span>`;
+      } else if (info.hasRecentEmote) {
+        statusPillHtml = `<span class="typing-status-pill active emote-active" id="status-pill-${member.uid}">🫧 ส่งอีโมจิ ${escapeHtml(member.lastEmote || '')}</span>`;
+      } else {
+        statusPillHtml = `<span class="typing-status-pill idle" id="status-pill-${member.uid}">💤 Non-Active</span>`;
+      }
+
       const card = document.createElement('div');
       card.id = `live-card-${member.uid}`;
-      card.className = `live-card ${isSelf ? 'is-self' : ''} ${hasContent ? 'actively-typing' : ''}`;
+      card.style.order = index;
+      card.className = `live-card ${isSelf ? 'is-self' : ''} ${info.isStreamer ? 'is-streamer' : ''} ${hasContent ? 'actively-typing' : ''} ${info.tier === 2 ? 'is-active-engagement' : ''} ${info.tier === 3 ? 'is-idle' : ''}`;
 
       card.innerHTML = `
         <div class="live-card-header">
@@ -1981,9 +2391,7 @@
               ${tagsHtml ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">${tagsHtml}</div>` : ''}
             </div>
           </div>
-          <span class="typing-status-pill ${hasContent ? 'active' : ''}" id="status-pill-${member.uid}">
-            ${hasContent ? '⚡ กำลังส่งสด...' : 'รอพิมพ์...'}
-          </span>
+          ${statusPillHtml}
         </div>
         <div class="live-card-body" id="card-body-${member.uid}"></div>
       `;
@@ -1995,6 +2403,11 @@
           const act = addFriendBtn.getAttribute('data-action');
           if (act === 'accept') {
             acceptIncomingFriendRequest(member.uid);
+          } else if (act === 'remove') {
+            const memberName = member.username || member.uid;
+            if (confirm(`คุณต้องการลบ "${memberName}" ออกจากรายชื่อเพื่อนหรือไม่?\n(ความเป็นเพื่อนจะถูกยกเลิกทั้งสองฝ่าย)`)) {
+              removeFriend(member.uid, true);
+            }
           } else {
             sendFriendRequestToUid(member.uid, member.username);
           }
@@ -2015,12 +2428,17 @@
     bodyEl.innerHTML = '';
     const hasText = Boolean(text && text.length > 0);
     const hasImage = Boolean(image);
+    const hasContent = hasText || hasImage;
 
-    if (hasText || hasImage) {
-      cardEl.classList.add('actively-typing');
-      pillEl.classList.add('active');
-      pillEl.textContent = '⚡ กำลังส่งสด...';
+    const member = roomMembers.get(uid);
+    const info = getMemberEngagementInfo(member || { uid, currentText: text, image });
 
+    cardEl.classList.toggle('is-streamer', info.isStreamer);
+    cardEl.classList.toggle('actively-typing', hasContent);
+    cardEl.classList.toggle('is-active-engagement', info.tier === 2);
+    cardEl.classList.toggle('is-idle', info.tier === 3);
+
+    if (hasContent) {
       if (hasImage) {
         const imgWrap = document.createElement('div');
         imgWrap.className = 'live-card-image-wrap';
@@ -2058,14 +2476,24 @@
 
       bodyEl.scrollTop = bodyEl.scrollHeight;
     } else {
-      cardEl.classList.remove('actively-typing');
-      pillEl.classList.remove('active');
-      pillEl.textContent = 'รอพิมพ์...';
-
       const placeholder = document.createElement('span');
       placeholder.className = 'live-card-placeholder';
-      placeholder.textContent = 'กำลังรอพิมพ์ข้อความหรือส่งรูป... (กด Enter เมื่อต้องการล้างทั้งหมด)';
+      placeholder.textContent = 'ยังไม่มีข้อความ (Non-Active)... (กด Enter เมื่อต้องการล้างทั้งหมด)';
       bodyEl.appendChild(placeholder);
+    }
+
+    if (info.isStreamer) {
+      pillEl.className = 'typing-status-pill streamer-badge';
+      pillEl.innerHTML = '<span class="pulse-dot red"></span> 🔴 กำลังไลฟ์สด';
+    } else if (hasContent) {
+      pillEl.className = 'typing-status-pill active';
+      pillEl.innerHTML = '<span class="pulse-dot"></span> ' + (hasImage && !hasText ? '🖼️ ส่งรูป/GIF สด' : '⚡ กำลังส่งสด...');
+    } else if (info.hasRecentEmote) {
+      pillEl.className = 'typing-status-pill active emote-active';
+      pillEl.textContent = `🫧 ส่งอีโมจิ ${member ? member.lastEmote || '' : ''}`;
+    } else {
+      pillEl.className = 'typing-status-pill idle';
+      pillEl.textContent = '💤 Non-Active';
     }
   }
 
@@ -2099,8 +2527,15 @@
 
   function triggerSendEmoteBubble(emote) {
     if (!currentUser || !activeRoomCode) return;
-    if (!canExecuteAction('send_emote', true)) return;
+    if (roomMembers.has(currentUser.uid)) {
+      const myMem = roomMembers.get(currentUser.uid);
+      myMem.lastEmoteAt = Date.now();
+      myMem.lastEmote = emote;
+      myMem.lastActiveAt = Date.now();
+    }
     spawnEmoteBubbleOnCard(currentUser.uid, emote);
+    reorderLiveCards();
+    setTimeout(() => reorderLiveCards(), 20500);
     publishJson(topicRoom(activeRoomCode), {
       type: 'emote_bubble',
       uid: currentUser.uid,
@@ -2135,7 +2570,9 @@
     if (roomMembers.has(currentUser.uid)) {
       const myMem = roomMembers.get(currentUser.uid);
       myMem.image = currentImage;
+      myMem.lastActiveAt = Date.now();
       updateSingleCardContent(currentUser.uid, myMem.currentText, currentImage);
+      reorderLiveCards();
     }
 
     publishJson(topicRoom(activeRoomCode), {
@@ -2702,7 +3139,11 @@
     if (currentUser && roomMembers.has(currentUser.uid)) {
       const myMem = roomMembers.get(currentUser.uid);
       myMem.image = null;
+      if (!myMem.currentText || myMem.currentText.trim().length === 0) {
+        myMem.lastActiveAt = 0;
+      }
       updateSingleCardContent(currentUser.uid, myMem.currentText, null);
+      reorderLiveCards();
     }
     if (activeRoomCode) {
       publishJson(topicRoom(activeRoomCode), {
@@ -2728,7 +3169,14 @@
     if (roomMembers.has(currentUser.uid)) {
       const myMem = roomMembers.get(currentUser.uid);
       myMem.currentText = currentText;
+      if (currentText.trim().length > 0 || myMem.image) {
+        myMem.lastActiveAt = Date.now();
+        myMem.lastTypingAt = Date.now();
+      } else {
+        myMem.lastActiveAt = 0;
+      }
       updateSingleCardContent(currentUser.uid, currentText, myMem.image);
+      reorderLiveCards();
     }
 
     publishJson(topicRoom(activeRoomCode), {
@@ -2752,8 +3200,11 @@
       const myMem = roomMembers.get(currentUser.uid);
       myMem.currentText = '';
       myMem.image = null;
+      myMem.lastActiveAt = 0;
+      myMem.lastEmoteAt = 0;
       updateSingleCardContent(currentUser.uid, '', null);
       flashClearCard(currentUser.uid);
+      reorderLiveCards();
     }
 
     publishJson(topicRoom(activeRoomCode), {
@@ -2937,4 +3388,732 @@
       }
     });
   });
+
+  // =========================================================================
+  // --- WebRTC Realtime Screen Live Streaming Engine ---
+  // =========================================================================
+
+  // --- Live Stream Audio Volume & 0-200% Booster Engine ---
+  function updateVolumeUI(volumePercent) {
+    if (rangeStreamVolume) {
+      rangeStreamVolume.value = volumePercent;
+    }
+    if (streamVolumeText) {
+      streamVolumeText.textContent = `${volumePercent}%`;
+      streamVolumeText.classList.toggle('boosted', volumePercent > 100);
+      if (volumePercent > 100) {
+        streamVolumeText.title = `บูสเสียงขยายพิเศษ: ${volumePercent}% (ปกติ 100%)`;
+      } else {
+        streamVolumeText.title = `ระดับเสียงปัจจุบัน: ${volumePercent}%`;
+      }
+    }
+    if (btnStreamVolume) {
+      if (volumePercent === 0) {
+        btnStreamVolume.textContent = '🔇';
+        btnStreamVolume.title = 'เปิดเสียง';
+      } else if (volumePercent > 100) {
+        btnStreamVolume.textContent = '🔊';
+        btnStreamVolume.title = `เสียงบูสพิเศษ ${volumePercent}% (คลิกเพื่อปิดเสียง)`;
+      } else if (volumePercent < 50) {
+        btnStreamVolume.textContent = '🔉';
+        btnStreamVolume.title = `ระดับเสียง ${volumePercent}% (คลิกเพื่อปิดเสียง)`;
+      } else {
+        btnStreamVolume.textContent = '🔊';
+        btnStreamVolume.title = `ระดับเสียง ${volumePercent}% (คลิกเพื่อปิดเสียง)`;
+      }
+    }
+  }
+
+  function applyVolumeToGain(volumePercent) {
+    const gainFactor = Math.max(0, Math.min(200, volumePercent)) / 100;
+    if (streamGainNode && streamAudioCtx) {
+      try {
+        streamGainNode.gain.setValueAtTime(gainFactor, streamAudioCtx.currentTime || 0);
+      } catch (e) {
+        streamGainNode.gain.value = gainFactor;
+      }
+    }
+    updateVolumeUI(volumePercent);
+  }
+
+  function setStreamVolume(percent, showToastNotice = false) {
+    currentStreamVolume = Math.max(0, Math.min(200, percent));
+    if (currentStreamVolume > 0) {
+      previousNonZeroVolume = currentStreamVolume;
+    }
+    try {
+      localStorage.setItem(STORAGE_KEY_STREAM_VOLUME, String(currentStreamVolume));
+    } catch (e) {}
+
+    if (streamAudioCtx && streamAudioCtx.state === 'suspended') {
+      streamAudioCtx.resume().catch(() => {});
+    }
+
+    applyVolumeToGain(currentStreamVolume);
+
+    if (showToastNotice) {
+      if (currentStreamVolume === 0) {
+        showToast('🔇 ปิดเสียงไลฟ์สดแล้ว');
+      } else if (currentStreamVolume > 100) {
+        showToast(`🚀 บูสระดับเสียงไลฟ์เป็น ${currentStreamVolume}% แล้ว (บันทึกแคชแล้ว)`);
+      } else {
+        showToast(`🔊 ระดับเสียงไลฟ์: ${currentStreamVolume}% (บันทึกแคชแล้ว)`);
+      }
+    }
+  }
+
+  function attachStreamAudio(stream) {
+    if (!stream) return;
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) return;
+
+    try {
+      if (!streamAudioCtx) {
+        const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtxClass) {
+          streamAudioCtx = new AudioCtxClass();
+        }
+      }
+
+      if (streamAudioCtx) {
+        if (streamAudioCtx.state === 'suspended') {
+          streamAudioCtx.resume().catch(() => {});
+        }
+
+        if (!streamGainNode) {
+          streamGainNode = streamAudioCtx.createGain();
+          streamGainNode.connect(streamAudioCtx.destination);
+        }
+
+        if (streamAudioSourceNode) {
+          try { streamAudioSourceNode.disconnect(); } catch (e) {}
+          streamAudioSourceNode = null;
+        }
+
+        const audioStream = new MediaStream(audioTracks);
+        streamAudioSourceNode = streamAudioCtx.createMediaStreamSource(audioStream);
+        streamAudioSourceNode.connect(streamGainNode);
+
+        // Mute video element to prevent duplicate unboosted audio
+        if (liveStreamVideo) {
+          liveStreamVideo.muted = true;
+        }
+
+        // Apply cached volume immediately
+        applyVolumeToGain(currentStreamVolume);
+      }
+    } catch (err) {
+      console.warn('Web Audio gain node setup failed, falling back to video element volume:', err);
+      if (liveStreamVideo) {
+        liveStreamVideo.muted = currentStreamVolume === 0;
+        liveStreamVideo.volume = Math.min(1, currentStreamVolume / 100);
+      }
+    }
+  }
+
+  function detachStreamAudio() {
+    if (streamAudioSourceNode) {
+      try { streamAudioSourceNode.disconnect(); } catch (e) {}
+      streamAudioSourceNode = null;
+    }
+  }
+
+  function updateQualityDisplay() {
+    if (!streamStatusBadge) return;
+    const resLabel = selectedResolution === 'original' ? 'Original' : selectedResolution;
+    streamStatusBadge.textContent = `${resLabel} @ ${selectedFps} FPS`;
+  }
+
+  // Update Live Stream Button in the input action row (Icon + Text layout)
+  function updateScreenShareButtonState(forcedState) {
+    if (!btnToggleScreenShare) return;
+
+    let iconSpan = btnToggleScreenShare.querySelector('.stream-icon');
+    let textSpan = btnToggleScreenShare.querySelector('.stream-text');
+
+    if (!iconSpan || !textSpan) {
+      btnToggleScreenShare.innerHTML = `
+        <span class="upload-icon stream-icon">🖥️</span>
+        <span class="upload-text stream-text">ไลฟ์สด</span>
+      `;
+      iconSpan = btnToggleScreenShare.querySelector('.stream-icon');
+      textSpan = btnToggleScreenShare.querySelector('.stream-text');
+    }
+
+    let state = forcedState;
+    if (!state) {
+      if (isScreenSharing) {
+        state = 'streaming';
+      } else if (activeStreamerUid && (!currentUser || activeStreamerUid !== currentUser.uid)) {
+        state = isWatching ? 'watching' : 'has_streamer';
+      } else {
+        state = 'idle';
+      }
+    }
+
+    btnToggleScreenShare.classList.remove('is-live', 'has-streamer', 'is-watching', 'btn-danger', 'btn-secondary');
+
+    if (state === 'streaming') {
+      iconSpan.textContent = '🔴';
+      textSpan.textContent = 'หยุดไลฟ์';
+      btnToggleScreenShare.title = 'กำลังไลฟ์สดหน้าจอ (คลิกเพื่อหยุด)';
+      btnToggleScreenShare.classList.add('is-live');
+      btnToggleScreenShare.disabled = false;
+    } else if (state === 'watching') {
+      iconSpan.textContent = '⏹️';
+      textSpan.textContent = 'หยุดดู';
+      btnToggleScreenShare.title = `กำลังดูไลฟ์สดของ ${activeStreamerUsername || 'เพื่อน'} (คลิกเพื่อหยุดดู)`;
+      btnToggleScreenShare.classList.add('is-watching', 'has-streamer');
+      btnToggleScreenShare.disabled = false;
+    } else if (state === 'has_streamer') {
+      iconSpan.textContent = '📺';
+      textSpan.textContent = 'ดูไลฟ์';
+      btnToggleScreenShare.title = `${activeStreamerUsername || 'เพื่อน'} กำลังไลฟ์สด (คลิกเพื่อเริ่มดู)`;
+      btnToggleScreenShare.classList.add('has-streamer');
+      btnToggleScreenShare.disabled = false;
+    } else {
+      // idle
+      iconSpan.textContent = '🖥️';
+      textSpan.textContent = 'ไลฟ์สด';
+      btnToggleScreenShare.title = 'เริ่มไลฟ์สดแชร์หน้าจอให้เพื่อนในห้อง';
+      btnToggleScreenShare.disabled = false;
+    }
+  }
+
+  // 1. Streamer: Start Capturing Screen
+  async function startScreenShare() {
+    if (!currentUser || !activeRoomCode) {
+      showToast('กรุณาเข้าห้องแชทก่อนเริ่มไลฟ์สด');
+      return;
+    }
+
+    if (isScreenSharing) {
+      stopScreenShare();
+      return;
+    }
+
+    if (activeStreamerUid && activeStreamerUid !== currentUser.uid) {
+      showToast(`⚠️ มีผู้ใช้งาน (${activeStreamerUsername || 'อื่น'}) กำลังไลฟ์สดอยู่ กรุณารอให้สิ้นสุดก่อน`);
+      return;
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      showToast('⚠️ เบราว์เซอร์ของคุณไม่รองรับการแชร์หน้าจอ (แนะนำใช้ Google Chrome / MS Edge บน PC)');
+      return;
+    }
+
+    try {
+      localScreenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          cursor: 'always',
+          frameRate: { max: 60 }
+        },
+        audio: true
+      });
+    } catch (err) {
+      if (err.name !== 'NotAllowedError') {
+        showToast('ไม่สามารถเริ่มแชร์หน้าจอได้: ' + (err.message || 'เกิดข้อผิดพลาด'));
+      }
+      return;
+    }
+
+    isScreenSharing = true;
+    activeStreamerUid = currentUser.uid;
+    activeStreamerUsername = currentUser.username;
+
+    // Listen to native browser "Stop sharing" bar
+    const videoTrack = localScreenStream.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.onended = () => {
+        stopScreenShare();
+      };
+    }
+
+    // Play local preview (muted so streamer doesn't hear own echo)
+    if (liveStreamVideo) {
+      liveStreamVideo.srcObject = localScreenStream;
+      liveStreamVideo.muted = true;
+      liveStreamVideo.play().catch(() => {});
+    }
+
+    // Show stage & hide viewer overlay
+    if (liveStreamStage) liveStreamStage.classList.remove('hidden');
+    if (streamPlaceholderOverlay) streamPlaceholderOverlay.classList.add('hidden');
+
+    if (streamerNameBadge) streamerNameBadge.textContent = 'คุณ (กำลังแชร์หน้าจอ)';
+    if (btnStopWatchStream) btnStopWatchStream.textContent = '🔴 หยุดไลฟ์';
+    updateScreenShareButtonState();
+    reorderLiveCards();
+
+    updateQualityDisplay();
+
+    // Broadcast stream start event to room members
+    publishJson(topicRoom(activeRoomCode), {
+      type: 'stream_started',
+      uid: currentUser.uid,
+      streamerUid: currentUser.uid,
+      streamerUsername: currentUser.username,
+      streamerAvatar: currentUser.avatar
+    });
+
+    showToast('🖥️ เริ่มต้นการไลฟ์สดหน้าจอแล้ว! (เพื่อนในห้องสามารถกดดูได้ทันที)');
+  }
+
+  // 2. Streamer: Stop Capturing Screen
+  function stopScreenShare() {
+    if (!isScreenSharing && !localScreenStream) return;
+    isScreenSharing = false;
+
+    if (localScreenStream) {
+      localScreenStream.getTracks().forEach((t) => {
+        try { t.stop(); } catch (e) {}
+      });
+      localScreenStream = null;
+    }
+
+    // Close all viewer connections
+    streamPeers.forEach((pc) => {
+      try { pc.close(); } catch (e) {}
+    });
+    streamPeers.clear();
+
+    if (liveStreamVideo) {
+      liveStreamVideo.srcObject = null;
+    }
+
+    if (liveStreamStage) {
+      liveStreamStage.classList.add('hidden');
+    }
+
+    const wasStreamer = activeStreamerUid === (currentUser && currentUser.uid);
+    activeStreamerUid = null;
+    activeStreamerUsername = null;
+    updateScreenShareButtonState();
+    reorderLiveCards();
+
+    if (wasStreamer && activeRoomCode) {
+      publishJson(topicRoom(activeRoomCode), {
+        type: 'stream_stopped',
+        uid: currentUser.uid,
+        streamerUid: currentUser.uid
+      });
+      showToast('⏹ สิ้นสุดการไลฟ์สดหน้าจอแล้ว');
+    }
+  }
+
+  // 3. Viewer: Toggle Watching Stream (Click to Watch / Click again to Stop Watching)
+  function toggleWatchStream() {
+    if (isScreenSharing) {
+      if (confirm('คุณกำลังไลฟ์สดอยู่ ต้องการหยุดการไลฟ์สดหรือไม่?')) {
+        stopScreenShare();
+      }
+      return;
+    }
+
+    if (!activeStreamerUid) {
+      showToast('⚠️ ยังไม่มีใครกำลังไลฟ์สดในห้องนี้');
+      return;
+    }
+
+    if (!isWatching) {
+      // START WATCHING
+      isWatching = true;
+      if (streamPlaceholderOverlay) streamPlaceholderOverlay.classList.add('hidden');
+      if (btnStopWatchStream) btnStopWatchStream.textContent = '⏹ หยุดดู';
+
+      if (viewerPeerConnection) {
+        try { viewerPeerConnection.close(); } catch (e) {}
+      }
+
+      pendingIceCandidates = [];
+      viewerPeerConnection = new RTCPeerConnection(RTC_CONFIG);
+
+      viewerPeerConnection.ontrack = (event) => {
+        const stream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
+        if (liveStreamVideo) {
+          liveStreamVideo.srcObject = stream;
+          liveStreamVideo.play().catch(e => console.log('Autoplay handled:', e));
+        }
+        attachStreamAudio(stream);
+      };
+
+      viewerPeerConnection.onicecandidate = (event) => {
+        if (event.candidate && activeStreamerUid && currentUser) {
+          publishJson(topicInbox(activeStreamerUid), {
+            type: 'stream_signal_candidate',
+            fromUid: currentUser.uid,
+            candidate: event.candidate
+          });
+        }
+      };
+
+      viewerPeerConnection.onconnectionstatechange = () => {
+        if (viewerPeerConnection && (viewerPeerConnection.connectionState === 'disconnected' || viewerPeerConnection.connectionState === 'failed')) {
+          showToast('⚠️ สัญญาณการรับชมสะดุด (คลิกที่วิดีโอเพื่อเชื่อมต่อใหม่)');
+        }
+      };
+
+      // Request stream from streamer with desired resolution & FPS
+      publishJson(topicInbox(activeStreamerUid), {
+        type: 'stream_watch_request',
+        fromUid: currentUser.uid,
+        username: currentUser.username,
+        resolution: selectedResolution,
+        fps: selectedFps
+      });
+
+      updateQualityDisplay();
+      updateScreenShareButtonState();
+      showToast('📺 เริ่มดูไลฟ์สดแล้ว (คลิกที่วิดีโออีกครั้งเพื่อหยุดดู)');
+    } else {
+      // STOP WATCHING
+      stopWatchingStream();
+      showToast('⏸️ หยุดดูไลฟ์สดแล้ว (คลิกที่วิดีโอเพื่อเปิดดูใหม่)');
+    }
+  }
+
+  // 4. Viewer: Stop Watching Stream
+  function stopWatchingStream() {
+    isWatching = false;
+    detachStreamAudio();
+    if (viewerPeerConnection) {
+      try { viewerPeerConnection.close(); } catch (e) {}
+      viewerPeerConnection = null;
+    }
+    pendingIceCandidates = [];
+
+    if (liveStreamVideo) {
+      liveStreamVideo.srcObject = null;
+    }
+
+    if (streamPlaceholderOverlay) {
+      if (streamPlaceholderTitle) streamPlaceholderTitle.textContent = '⏸️ หยุดดูไลฟ์สดแล้ว';
+      if (streamPlaceholderSub) streamPlaceholderSub.textContent = 'คลิกที่วิดีโอ หรือกดปุ่มด้านล่างเพื่อกลับมารับชมต่อ';
+      if (btnToggleWatchStream) btnToggleWatchStream.textContent = '▶ ดูไลฟ์ต่อ';
+      streamPlaceholderOverlay.classList.remove('hidden');
+    }
+
+    if (btnStopWatchStream) {
+      btnStopWatchStream.textContent = '▶ ดูไลฟ์สด';
+    }
+
+    updateScreenShareButtonState();
+
+    // Notify streamer to release encoding bandwidth
+    if (activeStreamerUid && currentUser) {
+      publishJson(topicInbox(activeStreamerUid), {
+        type: 'stream_stop_watch',
+        fromUid: currentUser.uid
+      });
+    }
+  }
+
+  // 5. Cleanup all stream state when switching or leaving rooms
+  function cleanupStreamState() {
+    detachStreamAudio();
+    if (isScreenSharing) {
+      stopScreenShare();
+    }
+    if (isWatching) {
+      stopWatchingStream();
+    }
+    activeStreamerUid = null;
+    activeStreamerUsername = null;
+    if (liveStreamStage) liveStreamStage.classList.add('hidden');
+    updateScreenShareButtonState();
+    reorderLiveCards();
+  }
+
+  // 6. WebRTC Sender Quality Downscaling & Framerate Control
+  async function applyQualityConstraints(pc, resolution, fps) {
+    if (!pc) return;
+    try {
+      const senders = pc.getSenders ? pc.getSenders() : [];
+      const videoSender = senders.find((s) => s.track && s.track.kind === 'video');
+      if (!videoSender) return;
+
+      const params = videoSender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+
+      // Calculate resolution scale factor based on original track height
+      let targetHeight = 0;
+      if (resolution === '360p') targetHeight = 360;
+      else if (resolution === '480p') targetHeight = 480;
+      else if (resolution === '720p') targetHeight = 720;
+      else if (resolution === '1080p') targetHeight = 1080;
+
+      const trackSettings = videoSender.track ? videoSender.track.getSettings() : {};
+      const origH = trackSettings.height || 1080;
+
+      if (targetHeight > 0 && origH > targetHeight) {
+        params.encodings[0].scaleResolutionDownBy = Math.max(1, origH / targetHeight);
+      } else {
+        params.encodings[0].scaleResolutionDownBy = 1;
+      }
+
+      // Cap maxFramerate (15, 30, 60 FPS)
+      const targetFps = parseInt(fps, 10);
+      if (targetFps && [15, 30, 60].includes(targetFps)) {
+        params.encodings[0].maxFramerate = targetFps;
+      }
+
+      await videoSender.setParameters(params);
+    } catch (err) {
+      console.warn('Could not apply sender quality parameters:', err);
+    }
+  }
+
+  // 7. Streamer handles incoming watch request from a viewer
+  async function handleViewerWatchRequest(data) {
+    if (!isScreenSharing || !localScreenStream) return;
+    const viewerUid = data.fromUid;
+
+    if (streamPeers.has(viewerUid)) {
+      try { streamPeers.get(viewerUid).close(); } catch (e) {}
+      streamPeers.delete(viewerUid);
+    }
+
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    streamPeers.set(viewerUid, pc);
+
+    localScreenStream.getTracks().forEach((track) => {
+      pc.addTrack(track, localScreenStream);
+    });
+
+    await applyQualityConstraints(pc, data.resolution || selectedResolution, data.fps || selectedFps);
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && currentUser) {
+        publishJson(topicInbox(viewerUid), {
+          type: 'stream_signal_candidate',
+          fromUid: currentUser.uid,
+          candidate: event.candidate
+        });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        streamPeers.delete(viewerUid);
+      }
+    };
+
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      publishJson(topicInbox(viewerUid), {
+        type: 'stream_signal_offer',
+        fromUid: currentUser.uid,
+        sdp: offer
+      });
+    } catch (err) {
+      console.warn('Error creating stream offer:', err);
+    }
+  }
+
+  // 8. Viewer handles incoming SDP offer from streamer
+  async function handleStreamerOffer(data) {
+    if (!isWatching || !viewerPeerConnection) return;
+
+    try {
+      await viewerPeerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+
+      // Flush queued candidates
+      while (pendingIceCandidates.length > 0) {
+        const candidate = pendingIceCandidates.shift();
+        await viewerPeerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+      }
+
+      const answer = await viewerPeerConnection.createAnswer();
+      await viewerPeerConnection.setLocalDescription(answer);
+
+      publishJson(topicInbox(data.fromUid), {
+        type: 'stream_signal_answer',
+        fromUid: currentUser.uid,
+        sdp: answer
+      });
+    } catch (err) {
+      console.warn('Error handling streamer offer:', err);
+    }
+  }
+
+  // 9. Streamer handles incoming SDP answer from viewer
+  async function handleViewerAnswer(data) {
+    if (!isScreenSharing) return;
+    const pc = streamPeers.get(data.fromUid);
+    if (!pc) return;
+
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    } catch (err) {
+      console.warn('Error setting remote description from viewer:', err);
+    }
+  }
+
+  // 10. Handle ICE candidate on either side
+  async function handleRemoteCandidate(data) {
+    if (isScreenSharing) {
+      const pc = streamPeers.get(data.fromUid);
+      if (pc && pc.remoteDescription && data.candidate) {
+        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(() => {});
+      }
+    } else if (isWatching && viewerPeerConnection) {
+      if (viewerPeerConnection.remoteDescription && data.candidate) {
+        viewerPeerConnection.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(() => {});
+      } else if (data.candidate) {
+        pendingIceCandidates.push(data.candidate);
+      }
+    }
+  }
+
+  // 11. Streamer updates quality constraints on viewer request
+  async function handleQualityChangeRequest(data) {
+    if (!isScreenSharing) return;
+    const pc = streamPeers.get(data.fromUid);
+    if (pc) {
+      await applyQualityConstraints(pc, data.resolution, data.fps);
+    }
+  }
+
+  // 12. Streamer cleans up peer when viewer stops watching
+  function handleViewerStopWatch(data) {
+    const pc = streamPeers.get(data.fromUid);
+    if (pc) {
+      try { pc.close(); } catch (e) {}
+      streamPeers.delete(data.fromUid);
+    }
+  }
+
+  // 13. UI Event Listeners for Live Stream
+  if (btnToggleScreenShare) {
+    btnToggleScreenShare.addEventListener('click', () => {
+      if (isScreenSharing) {
+        stopScreenShare();
+      } else if (activeStreamerUid && (!currentUser || activeStreamerUid !== currentUser.uid)) {
+        toggleWatchStream();
+      } else {
+        startScreenShare();
+      }
+    });
+  }
+
+  // Clicking on the video player container toggles watching / stopping stream
+  if (streamContainer) {
+    streamContainer.addEventListener('click', (e) => {
+      // Do not toggle when clicking HUD controls or volume slider directly
+      if (e.target.closest('#streamHudControls') || e.target.closest('.stream-volume-wrap')) return;
+      toggleWatchStream();
+    });
+  }
+
+  if (btnToggleWatchStream) {
+    btnToggleWatchStream.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleWatchStream();
+    });
+  }
+
+  if (btnStopWatchStream) {
+    btnStopWatchStream.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isScreenSharing) {
+        stopScreenShare();
+      } else {
+        toggleWatchStream();
+      }
+    });
+  }
+
+  // Resolution Selector
+  if (selectStreamResolution) {
+    selectStreamResolution.addEventListener('change', (e) => {
+      selectedResolution = e.target.value;
+      updateQualityDisplay();
+      if (isWatching && activeStreamerUid && currentUser) {
+        publishJson(topicInbox(activeStreamerUid), {
+          type: 'stream_quality_change',
+          fromUid: currentUser.uid,
+          resolution: selectedResolution,
+          fps: selectedFps
+        });
+      }
+      showToast(`⚙️ ปรับความละเอียดเป็น ${selectedResolution} @ ${selectedFps} FPS แล้ว`);
+    });
+  }
+
+  // FPS Selector
+  if (selectStreamFps) {
+    selectStreamFps.addEventListener('change', (e) => {
+      selectedFps = parseInt(e.target.value, 10) || 30;
+      updateQualityDisplay();
+      if (isWatching && activeStreamerUid && currentUser) {
+        publishJson(topicInbox(activeStreamerUid), {
+          type: 'stream_quality_change',
+          fromUid: currentUser.uid,
+          resolution: selectedResolution,
+          fps: selectedFps
+        });
+      }
+      showToast(`⚙️ ปรับ Frame Rate เป็น ${selectedFps} FPS แล้ว`);
+    });
+  }
+
+  // Live video dimension change listener for badge feedback
+  if (liveStreamVideo) {
+    liveStreamVideo.addEventListener('resize', () => {
+      const h = liveStreamVideo.videoHeight;
+      if (h && streamStatusBadge) {
+        streamStatusBadge.textContent = `${h}p @ ${selectedFps} FPS`;
+      }
+    });
+  }
+
+  // Audio Volume Slider (0% - 200%) & Mute Toggle
+  if (rangeStreamVolume) {
+    rangeStreamVolume.addEventListener('input', (e) => {
+      e.stopPropagation();
+      const val = parseInt(e.target.value, 10);
+      setStreamVolume(val, false);
+    });
+    rangeStreamVolume.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const val = parseInt(e.target.value, 10);
+      setStreamVolume(val, true);
+    });
+    rangeStreamVolume.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+  }
+
+  if (btnStreamVolume) {
+    btnStreamVolume.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (currentStreamVolume > 0) {
+        setStreamVolume(0, true);
+      } else {
+        setStreamVolume(previousNonZeroVolume || 100, true);
+      }
+    });
+  }
+
+  // Initialize cached volume on UI
+  updateVolumeUI(currentStreamVolume);
+
+  // Fullscreen Toggle
+  if (btnStreamFullscreen) {
+    btnStreamFullscreen.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!document.fullscreenElement) {
+        if (streamContainer && streamContainer.requestFullscreen) {
+          streamContainer.requestFullscreen().catch(() => {});
+        }
+      } else {
+        if (document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {});
+        }
+      }
+    });
+  }
 })();
