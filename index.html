@@ -119,57 +119,101 @@
 
     <!-- VIEW 2: Lobby & Active Chat Workspace -->
     <section id="viewWorkspace" class="view">
-      <div class="workspace-grid">
-        <!-- Left Sidebar: Room Entry (with QR Code) & Friends List -->
+      <div id="workspaceGrid" class="workspace-grid">
+        <!-- Floating Button to Re-Open Sidebar when Hidden -->
+        <button id="btnExpandSidebar" type="button" class="btn-expand-sidebar-floating" title="แสดงแถบเมนูด้านซ้าย">
+          ☰ แสดงแถบเมนู
+        </button>
+
+        <!-- Left Sidebar: Big Category Buttons (Chat / Friend) & Active Pane -->
         <aside id="sidebarPanel" class="sidebar glass-panel">
-          <!-- Room Quick Join / Create + QR Code -->
-          <div class="room-join-card">
-            <div class="section-title-row">
-              <h3>ห้องสนทนา (Room)</h3>
-              <button id="btnCreateRoom" class="btn btn-primary btn-sm">+ สร้างห้องใหม่</button>
+          <div class="sidebar-top-bar">
+            <span style="font-size:0.78rem; color:var(--text-muted); font-weight:600;">เมนูหลัก (Navigation)</span>
+            <button id="btnCollapseSidebar" type="button" class="btn-collapse-sidebar" title="ซ่อนหน้าต่างแถบด้านซ้าย">
+              ◀ ซ่อนแถบ
+            </button>
+          </div>
+
+          <!-- Big Pill Navigation Buttons -->
+          <div class="sidebar-big-nav">
+            <button type="button" id="btnNavChat" class="btn-sidebar-pill active" data-pane="chat">
+              💬 Chat
+            </button>
+            <button type="button" id="btnNavFriend" class="btn-sidebar-pill" data-pane="friend">
+              👥 Friend
+              <span id="friendReqBadge" class="nav-badge-count hidden">0</span>
+            </button>
+          </div>
+
+          <!-- PANE 1: CHAT (Room Join/Create + Available Rooms List) -->
+          <div id="sidebarPaneChat" class="sidebar-tab-pane active">
+            <div class="room-join-card">
+              <div class="section-title-row">
+                <h3>ห้องสนทนา (Room)</h3>
+                <button id="btnCreateRoom" class="btn btn-primary btn-sm">+ สร้างห้องใหม่</button>
+              </div>
+              <form id="formJoinRoom" class="inline-form">
+                <input
+                  type="text"
+                  id="inputRoomCode"
+                  class="input-field mono uppercase"
+                  placeholder="กรอกรหัสห้อง 6 หลัก..."
+                  maxlength="10"
+                  autocomplete="off"
+                />
+                <button type="submit" class="btn btn-secondary">เข้าห้อง</button>
+              </form>
+              <div class="room-qr-actions">
+                <button type="button" id="btnOpenQrScanner" class="btn btn-outline btn-sm" title="สแกน QR Code จากกล้องหรือรูปภาพเพื่อเข้าห้อง">
+                  📷 สแกน QR เข้าห้อง
+                </button>
+                <button type="button" id="btnShowSidebarRoomQr" class="btn btn-secondary btn-sm hidden" title="แสดง QR Code ของห้องปัจจุบัน">
+                  📱 QR ห้องนี้
+                </button>
+              </div>
             </div>
-            <form id="formJoinRoom" class="inline-form">
-              <input
-                type="text"
-                id="inputRoomCode"
-                class="input-field mono uppercase"
-                placeholder="กรอกรหัสห้อง 6 หลัก..."
-                maxlength="10"
-                autocomplete="off"
-              />
-              <button type="submit" class="btn btn-secondary">เข้าห้อง</button>
-            </form>
-            <div class="room-qr-actions">
-              <button type="button" id="btnOpenQrScanner" class="btn btn-outline btn-sm" title="สแกน QR Code จากกล้องหรือรูปภาพเพื่อเข้าห้อง">
-                📷 สแกน QR เข้าห้อง
-              </button>
-              <button type="button" id="btnShowSidebarRoomQr" class="btn btn-secondary btn-sm hidden" title="แสดง QR Code ของห้องปัจจุบัน">
-                📱 QR ห้องนี้
-              </button>
+
+            <!-- Available Rooms List in Sidebar Chat Tab -->
+            <div class="friends-section">
+              <div class="section-title-row">
+                <h3>ห้องแชทที่เปิดอยู่ตอนนี้</h3>
+                <button id="btnSidebarScanRooms" class="btn-icon" title="สแกนหาห้องใหม่">🔄</button>
+              </div>
+              <div id="sidebarRoomsList" class="friends-list">
+                <!-- Populated by JS -->
+              </div>
             </div>
           </div>
 
-          <!-- Friends List Section -->
-          <div class="friends-section">
-            <div class="section-title-row">
-              <h3>รายชื่อเพื่อน</h3>
-              <button id="btnRefreshFriends" class="btn-icon" title="รีเฟรชสถานะเพื่อน">🔄</button>
-            </div>
+          <!-- PANE 2: FRIEND (Add Friend + Incoming Friend Requests + All Friends List) -->
+          <div id="sidebarPaneFriend" class="sidebar-tab-pane">
+            <div class="friends-section">
+              <div class="section-title-row">
+                <h3>รายชื่อเพื่อนทั้งหมด</h3>
+                <button id="btnRefreshFriends" class="btn-icon" title="รีเฟรชสถานะเพื่อน">🔄</button>
+              </div>
 
-            <form id="formAddFriend" class="inline-form">
-              <input
-                type="text"
-                id="inputFriendUid"
-                class="input-field mono uppercase"
-                placeholder="ใส่ UID เพื่อน (เช่น AB12-CD34)"
-                maxlength="15"
-                autocomplete="off"
-              />
-              <button type="submit" class="btn btn-primary">เพิ่มเพื่อน</button>
-            </form>
+              <form id="formAddFriend" class="inline-form">
+                <input
+                  type="text"
+                  id="inputFriendUid"
+                  class="input-field mono uppercase"
+                  placeholder="ใส่ UID เพื่อน (เช่น AB12-CD34)"
+                  maxlength="15"
+                  autocomplete="off"
+                />
+                <button type="submit" class="btn btn-primary">ส่งคำขอ</button>
+              </form>
 
-            <div id="friendsListContainer" class="friends-list">
-              <!-- Populated by JS -->
+              <!-- Incoming Friend Requests Container -->
+              <div id="friendRequestsBox" class="friend-requests-box hidden">
+                <div class="friend-req-title">📩 คำขอเป็นเพื่อนที่รอคุณกดรับ:</div>
+                <div id="friendRequestsList" style="display:flex;flex-direction:column;gap:6px;"></div>
+              </div>
+
+              <div id="friendsListContainer" class="friends-list">
+                <!-- Populated by JS -->
+              </div>
             </div>
           </div>
         </aside>
@@ -251,34 +295,40 @@
 
             <!-- Bottom Live Typing Input Bar -->
             <div class="live-input-bar">
-              <!-- GIF Picker Popover (Powered by KLIPY) -->
+              <!-- Discord-Style GIF / Sticker / Emote Picker Popover (Powered by KLIPY) -->
               <div id="gifPickerPopover" class="gif-picker-popover hidden">
-                <div class="gif-picker-header">
+                <div class="discord-picker-tabs">
+                  <div class="discord-tabs-left">
+                    <button type="button" class="btn-picker-tab active" data-tab="gifs">GIF</button>
+                    <button type="button" class="btn-picker-tab" data-tab="stickers">สติกเกอร์</button>
+                    <button type="button" class="btn-picker-tab" data-tab="emotes">อีโมจิ (ฟองสบู่)</button>
+                  </div>
+                  <button id="btnCloseGifPicker" type="button" class="btn-icon" title="ปิด">✕</button>
+                </div>
+
+                <!-- Search Row (Shown for GIFs & Stickers) -->
+                <div id="gifSearchRow" class="gif-picker-header">
+                  <button id="btnBackToGifCategories" type="button" class="btn-back-cats hidden" title="กลับหน้าหมวดหมู่">←</button>
                   <input
                     type="text"
                     id="inputGifSearch"
                     class="input-field gif-search-input"
-                    placeholder="🔍 ค้นหา GIF / Sticker จาก KLIPY.com..."
+                    placeholder="🔍 ค้นหา Klipy"
                     autocomplete="off"
                   />
-                  <button id="btnCloseGifPicker" type="button" class="btn-icon" title="ปิด">✕</button>
                 </div>
-                <div class="gif-categories-row">
-                  <button type="button" class="btn-gif-type active" data-type="gifs">👾 GIFs</button>
-                  <button type="button" class="btn-gif-type" data-type="stickers">✨ Stickers</button>
-                  <span style="opacity:0.25;">|</span>
-                  <button type="button" class="btn-gif-cat active" data-query="trending">🔥 ยอดฮิต</button>
-                  <button type="button" class="btn-gif-cat" data-query="hello">👋 ทักทาย</button>
-                  <button type="button" class="btn-gif-cat" data-query="laugh funny">😂 ขำๆ</button>
-                  <button type="button" class="btn-gif-cat" data-query="cat">🐱 แมว</button>
-                  <button type="button" class="btn-gif-cat" data-query="love hug">💖 รักเลย</button>
-                  <button type="button" class="btn-gif-cat" data-query="shocked">😱 ตกใจ</button>
-                  <button type="button" class="btn-gif-cat" data-query="dance">🎉 เต้นฉลอง</button>
-                </div>
+
+                <!-- Vertical-Only Scroll Grid for Category Tiles & GIF Results -->
                 <div id="gifResultsGrid" class="gif-results-grid">
                   <!-- Populated by KLIPY API -->
                 </div>
-                <div class="gif-powered-by">
+
+                <!-- Emote Bubble Grid (Shown when "อีโมจิ" tab is active) -->
+                <div id="emotePickerGrid" class="emote-grid-view hidden">
+                  <!-- Populated by JS -->
+                </div>
+
+                <div id="gifPoweredByText" class="gif-powered-by">
                   Powered by <a href="https://klipy.com" target="_blank" rel="noopener noreferrer">KLIPY.com</a>
                 </div>
               </div>
@@ -306,9 +356,14 @@
                 </label>
                 <input type="file" id="inputLiveImage" accept="image/*,.gif" class="hidden" />
 
-                <button id="btnToggleGifPicker" type="button" class="btn-upload-image" title="ค้นหาและส่งภาพดุ๊กดิ๊ก (GIF)">
+                <button id="btnToggleGifPicker" type="button" class="btn-upload-image" title="เปิดเมนู GIF / สติกเกอร์ (Klipy)" data-open-tab="gifs">
                   <span class="upload-icon">👾</span>
                   <span class="upload-text">GIF</span>
+                </button>
+
+                <button id="btnToggleEmotePicker" type="button" class="btn-upload-image" title="ส่งอีโมจิลอยขึ้นจากโปรไฟล์เหมือนฟองสบู่" data-open-tab="emotes">
+                  <span class="upload-icon">🫧</span>
+                  <span class="upload-text">อีโมจิ</span>
                 </button>
 
                 <textarea
@@ -414,6 +469,9 @@
           <button type="button" class="btn-preset-theme" data-theme="neon">
             <span class="preset-dot" style="background:#6366f1;"></span> Cyber Neon
           </button>
+          <button type="button" class="btn-preset-theme" data-theme="minimal">
+            <span class="preset-dot" style="background:#f1f5f9; border:1px solid #64748b;"></span> Minimal Soft White
+          </button>
           <button type="button" class="btn-preset-theme" data-theme="emerald">
             <span class="preset-dot" style="background:#10b981;"></span> Emerald Forest
           </button>
@@ -425,7 +483,7 @@
           </button>
         </div>
 
-        <label class="section-label">ปรับแต่งโทนสีเอง:</label>
+        <label class="section-label">ปรับแต่งโทนสีและความสว่างเอง:</label>
         <div class="theme-controls-grid">
           <div class="theme-control-item">
             <label>สีหลัก (Primary)</label>
@@ -466,6 +524,12 @@
             <label>ความโค้งมนของขอบ</label>
             <div class="color-input-wrap">
               <input type="range" id="rangeRadius" min="0" max="24" value="14" style="width: 100%; accent-color: var(--primary);" />
+            </div>
+          </div>
+          <div class="theme-control-item" style="grid-column: 1 / -1;">
+            <label>☀️ ปรับลด/เพิ่มความสว่างหน้าจอ (Brightness: <span id="brightnessValText" class="mono">100%</span>)</label>
+            <div class="color-input-wrap">
+              <input type="range" id="rangeBrightness" min="55" max="110" value="100" style="width: 100%; accent-color: var(--primary);" />
             </div>
           </div>
         </div>

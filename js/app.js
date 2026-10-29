@@ -9,6 +9,17 @@
   const STORAGE_KEY_USER = 'livetype_user_session_v1';
   const STORAGE_KEY_FRIENDS = 'livetype_friends_list_v1';
   const STORAGE_KEY_THEME = 'livetype_custom_theme_v1';
+  const STORAGE_KEY_FAV_GIFS = 'livetype_favorite_gifs_v1';
+
+  // Preset Emotes for Floating Soap-Bubble Effect
+  const BUBBLE_EMOTES = [
+    '❤️', '💖', '🔥', '😂', '🤣', '😭',
+    '🥺', '😍', '🥰', '😎', '🤩', '🥳',
+    '😱', '🤯', '😡', '🤬', '👍', '👏',
+    '🙏', '🙌', '👀', '💀', '👻', '👽',
+    '🐱', '🐶', '🦊', '🐼', '🦄', '🐸',
+    '🎉', '✨', '💯', '⚡', '🌈', '🫧'
+  ];
 
   // Default Theme Palette
   const DEFAULT_THEME = {
@@ -17,14 +28,16 @@
     bg: '#070a12',
     card: '#111827',
     text: '#f8fafc',
-    radius: 14
+    radius: 14,
+    brightness: 100
   };
 
   const PRESET_THEMES = {
-    neon: { primary: '#6366f1', accent: '#ec4899', bg: '#070a12', card: '#111827', text: '#f8fafc', radius: 14 },
-    emerald: { primary: '#10b981', accent: '#14b8a6', bg: '#061611', card: '#0f291e', text: '#ecfdf5', radius: 12 },
-    sunset: { primary: '#f43f5e', accent: '#f59e0b', bg: '#18070b', card: '#2b0e15', text: '#fff1f2', radius: 16 },
-    amoled: { primary: '#38bdf8', accent: '#a855f7', bg: '#000000', card: '#0a0a0a', text: '#f0f9ff', radius: 8 }
+    neon: { primary: '#6366f1', accent: '#ec4899', bg: '#070a12', card: '#111827', text: '#f8fafc', radius: 14, brightness: 100 },
+    minimal: { primary: '#4f46e5', accent: '#e11d48', bg: '#e8edf4', card: '#f8fafc', text: '#1e293b', radius: 14, brightness: 96 },
+    emerald: { primary: '#10b981', accent: '#14b8a6', bg: '#061611', card: '#0f291e', text: '#ecfdf5', radius: 12, brightness: 100 },
+    sunset: { primary: '#f43f5e', accent: '#f59e0b', bg: '#18070b', card: '#2b0e15', text: '#fff1f2', radius: 16, brightness: 100 },
+    amoled: { primary: '#38bdf8', accent: '#a855f7', bg: '#000000', card: '#0a0a0a', text: '#f0f9ff', radius: 8, brightness: 100 }
   };
 
   // Topic prefix for public WebSocket relay (Ephemeral QoS 0, retain: false -> zero history stored)
@@ -110,6 +123,8 @@
   let selectedAvatar = currentUser ? currentUser.avatar : PRESET_AVATARS[0];
   let selectedTags = new Set(currentUser && Array.isArray(currentUser.tags) ? currentUser.tags : ['💬 คุยเล่นเรื่อยเปื่อย']);
   let friendsMap = loadFriendsList(); // Map<uid, { uid, username, avatar, tags, online, inRoom, roomCode, lastSeen }>
+  let incomingFriendRequests = new Map(); // Map<uid, { uid, username, avatar, ts }>
+  let sentFriendRequests = new Set(); // Set<uid>
   let activeRoomCode = null;
   let isRoomPublic = true; // Whether active room is discoverable via Tag Matchmaking
   let roomMembers = new Map(); // Map<uid, { uid, username, avatar, tags, currentText, image, updatedAt }>
@@ -150,7 +165,19 @@
   const connectionStatus = document.getElementById('connectionStatus');
   const btnInstallPwa = document.getElementById('btnInstallPwa');
 
+  const workspaceGrid = document.getElementById('workspaceGrid');
   const sidebarPanel = document.getElementById('sidebarPanel');
+  const btnCollapseSidebar = document.getElementById('btnCollapseSidebar');
+  const btnExpandSidebar = document.getElementById('btnExpandSidebar');
+  const btnNavChat = document.getElementById('btnNavChat');
+  const btnNavFriend = document.getElementById('btnNavFriend');
+  const sidebarPaneChat = document.getElementById('sidebarPaneChat');
+  const sidebarPaneFriend = document.getElementById('sidebarPaneFriend');
+  const sidebarRoomsList = document.getElementById('sidebarRoomsList');
+  const btnSidebarScanRooms = document.getElementById('btnSidebarScanRooms');
+  const friendReqBadge = document.getElementById('friendReqBadge');
+  const friendRequestsBox = document.getElementById('friendRequestsBox');
+  const friendRequestsList = document.getElementById('friendRequestsList');
   const btnCopyHeaderUid = document.getElementById('btnCopyHeaderUid');
   const btnCreateRoom = document.getElementById('btnCreateRoom');
   const btnEmptyCreateRoom = document.getElementById('btnEmptyCreateRoom');
@@ -190,10 +217,15 @@
   const inputPreviewThumb = document.getElementById('inputPreviewThumb');
   const btnRemoveInputImage = document.getElementById('btnRemoveInputImage');
   const btnToggleGifPicker = document.getElementById('btnToggleGifPicker');
+  const btnToggleEmotePicker = document.getElementById('btnToggleEmotePicker');
   const gifPickerPopover = document.getElementById('gifPickerPopover');
+  const gifSearchRow = document.getElementById('gifSearchRow');
+  const btnBackToGifCategories = document.getElementById('btnBackToGifCategories');
   const inputGifSearch = document.getElementById('inputGifSearch');
   const btnCloseGifPicker = document.getElementById('btnCloseGifPicker');
   const gifResultsGrid = document.getElementById('gifResultsGrid');
+  const emotePickerGrid = document.getElementById('emotePickerGrid');
+  const gifPoweredByText = document.getElementById('gifPoweredByText');
 
   const inviteModal = document.getElementById('inviteModal');
   const inviteAvatar = document.getElementById('inviteAvatar');
@@ -215,6 +247,8 @@
   const colorPickerCard = document.getElementById('colorPickerCard');
   const colorPickerText = document.getElementById('colorPickerText');
   const rangeRadius = document.getElementById('rangeRadius');
+  const rangeBrightness = document.getElementById('rangeBrightness');
+  const brightnessValText = document.getElementById('brightnessValText');
   const hexPrimary = document.getElementById('hexPrimary');
   const hexAccent = document.getElementById('hexAccent');
   const hexBg = document.getElementById('hexBg');
@@ -516,9 +550,7 @@
         tags: Array.isArray(data.tags) ? data.tags : [],
         updatedAt: Date.now()
       });
-      if (!activeRoomCode) {
-        renderDiscoveredRooms();
-      }
+      renderDiscoveredRooms();
       return;
     }
 
@@ -526,9 +558,7 @@
     if (data.type === 'room_closed' && data.roomCode) {
       if (discoveredRooms.has(data.roomCode)) {
         discoveredRooms.delete(data.roomCode);
-        if (!activeRoomCode) {
-          renderDiscoveredRooms();
-        }
+        renderDiscoveredRooms();
       }
     }
   }
@@ -583,6 +613,7 @@
       empty.innerHTML =
         'ยังไม่มีห้องสาธารณะที่เปิดอยู่ตอนนี้ หรือไม่มีห้องที่ตรงกับคำค้นหา<br>กด <strong>"✨ สร้างห้องแชททันที"</strong> เพื่อเปิดห้องด้วย Tag ของคุณให้คนอื่นเข้ามาคุยได้เลย!';
       discoverRoomsList.appendChild(empty);
+      renderSidebarChatRoomsList([]);
       return;
     }
 
@@ -625,6 +656,60 @@
       });
 
       discoverRoomsList.appendChild(card);
+    });
+
+    renderSidebarChatRoomsList(scoredRooms);
+  }
+
+  function renderSidebarChatRoomsList(scoredRooms) {
+    if (!sidebarRoomsList) return;
+    sidebarRoomsList.innerHTML = '';
+
+    const list =
+      scoredRooms ||
+      Array.from(discoveredRooms.values())
+        .map((r) => {
+          const match = calculateTagMatch(r.tags);
+          return { ...r, matchedTags: match.matchedTags, matchCount: match.matchedTags.length, score: match.score };
+        })
+        .sort((a, b) => b.matchCount - a.matchCount || b.updatedAt - a.updatedAt);
+
+    if (list.length === 0) {
+      sidebarRoomsList.innerHTML =
+        '<div class="friend-empty">ยังไม่มีห้องสาธารณะที่เปิดอยู่<br>กด "+ สร้างห้องใหม่" ด้านบนเพื่อเปิดห้องได้เลย!</div>';
+      return;
+    }
+
+    list.forEach((room) => {
+      const isCurrent = activeRoomCode && room.roomCode === activeRoomCode;
+      const item = document.createElement('div');
+      item.className = 'friend-item';
+      item.innerHTML = `
+        <div class="friend-left">
+          <img src="${room.hostAvatar || PRESET_AVATARS[0]}" alt="Host" class="avatar-sm" />
+          <div class="friend-info">
+            <div class="friend-name"></div>
+            <div class="friend-meta mono">#${room.roomCode} • 👥 ${room.memberCount} คน ${
+        room.matchCount > 0 ? `• 🎯 ตรง ${room.matchCount} Tag` : ''
+      }</div>
+          </div>
+        </div>
+        <div class="friend-actions">
+          <button type="button" class="btn ${isCurrent ? 'btn-secondary' : 'btn-primary'} btn-sm btn-side-join" ${
+        isCurrent ? 'disabled' : ''
+      }>
+            ${isCurrent ? 'อยู่ในห้องนี้' : 'เข้าห้อง'}
+          </button>
+        </div>
+      `;
+      item.querySelector('.friend-name').textContent = `ห้องของ ${room.hostName}`;
+      const joinBtn = item.querySelector('.btn-side-join');
+      if (!isCurrent) {
+        joinBtn.addEventListener('click', () => {
+          joinRoomByCode(room.roomCode);
+        });
+      }
+      sidebarRoomsList.appendChild(item);
     });
   }
 
@@ -689,7 +774,58 @@
       return;
     }
 
-    // 3. Incoming 1-on-1 or Group Room Invitation
+    // 3. Incoming Friend Request (Must accept before becoming friends!)
+    if (data.type === 'friend_request' && data.from && data.from.uid) {
+      if (friendsMap.has(data.from.uid)) {
+        // Already friends -> auto-confirm back
+        publishJson(topicInbox(data.from.uid), {
+          type: 'friend_accepted',
+          from: {
+            uid: currentUser.uid,
+            username: currentUser.username,
+            avatar: currentUser.avatar,
+            inRoom: Boolean(activeRoomCode),
+            roomCode: activeRoomCode
+          }
+        });
+        return;
+      }
+      incomingFriendRequests.set(data.from.uid, {
+        uid: data.from.uid,
+        username: data.from.username || data.from.uid,
+        avatar: data.from.avatar || PRESET_AVATARS[0],
+        ts: Date.now()
+      });
+      renderFriendRequestsUI();
+      showToast(`👋 ${data.from.username} ส่งคำขอเป็นเพื่อนถึงคุณ! (กดดูที่เมนู Friend)`);
+      return;
+    }
+
+    // 4. Friend Request Accepted by the other person
+    if (data.type === 'friend_accepted' && data.from && data.from.uid) {
+      sentFriendRequests.delete(data.from.uid);
+      incomingFriendRequests.delete(data.from.uid);
+      friendsMap.set(data.from.uid, {
+        uid: data.from.uid,
+        username: data.from.username || data.from.uid,
+        avatar: data.from.avatar || PRESET_AVATARS[0],
+        online: true,
+        inRoom: Boolean(data.from.inRoom),
+        roomCode: data.from.roomCode || null,
+        lastSeen: Date.now()
+      });
+      if (mqttClient && mqttClient.connected) {
+        mqttClient.subscribe(topicPresence(data.from.uid), { qos: 0 });
+      }
+      saveFriendsList();
+      renderFriendRequestsUI();
+      renderFriendsList();
+      if (activeRoomCode) renderAllLiveCards();
+      showToast(`🎉 ${data.from.username} ตอบรับคำขอเป็นเพื่อนของคุณแล้ว!`);
+      return;
+    }
+
+    // 5. Incoming 1-on-1 or Group Room Invitation
     if (data.type === 'room_invite' && data.from && data.roomCode) {
       pendingInviteRoomCode = data.roomCode;
       inviteAvatar.src = data.from.avatar || PRESET_AVATARS[0];
@@ -697,24 +833,6 @@
       inviteUid.textContent = `UID: ${data.from.uid}`;
       inviteRoomCode.textContent = data.roomCode;
       inviteModal.classList.remove('hidden');
-
-      // Auto-add inviter to friends list if not already added
-      if (!friendsMap.has(data.from.uid)) {
-        friendsMap.set(data.from.uid, {
-          uid: data.from.uid,
-          username: data.from.username,
-          avatar: data.from.avatar,
-          online: true,
-          inRoom: true,
-          roomCode: data.roomCode,
-          lastSeen: Date.now()
-        });
-        if (mqttClient && mqttClient.connected) {
-          mqttClient.subscribe(topicPresence(data.from.uid), { qos: 0 });
-        }
-        saveFriendsList();
-        renderFriendsList();
-      }
     }
   }
 
@@ -842,6 +960,11 @@
         updateSingleCardContent(data.uid, '', null);
         flashClearCard(data.uid);
       }
+      return;
+    }
+
+    if (data.type === 'emote_bubble' && data.emote) {
+      spawnEmoteBubbleOnCard(data.uid, data.emote);
     }
   }
 
@@ -1083,13 +1206,177 @@
     });
   }
 
+  // --- Sidebar Big Tabs (Chat / Friend) & Hide/Show Toggle ---
+  function switchSidebarMainPane(paneName) {
+    if (paneName === 'friend') {
+      btnNavChat.classList.remove('active');
+      btnNavFriend.classList.add('active');
+      sidebarPaneChat.classList.remove('active');
+      sidebarPaneFriend.classList.add('active');
+    } else {
+      btnNavChat.classList.add('active');
+      btnNavFriend.classList.remove('active');
+      sidebarPaneChat.classList.add('active');
+      sidebarPaneFriend.classList.remove('active');
+    }
+  }
+
+  if (btnNavChat) {
+    btnNavChat.addEventListener('click', () => switchSidebarMainPane('chat'));
+  }
+  if (btnNavFriend) {
+    btnNavFriend.addEventListener('click', () => switchSidebarMainPane('friend'));
+  }
+
+  if (btnCollapseSidebar && workspaceGrid) {
+    btnCollapseSidebar.addEventListener('click', () => {
+      if (window.innerWidth <= 860) {
+        sidebarPanel.classList.remove('mobile-open');
+      } else {
+        workspaceGrid.classList.add('sidebar-collapsed');
+      }
+    });
+  }
+
+  if (btnExpandSidebar && workspaceGrid) {
+    btnExpandSidebar.addEventListener('click', () => {
+      workspaceGrid.classList.remove('sidebar-collapsed');
+    });
+  }
+
+  if (btnSidebarScanRooms) {
+    btnSidebarScanRooms.addEventListener('click', () => {
+      requestDirectoryScan();
+      renderDiscoveredRooms();
+      showToast('📡 สแกนหาห้องแชทที่เปิดอยู่แล้ว');
+    });
+  }
+
+  // --- Friend Request & Acceptance System ---
+  function sendFriendRequestToUid(targetUid, targetUsername) {
+    if (!currentUser) return;
+    const cleanUid = String(targetUid || '').trim().toUpperCase();
+    if (!cleanUid) return;
+    if (cleanUid === currentUser.uid) {
+      showToast('ไม่สามารถแอด UID ของตัวเองได้');
+      return;
+    }
+    if (friendsMap.has(cleanUid)) {
+      showToast('คนนี้อยู่ในรายชื่อเพื่อนของคุณอยู่แล้ว');
+      return;
+    }
+
+    sentFriendRequests.add(cleanUid);
+    publishJson(topicInbox(cleanUid), {
+      type: 'friend_request',
+      from: {
+        uid: currentUser.uid,
+        username: currentUser.username,
+        avatar: currentUser.avatar
+      }
+    });
+
+    if (activeRoomCode) {
+      renderAllLiveCards();
+    }
+    showToast(`📩 ส่งคำขอเป็นเพื่อนไปยัง ${targetUsername || cleanUid} แล้ว รออีกฝ่ายกดรับนะครับ`);
+  }
+
+  function acceptIncomingFriendRequest(reqUid) {
+    const req = incomingFriendRequests.get(reqUid);
+    if (!req || !currentUser) return;
+
+    incomingFriendRequests.delete(reqUid);
+    sentFriendRequests.delete(reqUid);
+
+    friendsMap.set(req.uid, {
+      uid: req.uid,
+      username: req.username,
+      avatar: req.avatar,
+      online: true,
+      inRoom: false,
+      roomCode: null,
+      lastSeen: Date.now()
+    });
+    saveFriendsList();
+
+    if (mqttClient && mqttClient.connected) {
+      mqttClient.subscribe(topicPresence(req.uid), { qos: 0 });
+      pingFriend(req.uid);
+    }
+
+    publishJson(topicInbox(req.uid), {
+      type: 'friend_accepted',
+      from: {
+        uid: currentUser.uid,
+        username: currentUser.username,
+        avatar: currentUser.avatar,
+        inRoom: Boolean(activeRoomCode),
+        roomCode: activeRoomCode
+      }
+    });
+
+    renderFriendRequestsUI();
+    renderFriendsList();
+    if (activeRoomCode) renderAllLiveCards();
+    showToast(`🤝 รับ ${req.username} เป็นเพื่อนเรียบร้อยแล้ว!`);
+  }
+
+  function declineIncomingFriendRequest(reqUid) {
+    incomingFriendRequests.delete(reqUid);
+    renderFriendRequestsUI();
+    showToast('ปฏิเสธคำขอเป็นเพื่อนแล้ว');
+  }
+
+  function renderFriendRequestsUI() {
+    if (!friendRequestsBox || !friendRequestsList || !friendReqBadge) return;
+    const count = incomingFriendRequests.size;
+    if (count === 0) {
+      friendRequestsBox.classList.add('hidden');
+      friendReqBadge.classList.add('hidden');
+      friendRequestsList.innerHTML = '';
+      return;
+    }
+
+    friendRequestsBox.classList.remove('hidden');
+    friendReqBadge.classList.remove('hidden');
+    friendReqBadge.textContent = String(count);
+    friendRequestsList.innerHTML = '';
+
+    incomingFriendRequests.forEach((req) => {
+      const row = document.createElement('div');
+      row.className = 'friend-item';
+      row.innerHTML = `
+        <div class="friend-left">
+          <img src="${req.avatar || PRESET_AVATARS[0]}" alt="Avatar" class="avatar-sm" />
+          <div class="friend-info">
+            <div class="friend-name"></div>
+            <div class="friend-meta mono">${req.uid}</div>
+          </div>
+        </div>
+        <div class="friend-actions">
+          <button type="button" class="btn btn-primary btn-sm btn-accept-freq">✓ รับแอด</button>
+          <button type="button" class="btn-icon btn-decline-freq" title="ปฏิเสธ">✕</button>
+        </div>
+      `;
+      row.querySelector('.friend-name').textContent = req.username;
+      row.querySelector('.btn-accept-freq').addEventListener('click', () => {
+        acceptIncomingFriendRequest(req.uid);
+      });
+      row.querySelector('.btn-decline-freq').addEventListener('click', () => {
+        declineIncomingFriendRequest(req.uid);
+      });
+      friendRequestsList.appendChild(row);
+    });
+  }
+
   // --- Friends System ---
   function renderFriendsList() {
     friendsListContainer.innerHTML = '';
     if (friendsMap.size === 0) {
       const empty = document.createElement('div');
       empty.className = 'friend-empty';
-      empty.innerHTML = 'ยังไม่มีเพื่อนในรายชื่อ<br>นำ UID ของเพื่อนมาใส่ด้านบนเพื่อแอดกันได้เลย!';
+      empty.innerHTML = 'ยังไม่มีเพื่อนในรายชื่อ<br>ส่งคำขอด้วย UID ด้านบน หรือกดปุ่มสีเขียว <strong>"Add friend"</strong> ในห้องแชทได้เลย!';
       friendsListContainer.appendChild(empty);
       return;
     }
@@ -1136,6 +1423,7 @@
         friendsMap.delete(friend.uid);
         saveFriendsList();
         renderFriendsList();
+        if (activeRoomCode) renderAllLiveCards();
       });
 
       friendsListContainer.appendChild(item);
@@ -1146,32 +1434,8 @@
     e.preventDefault();
     const targetUid = inputFriendUid.value.trim().toUpperCase();
     if (!targetUid) return;
-    if (currentUser && targetUid === currentUser.uid) {
-      showToast('ไม่สามารถแอด UID ของตัวเองได้');
-      return;
-    }
-
-    if (!friendsMap.has(targetUid)) {
-      friendsMap.set(targetUid, {
-        uid: targetUid,
-        username: `เพื่อน (${targetUid})`,
-        avatar: PRESET_AVATARS[1],
-        online: false,
-        inRoom: false,
-        roomCode: null,
-        lastSeen: 0
-      });
-    }
-    saveFriendsList();
-    renderFriendsList();
-
-    if (mqttClient && mqttClient.connected) {
-      mqttClient.subscribe(topicPresence(targetUid), { qos: 0 });
-      pingFriend(targetUid);
-    }
-
+    sendFriendRequestToUid(targetUid, targetUid);
     inputFriendUid.value = '';
-    showToast(`เพิ่มเพื่อน ${targetUid} แล้ว กำลังเช็คสถานะออนไลน์...`);
   });
 
   btnRefreshFriends.addEventListener('click', () => {
@@ -1546,6 +1810,9 @@
 
     sortedMembers.forEach((member) => {
       const isSelf = currentUser && member.uid === currentUser.uid;
+      const isAlreadyFriend = friendsMap.has(member.uid);
+      const isPendingSent = sentFriendRequests.has(member.uid);
+      const hasIncomingReq = incomingFriendRequests.has(member.uid);
       const hasContent = Boolean((member.currentText && member.currentText.length > 0) || member.image);
       const memberTags = Array.isArray(member.tags) ? member.tags : [];
       const tagsHtml = memberTags
@@ -1555,6 +1822,17 @@
           return `<span class="tag-badge-mini ${isMatch ? 'matched' : ''}">${isMatch ? '✓ ' : ''}${escapeHtml(t)}</span>`;
         })
         .join('');
+
+      let friendActionHtml = '';
+      if (!isSelf && !isAlreadyFriend) {
+        if (hasIncomingReq) {
+          friendActionHtml = `<button type="button" class="btn-card-add-friend" data-action="accept">✓ รับแอดเพื่อน</button>`;
+        } else if (isPendingSent) {
+          friendActionHtml = `<button type="button" class="btn-card-add-friend pending" disabled>⏳ รอตอบรับ...</button>`;
+        } else {
+          friendActionHtml = `<button type="button" class="btn-card-add-friend" data-action="request">Add friend</button>`;
+        }
+      }
 
       const card = document.createElement('div');
       card.id = `live-card-${member.uid}`;
@@ -1568,6 +1846,7 @@
               <div class="live-card-username">
                 <span class="name-text"></span>
                 ${isSelf ? '<span class="self-tag">คุณ</span>' : ''}
+                ${friendActionHtml}
               </div>
               <div class="live-card-uid mono">${member.uid}</div>
               ${tagsHtml ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">${tagsHtml}</div>` : ''}
@@ -1581,6 +1860,18 @@
       `;
 
       card.querySelector('.name-text').textContent = member.username;
+      const addFriendBtn = card.querySelector('.btn-card-add-friend');
+      if (addFriendBtn && !addFriendBtn.disabled) {
+        addFriendBtn.addEventListener('click', () => {
+          const act = addFriendBtn.getAttribute('data-action');
+          if (act === 'accept') {
+            acceptIncomingFriendRequest(member.uid);
+          } else {
+            sendFriendRequestToUid(member.uid, member.username);
+          }
+        });
+      }
+
       liveCardsGrid.appendChild(card);
       updateSingleCardContent(member.uid, member.currentText, member.image);
     });
@@ -1655,6 +1946,36 @@
     cardEl.classList.remove('flash-cleared');
     void cardEl.offsetWidth;
     cardEl.classList.add('flash-cleared');
+  }
+
+  // --- Floating Soap-Bubble Emote Effect ---
+  function spawnEmoteBubbleOnCard(uid, emote) {
+    const cardEl = document.getElementById(`live-card-${uid}`);
+    if (!cardEl) return;
+    const userWrap = cardEl.querySelector('.live-card-user') || cardEl;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'emote-bubble';
+    bubble.textContent = emote;
+
+    // Random horizontal sway (-28px to +28px) so multiple bubbles look like real soap bubbles
+    const swayX = Math.round((Math.random() - 0.5) * 56);
+    bubble.style.setProperty('--sway-x', `${swayX}px`);
+
+    userWrap.appendChild(bubble);
+    setTimeout(() => {
+      bubble.remove();
+    }, 2350);
+  }
+
+  function triggerSendEmoteBubble(emote) {
+    if (!currentUser || !activeRoomCode) return;
+    spawnEmoteBubbleOnCard(currentUser.uid, emote);
+    publishJson(topicRoom(activeRoomCode), {
+      type: 'emote_bubble',
+      uid: currentUser.uid,
+      emote
+    });
   }
 
   // --- Realtime Live Input, Auto-Downscaling Large Image/GIF & 250 Char Limit ---
@@ -1851,23 +2172,31 @@
       return;
     }
 
-    // Handle GIF files (Small GIFs sent directly; Large GIFs automatically downscaled & compressed!)
-    if (file.type === 'image/gif') {
-      if (file.size <= 450000) {
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          setAndBroadcastLiveMedia(ev.target.result, '👾 ส่งภาพดุ๊กดิ๊ก GIF สดแล้ว! (กด Enter เพื่อล้าง)');
-        };
-        reader.readAsDataURL(file);
-        return;
-      }
+    const TWO_MB_BYTES = 2 * 1024 * 1024; // 2MB threshold
 
-      showToast('⏳ ไฟล์ GIF มีขนาดใหญ่ ระบบกำลังย่อขนาดและความชัดลงอัตโนมัติ...');
+    // 1. If any image or GIF is <= 2MB, send original 100% quality without downscaling!
+    if (file.size <= TWO_MB_BYTES) {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        setAndBroadcastLiveMedia(
+          ev.target.result,
+          file.type === 'image/gif'
+            ? '👾 ส่งไฟล์ GIF ความชัดต้นฉบับ 100% แล้ว! (กด Enter เพื่อล้าง)'
+            : '📷 ส่งรูปภาพความชัดต้นฉบับ 100% แล้ว! (กด Enter เพื่อล้าง)'
+        );
+      };
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    // 2. If file > 2MB and is GIF -> compress animated GIF
+    if (file.type === 'image/gif') {
+      showToast('⏳ ไฟล์ GIF ใหญ่เกิน 2MB ระบบกำลังย่อขนาดและความชัดลงอัตโนมัติ...');
       try {
         const compressedMedia = await compressLargeAnimatedGif(file);
         setAndBroadcastLiveMedia(
           compressedMedia,
-          '👾 ย่อขนาดไฟล์ GIF ใหญ่และส่งสดเรียบร้อยแล้ว! (กด Enter เพื่อล้าง)'
+          '👾 ย่อขนาดไฟล์ GIF (>2MB) และส่งสดเรียบร้อยแล้ว! (กด Enter เพื่อล้าง)'
         );
       } catch (err) {
         showToast('ไม่สามารถประมวลผลไฟล์ GIF นี้ได้');
@@ -1875,16 +2204,14 @@
       return;
     }
 
-    // Handle any static picture (even huge 10MB-50MB photos) using ObjectURL + multi-pass downscaling
-    if (file.size > 2000000) {
-      showToast('⏳ กำลังย่อความละเอียดรูปภาพขนาดใหญ่ให้ส่งได้เบาและไว...');
-    }
+    // 3. If file > 2MB and is static picture -> downscale resolution & quality
+    showToast('⏳ รูปภาพมีขนาดเกิน 2MB กำลังย่อความละเอียดลงอัตโนมัติ...');
     const objUrl = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       URL.revokeObjectURL(objUrl);
-      const compressedDataUrl = compressStaticImageToDataUrl(img, 140000);
-      setAndBroadcastLiveMedia(compressedDataUrl, '📷 ย่อขนาดและส่งรูปภาพสดให้ทุกคนในห้องแล้ว (กด Enter เพื่อล้าง)');
+      const compressedDataUrl = compressStaticImageToDataUrl(img, 350000);
+      setAndBroadcastLiveMedia(compressedDataUrl, '📷 ย่อขนาดรูปภาพ (>2MB) และส่งสดให้ทุกคนในห้องแล้ว (กด Enter เพื่อล้าง)');
     };
     img.onerror = () => {
       URL.revokeObjectURL(objUrl);
@@ -1913,17 +2240,52 @@
     }
   });
 
-  // --- Built-in GIF & Sticker Search Powered by KLIPY.com ---
+  // --- Discord-Style GIF / Sticker / Emote Picker Powered by KLIPY.com ---
   const KLIPY_API_BASE = 'https://api.klipy.com/api/v1/pmpZyPifwSulBfELHCbpaOllUfgsjqt9yeImc2XWIcHSWjnAUBw9oueRf4kD5r25';
   let activeKlipyType = 'gifs'; // 'gifs' or 'stickers'
-  let activeKlipyQuery = 'trending';
+  let activePickerTab = 'gifs'; // 'gifs', 'stickers', or 'emotes'
+  let cachedKlipyCategories = {}; // cache per type
+  let favoriteGifs = loadFavoriteGifs(); // Array<{ previewUrl, fullUrl, title }>
   let gifSearchTimer = null;
+
+  function loadFavoriteGifs() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_FAV_GIFS);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {}
+    return [];
+  }
+
+  function saveFavoriteGifs() {
+    localStorage.setItem(STORAGE_KEY_FAV_GIFS, JSON.stringify(favoriteGifs));
+  }
+
+  function isGifFavorited(fullUrl) {
+    return favoriteGifs.some((g) => g.fullUrl === fullUrl);
+  }
+
+  function toggleFavoriteGif(itemObj) {
+    const idx = favoriteGifs.findIndex((g) => g.fullUrl === itemObj.fullUrl);
+    if (idx !== -1) {
+      favoriteGifs.splice(idx, 1);
+      saveFavoriteGifs();
+      showToast('ลบออกจากสิ่งที่ชอบแล้ว');
+      return false;
+    } else {
+      favoriteGifs.unshift(itemObj);
+      saveFavoriteGifs();
+      showToast('⭐ เพิ่มลงในสิ่งที่ชอบแล้ว!');
+      return true;
+    }
+  }
 
   function extractKlipyUrls(item) {
     const f = item && (item.file || item.files);
     if (!f) return null;
 
-    // KLIPY v1 structure: file.{xs, sm, md, hd}.{gif, webp}
     const preview =
       (f.xs && f.xs.webp && f.xs.webp.url) ||
       (f.xs && f.xs.gif && f.xs.gif.url) ||
@@ -1943,27 +2305,139 @@
     return { previewUrl: preview || full, fullUrl: full || preview };
   }
 
-  async function fetchGifs(query) {
-    gifResultsGrid.innerHTML = '<div class="gif-empty-status">⏳ กำลังดึงข้อมูลจาก KLIPY.com...</div>';
+  // Render Discord-style 2-column Big Category Tiles ("สิ่งที่ชอบ", "GIFs ที่ได้รับความนิยม", + Klipy categories)
+  async function renderDiscordCategoryTiles() {
+    if (btnBackToGifCategories) btnBackToGifCategories.classList.add('hidden');
+    gifResultsGrid.innerHTML = '<div class="gif-empty-status">⏳ กำลังโหลดหมวดหมู่จาก KLIPY.com...</div>';
+
+    let categories = cachedKlipyCategories[activeKlipyType];
+    if (!categories) {
+      try {
+        const res = await fetch(`${KLIPY_API_BASE}/${activeKlipyType}/categories?locale=en`);
+        const json = await res.json();
+        categories = (json && json.data && Array.isArray(json.data.categories) && json.data.categories) || [];
+        cachedKlipyCategories[activeKlipyType] = categories;
+      } catch (e) {
+        categories = [];
+      }
+    }
+
+    gifResultsGrid.innerHTML = '';
+
+    // Tile 1: "สิ่งที่ชอบ" (Favorites)
+    const favTile = document.createElement('button');
+    favTile.type = 'button';
+    favTile.className = 'discord-cat-tile fav-tile';
+    favTile.innerHTML = `<span class="discord-cat-label">สิ่งที่ชอบ (${favoriteGifs.length})</span>`;
+    favTile.addEventListener('click', () => {
+      renderFavoriteGifsView();
+    });
+    gifResultsGrid.appendChild(favTile);
+
+    // Tile 2: "GIFs ที่ได้รับความนิยม" (Trending)
+    const trendingPreview =
+      (categories[0] && categories[0].preview_url) ||
+      'https://static.klipy.com/ii/d7aec6f6f171607374b2065c836f92f4/ec/f3/OXB1QWhn.gif';
+    const trendTile = document.createElement('button');
+    trendTile.type = 'button';
+    trendTile.className = 'discord-cat-tile';
+    trendTile.innerHTML = `
+      <img src="${trendingPreview}" alt="Trending" loading="lazy" />
+      <span class="discord-cat-label">📈 ${activeKlipyType === 'stickers' ? 'สติกเกอร์' : 'GIFs'} ที่ได้รับความนิยม</span>
+    `;
+    trendTile.addEventListener('click', () => {
+      fetchGifs('trending', true);
+    });
+    gifResultsGrid.appendChild(trendTile);
+
+    // Remaining Category Tiles from KLIPY
+    categories.forEach((cat) => {
+      if (!cat || !cat.preview_url) return;
+      const tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'discord-cat-tile';
+      tile.innerHTML = `
+        <img src="${cat.preview_url}" alt="${escapeHtml(cat.category)}" loading="lazy" />
+        <span class="discord-cat-label">${escapeHtml(cat.category)}</span>
+      `;
+      tile.addEventListener('click', () => {
+        inputGifSearch.value = cat.query || cat.category;
+        fetchGifs(cat.query || cat.category, true);
+      });
+      gifResultsGrid.appendChild(tile);
+    });
+  }
+
+  function renderFavoriteGifsView() {
+    if (btnBackToGifCategories) btnBackToGifCategories.classList.remove('hidden');
+    gifResultsGrid.innerHTML = '';
+
+    if (favoriteGifs.length === 0) {
+      gifResultsGrid.innerHTML =
+        '<div class="gif-empty-status">ยังไม่มีภาพใน "สิ่งที่ชอบ"<br>กดรูปดาว ⭐ มุมขวาบนของภาพ GIF ที่ชอบเพื่อบันทึกไว้ใช้ซ้ำได้เลย!</div>';
+      return;
+    }
+
+    favoriteGifs.forEach((fav) => {
+      appendGifResultCard(fav.previewUrl, fav.fullUrl, fav.title || 'Favorite GIF');
+    });
+  }
+
+  function appendGifResultCard(previewUrl, fullUrl, title) {
+    const wrap = document.createElement('div');
+    wrap.className = 'gif-item-btn';
+
+    const img = document.createElement('img');
+    img.src = previewUrl;
+    img.loading = 'lazy';
+    img.alt = title || 'KLIPY Media';
+    wrap.appendChild(img);
+
+    // Favorite Star Button
+    const starBtn = document.createElement('button');
+    starBtn.type = 'button';
+    const isFav = isGifFavorited(fullUrl);
+    starBtn.className = `btn-fav-star ${isFav ? 'active' : ''}`;
+    starBtn.textContent = '★';
+    starBtn.title = 'บันทึกในสิ่งที่ชอบ';
+    starBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const nowFav = toggleFavoriteGif({ previewUrl, fullUrl, title });
+      starBtn.classList.toggle('active', nowFav);
+    });
+    wrap.appendChild(starBtn);
+
+    wrap.addEventListener('click', () => {
+      setAndBroadcastLiveMedia(
+        fullUrl,
+        `👾 ส่ง ${activeKlipyType === 'stickers' ? 'Sticker' : 'GIF'} จาก KLIPY สดแล้ว! (กด Enter เพื่อล้าง)`
+      );
+      gifPickerPopover.classList.add('hidden');
+      liveTypingInput.focus();
+    });
+
+    gifResultsGrid.appendChild(wrap);
+  }
+
+  async function fetchGifs(query, showBackButton = true) {
     const cleanQuery = (query || '').trim();
-    activeKlipyQuery = cleanQuery || 'trending';
+
+    // If search input is cleared, show the big Discord Category Tiles!
+    if (!cleanQuery && !showBackButton) {
+      renderDiscordCategoryTiles();
+      return;
+    }
+
+    if (btnBackToGifCategories) {
+      btnBackToGifCategories.classList.remove('hidden');
+    }
+
+    gifResultsGrid.innerHTML = '<div class="gif-empty-status">⏳ กำลังดึงข้อมูลจาก KLIPY.com...</div>';
 
     // Direct URL support if user pastes a link
     if (/^https?:\/\/.+\.(gif|webp|png|jpg|jpeg)(\?.*)?$/i.test(cleanQuery)) {
       gifResultsGrid.innerHTML = '';
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'gif-item-btn';
-      btn.style.gridColumn = '1 / -1';
-      btn.style.height = '140px';
-      const img = document.createElement('img');
-      img.src = cleanQuery;
-      btn.appendChild(img);
-      btn.addEventListener('click', () => {
-        setAndBroadcastLiveMedia(cleanQuery, '👾 ส่งลิงก์ GIF สดแล้ว! (กด Enter เพื่อล้าง)');
-        gifPickerPopover.classList.add('hidden');
-      });
-      gifResultsGrid.appendChild(btn);
+      appendGifResultCard(cleanQuery, cleanQuery, 'Direct URL');
       return;
     }
 
@@ -1986,26 +2460,7 @@
       items.forEach((item) => {
         const urls = extractKlipyUrls(item);
         if (!urls) return;
-
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'gif-item-btn';
-        const img = document.createElement('img');
-        img.src = urls.previewUrl;
-        img.loading = 'lazy';
-        img.alt = item.title || item.slug || 'KLIPY GIF';
-        btn.appendChild(img);
-
-        btn.addEventListener('click', () => {
-          setAndBroadcastLiveMedia(
-            urls.fullUrl,
-            `👾 ส่ง ${activeKlipyType === 'stickers' ? 'Sticker' : 'GIF'} จาก KLIPY สดแล้ว! (กด Enter เพื่อล้าง)`
-          );
-          gifPickerPopover.classList.add('hidden');
-          liveTypingInput.focus();
-        });
-
-        gifResultsGrid.appendChild(btn);
+        appendGifResultCard(urls.previewUrl, urls.fullUrl, item.title || item.slug || 'KLIPY GIF');
       });
     } catch (err) {
       gifResultsGrid.innerHTML =
@@ -2013,50 +2468,101 @@
     }
   }
 
-  btnToggleGifPicker.addEventListener('click', () => {
+  function initEmoteBubblePicker() {
+    if (!emotePickerGrid) return;
+    emotePickerGrid.innerHTML = '';
+    BUBBLE_EMOTES.forEach((emote) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn-emote-item';
+      btn.textContent = emote;
+      btn.title = `ส่งอีโมจิฟองสบู่ ${emote}`;
+      btn.addEventListener('click', () => {
+        triggerSendEmoteBubble(emote);
+      });
+      emotePickerGrid.appendChild(btn);
+    });
+  }
+  initEmoteBubblePicker();
+
+  function switchPickerTab(tabName) {
+    activePickerTab = tabName;
+    document.querySelectorAll('.btn-picker-tab').forEach((b) => {
+      b.classList.toggle('active', b.getAttribute('data-tab') === tabName);
+    });
+
+    if (tabName === 'emotes') {
+      gifSearchRow.classList.add('hidden');
+      gifResultsGrid.classList.add('hidden');
+      emotePickerGrid.classList.remove('hidden');
+      if (gifPoweredByText) gifPoweredByText.textContent = '🫧 กดที่อีโมจิเพื่อปล่อยลอยขึ้นจากโปรไฟล์ของคุณแบบฟองสบู่!';
+    } else {
+      activeKlipyType = tabName === 'stickers' ? 'stickers' : 'gifs';
+      gifSearchRow.classList.remove('hidden');
+      gifResultsGrid.classList.remove('hidden');
+      emotePickerGrid.classList.add('hidden');
+      if (gifPoweredByText) {
+        gifPoweredByText.innerHTML = 'Powered by <a href="https://klipy.com" target="_blank" rel="noopener noreferrer">KLIPY.com</a>';
+      }
+      inputGifSearch.value = '';
+      renderDiscordCategoryTiles();
+    }
+  }
+
+  function openMediaPickerWithTab(tabName) {
     if (!activeRoomCode) {
-      showToast('กรุณาสร้างหรือเข้าห้องแชทก่อนส่ง GIF');
+      showToast('กรุณาสร้างหรือเข้าห้องแชทก่อนใช้งาน');
       return;
     }
     const isHidden = gifPickerPopover.classList.contains('hidden');
-    if (isHidden) {
+    if (isHidden || activePickerTab !== tabName) {
       gifPickerPopover.classList.remove('hidden');
-      inputGifSearch.focus();
-      if (gifResultsGrid.children.length === 0) {
-        fetchGifs('trending');
+      switchPickerTab(tabName);
+      if (tabName !== 'emotes') {
+        inputGifSearch.focus();
       }
     } else {
       gifPickerPopover.classList.add('hidden');
     }
+  }
+
+  btnToggleGifPicker.addEventListener('click', () => {
+    openMediaPickerWithTab('gifs');
   });
+
+  if (btnToggleEmotePicker) {
+    btnToggleEmotePicker.addEventListener('click', () => {
+      openMediaPickerWithTab('emotes');
+    });
+  }
 
   btnCloseGifPicker.addEventListener('click', () => {
     gifPickerPopover.classList.add('hidden');
   });
 
+  if (btnBackToGifCategories) {
+    btnBackToGifCategories.addEventListener('click', () => {
+      inputGifSearch.value = '';
+      renderDiscordCategoryTiles();
+    });
+  }
+
   inputGifSearch.addEventListener('input', () => {
     if (gifSearchTimer) clearTimeout(gifSearchTimer);
+    const val = inputGifSearch.value.trim();
+    if (!val) {
+      renderDiscordCategoryTiles();
+      return;
+    }
     gifSearchTimer = setTimeout(() => {
-      fetchGifs(inputGifSearch.value);
+      fetchGifs(val, true);
     }, 350);
   });
 
-  document.querySelectorAll('.btn-gif-type').forEach((btn) => {
+  document.querySelectorAll('.btn-picker-tab').forEach((btn) => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.btn-gif-type').forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
-      activeKlipyType = btn.getAttribute('data-type') || 'gifs';
-      fetchGifs(inputGifSearch.value || activeKlipyQuery);
-    });
-  });
-
-  document.querySelectorAll('.btn-gif-cat').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.btn-gif-cat').forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
-      const q = btn.getAttribute('data-query');
-      inputGifSearch.value = q === 'trending' ? '' : q;
-      fetchGifs(q);
+      const tab = btn.getAttribute('data-tab') || 'gifs';
+      switchPickerTab(tab);
     });
   });
 
@@ -2198,17 +2704,19 @@
 
   function applyTheme(theme) {
     const root = document.documentElement;
+    const brightness = theme.brightness !== undefined ? theme.brightness : 100;
     root.style.setProperty('--primary', theme.primary);
     root.style.setProperty('--primary-hover', theme.primary);
     root.style.setProperty('--accent', theme.accent);
     root.style.setProperty('--bg-dark', theme.bg);
-    root.style.setProperty('--bg-panel', hexToRgba(theme.card, 0.85));
-    root.style.setProperty('--bg-card', hexToRgba(theme.card, 0.7));
-    root.style.setProperty('--bg-card-self', hexToRgba(theme.primary, 0.16));
+    root.style.setProperty('--bg-panel', hexToRgba(theme.card, 0.88));
+    root.style.setProperty('--bg-card', hexToRgba(theme.card, 0.78));
+    root.style.setProperty('--bg-card-self', hexToRgba(theme.primary, 0.14));
     root.style.setProperty('--text-main', theme.text);
     root.style.setProperty('--radius-lg', `${theme.radius + 4}px`);
     root.style.setProperty('--radius-md', `${theme.radius}px`);
     root.style.setProperty('--radius-sm', `${Math.max(4, theme.radius - 4)}px`);
+    root.style.setProperty('--ui-brightness', `${brightness}%`);
 
     // Sync input controls
     if (colorPickerPrimary) {
@@ -2223,9 +2731,11 @@
       colorPickerText.value = theme.text;
       hexText.textContent = theme.text;
       rangeRadius.value = theme.radius;
+      if (rangeBrightness) rangeBrightness.value = brightness;
+      if (brightnessValText) brightnessValText.textContent = `${brightness}%`;
     }
 
-    localStorage.setItem(STORAGE_KEY_THEME, JSON.stringify(theme));
+    localStorage.setItem(STORAGE_KEY_THEME, JSON.stringify({ ...theme, brightness }));
   }
 
   function hexToRgba(hex, alpha) {
@@ -2278,6 +2788,12 @@
     activeTheme.radius = parseInt(e.target.value, 10);
     applyTheme(activeTheme);
   });
+  if (rangeBrightness) {
+    rangeBrightness.addEventListener('input', (e) => {
+      activeTheme.brightness = parseInt(e.target.value, 10);
+      applyTheme(activeTheme);
+    });
+  }
 
   // Preset theme buttons
   document.querySelectorAll('.btn-preset-theme').forEach((btn) => {

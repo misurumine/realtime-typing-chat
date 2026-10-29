@@ -39,6 +39,8 @@ html, body {
   font-family: 'Kanit', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   display: flex;
   flex-direction: column;
+  filter: brightness(var(--ui-brightness, 100%));
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 .mono {
@@ -661,7 +663,7 @@ html, body {
   color: var(--text-main);
 }
 
-/* VIEW 2: Workspace Layout */
+/* VIEW 2: Workspace Layout & Collapsible Left Sidebar */
 .workspace-grid {
   display: grid;
   grid-template-columns: 340px 1fr;
@@ -670,6 +672,177 @@ html, body {
   height: 100%;
   padding: 14px;
   overflow: hidden;
+  transition: grid-template-columns 0.25s ease;
+  position: relative;
+}
+
+.workspace-grid.sidebar-collapsed {
+  grid-template-columns: 0px 1fr;
+  gap: 0px;
+}
+
+.workspace-grid.sidebar-collapsed .sidebar {
+  opacity: 0;
+  pointer-events: none;
+  padding: 0;
+  border: none;
+  overflow: hidden;
+}
+
+/* Sidebar Navigation Pills (Chat / Friend) */
+.sidebar-top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-big-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.btn-sidebar-pill {
+  width: 100%;
+  padding: 11px 16px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.18s ease;
+  position: relative;
+}
+
+.btn-sidebar-pill:hover {
+  background: rgba(255, 255, 255, 0.12);
+  transform: translateY(-1px);
+}
+
+.btn-sidebar-pill.active {
+  background: var(--text-main);
+  color: var(--bg-dark);
+  border-color: var(--text-main);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+.nav-badge-count {
+  background: #ef4444;
+  color: #ffffff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+.sidebar-tab-pane {
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.sidebar-tab-pane.active {
+  display: flex;
+}
+
+.btn-collapse-sidebar {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-collapse-sidebar:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.btn-expand-sidebar-floating {
+  position: absolute;
+  top: 24px;
+  left: 20px;
+  z-index: 25;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  box-shadow: var(--shadow-lg);
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-grid.sidebar-collapsed .btn-expand-sidebar-floating {
+  display: inline-flex;
+}
+
+/* Add Friend Green Pill next to Stranger's Profile on Live Card */
+.btn-card-add-friend {
+  background: #16a34a;
+  color: #ffffff;
+  border: none;
+  border-radius: 999px;
+  padding: 2px 11px;
+  font-family: inherit;
+  font-size: 0.73rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  box-shadow: 0 2px 8px rgba(22, 163, 74, 0.4);
+  transition: transform 0.12s ease, filter 0.15s ease;
+}
+
+.btn-card-add-friend:hover {
+  filter: brightness(1.1);
+  transform: scale(1.04);
+}
+
+.btn-card-add-friend.pending {
+  background: rgba(148, 163, 184, 0.28);
+  color: var(--text-muted);
+  box-shadow: none;
+  cursor: default;
+}
+
+/* Friend Request Box in Sidebar */
+.friend-requests-box {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.friend-req-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #10b981;
 }
 
 /* Sidebar */
@@ -984,7 +1157,57 @@ html, body {
   padding: 14px 16px;
   position: relative;
   transition: border-color 0.15s ease, box-shadow 0.2s ease, transform 0.15s ease;
-  overflow: hidden;
+  overflow: visible;
+}
+
+/* Floating Soap-Bubble Emote Animation */
+.live-card-user {
+  position: relative;
+}
+
+.emote-bubble {
+  position: absolute;
+  left: 16px;
+  top: -8px;
+  font-size: 2.2rem;
+  pointer-events: none;
+  user-select: none;
+  z-index: 60;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.45));
+  animation: floatBubbleUp 2.3s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.emote-bubble::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.35), rgba(99, 102, 241, 0.12) 60%, rgba(236, 72, 153, 0.25) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  z-index: -1;
+}
+
+@keyframes floatBubbleUp {
+  0% {
+    opacity: 0;
+    transform: translate(0, 10px) scale(0.35);
+  }
+  18% {
+    opacity: 1;
+    transform: translate(calc(var(--sway-x, 12px) * 0.4), -18px) scale(1.12);
+  }
+  55% {
+    opacity: 0.95;
+    transform: translate(calc(var(--sway-x, 12px) * -0.7), -68px) scale(1);
+  }
+  85% {
+    opacity: 0.6;
+    transform: translate(var(--sway-x, 12px), -115px) scale(1.18);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(var(--sway-x, 12px) * 1.2), -140px) scale(1.45);
+  }
 }
 
 .live-card.is-self {
@@ -1073,7 +1296,7 @@ html, body {
   font-size: 1.25rem;
   line-height: 1.5;
   font-weight: 400;
-  color: #ffffff;
+  color: var(--text-main);
   gap: 10px;
 }
 
@@ -1243,73 +1466,246 @@ kbd {
   margin-top: 2px;
 }
 
-/* GIF Picker Popover */
+/* Discord-Style Media & Emote Picker Popover */
 .live-input-bar {
   position: relative;
 }
 
 .gif-picker-popover {
   position: absolute;
-  bottom: calc(100% + 8px);
+  bottom: calc(100% + 10px);
   left: 16px;
   right: 16px;
-  max-width: 440px;
-  background: rgba(15, 23, 42, 0.96);
-  backdrop-filter: blur(16px);
-  border: 1.5px solid var(--primary);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-  padding: 12px;
-  z-index: 50;
+  width: 440px;
+  max-width: calc(100vw - 32px);
+  background: #111214;
+  border: 1.5px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.75);
+  padding: 14px;
+  z-index: 70;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.gif-picker-header {
+.discord-picker-tabs {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
+}
+
+.discord-tabs-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-picker-tab {
+  background: transparent;
+  border: none;
+  color: #949ba4;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-picker-tab:hover {
+  color: #f2f3f5;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.btn-picker-tab.active {
+  background: #35373c;
+  color: #ffffff;
+}
+
+.gif-picker-header {
+  display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.btn-back-cats {
+  background: #2b2d31;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-radius: 8px;
+  padding: 7px 11px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.btn-back-cats:hover {
+  background: #383a40;
 }
 
 .gif-search-input {
   flex: 1;
-  padding: 8px 12px;
+  padding: 9px 12px;
+  font-size: 0.88rem;
+  background: #1e1f22;
+  border: 1.5px solid #5865f2;
+  border-radius: 8px;
+}
+
+/* Vertical Scroll Grid Only (No Horizontal Slide!) */
+.gif-results-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+
+/* Large Discord Category Tile */
+.discord-cat-tile {
+  position: relative;
+  height: 112px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: none;
+  cursor: pointer;
+  background: #2b2d31;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.discord-cat-tile:hover {
+  transform: scale(1.02);
+  box-shadow: 0 0 0 2px #5865f2;
+}
+
+.discord-cat-tile.fav-tile {
+  background: linear-gradient(135deg, #5865f2, #4752c4);
+}
+
+.discord-cat-tile img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: brightness(0.55);
+  transition: transform 0.25s ease, filter 0.2s ease;
+}
+
+.discord-cat-tile:hover img {
+  transform: scale(1.07);
+  filter: brightness(0.7);
+}
+
+.discord-cat-label {
+  position: relative;
+  z-index: 2;
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.98rem;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.85);
+  padding: 0 10px;
+  text-align: center;
+}
+
+.gif-item-btn {
+  position: relative;
+  background: #2b2d31;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  padding: 0;
+  height: 116px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s, border-color 0.15s;
+}
+
+.gif-item-btn:hover {
+  transform: scale(1.02);
+  border-color: #5865f2;
+}
+
+.gif-item-btn img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.btn-fav-star {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 5;
+  background: rgba(0, 0, 0, 0.65);
+  border: none;
+  color: #94a3b8;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 0.85rem;
 }
 
-.gif-categories-row {
+.btn-fav-star.active,
+.btn-fav-star:hover {
+  color: #facc15;
+  background: rgba(0, 0, 0, 0.85);
+}
+
+/* Emote Bubble Grid inside Picker */
+.emote-grid-view {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  max-height: 310px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px;
+}
+
+.btn-emote-item {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  height: 52px;
+  font-size: 1.65rem;
   display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-}
-
-.btn-gif-cat,
-.btn-gif-type {
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-main);
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 0.75rem;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
-  white-space: nowrap;
+  transition: transform 0.12s ease, background 0.15s;
 }
 
-.btn-gif-cat:hover,
-.btn-gif-cat.active {
-  background: var(--primary);
-  color: #fff;
+.btn-emote-item:hover {
+  background: rgba(99, 102, 241, 0.25);
   border-color: var(--primary);
+  transform: scale(1.14);
 }
 
-.btn-gif-type:hover,
-.btn-gif-type.active {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
+.btn-emote-item:active {
+  transform: scale(0.92);
+}
+
+.gif-empty-status {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 28px 8px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
 
 .gif-powered-by {
@@ -1324,55 +1720,14 @@ kbd {
   font-weight: 600;
 }
 
-.gif-results-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  max-height: 220px;
-  overflow-y: auto;
-}
-
-.gif-item-btn {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  cursor: pointer;
-  padding: 0;
-  height: 92px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform 0.15s, border-color 0.15s;
-}
-
-.gif-item-btn:hover {
-  transform: scale(1.03);
-  border-color: var(--accent);
-}
-
-.gif-item-btn img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.gif-empty-status {
-  grid-column: 1 / -1;
-  text-align: center;
-  padding: 24px 8px;
-  font-size: 0.82rem;
-  color: var(--text-muted);
-}
-
 .live-textarea {
   flex: 1;
   resize: none;
   padding: 12px 14px;
-  background: rgba(15, 23, 42, 0.95);
+  background: var(--bg-card);
   border: 1.5px solid rgba(99, 102, 241, 0.45);
   border-radius: var(--radius-md);
-  color: #fff;
+  color: var(--text-main);
   font-family: inherit;
   font-size: 1.05rem;
   line-height: 1.4;
