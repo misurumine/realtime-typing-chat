@@ -40,11 +40,11 @@
       </div>
       <div id="userChip" class="user-chip hidden">
         <img id="headerAvatar" src="" alt="Avatar" class="avatar-xs" />
-        <div class="user-chip-info">
+        <div class="user-chip-info" id="btnCopyHeaderUid" title="คลิกเพื่อคัดลอก UID">
           <span id="headerUsername" class="user-chip-name"></span>
           <span id="headerUid" class="user-chip-uid"></span>
         </div>
-        <button id="btnEditProfile" class="btn-icon" title="แก้ไขโปรไฟล์">⚙️</button>
+        <button id="btnEditProfile" class="btn-icon" title="แก้ไขโปรไฟล์และ Tag">⚙️</button>
         <button id="btnLogout" class="btn-icon btn-danger-icon" title="ออกจากระบบ (ล้าง UID)">🚪</button>
       </div>
     </div>
@@ -120,23 +120,9 @@
     <!-- VIEW 2: Lobby & Active Chat Workspace -->
     <section id="viewWorkspace" class="view">
       <div class="workspace-grid">
-        <!-- Left Sidebar: Profile, UID, Friends List, & Room Entry -->
+        <!-- Left Sidebar: Room Entry (with QR Code) & Friends List -->
         <aside id="sidebarPanel" class="sidebar glass-panel">
-          <!-- My Identity Card -->
-          <div class="my-id-card">
-            <div class="my-id-top">
-              <span class="my-id-label">รหัสประจำตัวของคุณ (UID)</span>
-              <span class="session-badge">คงอยู่จนกว่าจะ Logout</span>
-            </div>
-            <div class="my-id-box">
-              <span id="myUidDisplay" class="uid-code mono">----</span>
-              <button id="btnCopyUid" class="btn btn-secondary btn-sm">📋 คัดลอก</button>
-            </div>
-            <p class="my-id-hint">ส่ง UID นี้ให้เพื่อนแอด หรือตั้งค่า Tag เพื่อหาห้องที่สนใจเรื่องเดียวกัน</p>
-            <div id="mySidebarTags" class="my-tags-list"></div>
-          </div>
-
-          <!-- Room Quick Join / Create -->
+          <!-- Room Quick Join / Create + QR Code -->
           <div class="room-join-card">
             <div class="section-title-row">
               <h3>ห้องสนทนา (Room)</h3>
@@ -153,6 +139,14 @@
               />
               <button type="submit" class="btn btn-secondary">เข้าห้อง</button>
             </form>
+            <div class="room-qr-actions">
+              <button type="button" id="btnOpenQrScanner" class="btn btn-outline btn-sm" title="สแกน QR Code จากกล้องหรือรูปภาพเพื่อเข้าห้อง">
+                📷 สแกน QR เข้าห้อง
+              </button>
+              <button type="button" id="btnShowSidebarRoomQr" class="btn btn-secondary btn-sm hidden" title="แสดง QR Code ของห้องปัจจุบัน">
+                📱 QR ห้องนี้
+              </button>
+            </div>
           </div>
 
           <!-- Friends List Section -->
@@ -177,12 +171,6 @@
             <div id="friendsListContainer" class="friends-list">
               <!-- Populated by JS -->
             </div>
-          </div>
-
-          <!-- LAN Mobile Access Info -->
-          <div id="lanAccessBox" class="lan-access-box">
-            <div class="lan-title">🌐 โหมด Serverless (ไม่ต้องเช่าเซิร์ฟเวอร์):</div>
-            <div id="lanUrlsList" class="lan-urls">เชื่อมต่อผ่าน P2P / Public Relay อัตโนมัติ คุยข้ามเครือข่ายได้ทั่วโลก</div>
           </div>
         </aside>
 
@@ -245,6 +233,9 @@
                 <button id="btnCopyRoomLink" class="btn btn-secondary btn-sm" title="คัดลอกลิงก์เชิญเข้าห้อง">
                   🔗 ลิงก์เชิญ
                 </button>
+                <button id="btnShowRoomQr" type="button" class="btn btn-secondary btn-sm" title="แสดง QR Code ของห้องนี้ให้เพื่อนสแกนเข้าห้อง">
+                  📱 QR ห้อง
+                </button>
               </div>
 
               <div class="room-header-right">
@@ -306,10 +297,10 @@
                   <span class="pulse-dot"></span>
                   พิมพ์สด/ส่งรูป/GIF สด • กด <kbd>Enter</kbd> หรือปุ่ม Enter เพื่อล้างทั้งหมด
                 </span>
-                <span id="charCounter" class="char-counter mono">0 ตัวอักษร</span>
+                <span id="charCounter" class="char-counter mono">0 / 250 ตัวอักษร</span>
               </div>
               <div class="live-input-row">
-                <label for="inputLiveImage" class="btn-upload-image" title="ส่งรูปภาพหรือไฟล์ GIF จากเครื่อง">
+                <label for="inputLiveImage" class="btn-upload-image" title="ส่งรูปภาพหรือไฟล์ GIF จากเครื่อง (รองรับไฟล์ขนาดใหญ่ ย่ออัตโนมัติ)">
                   <span class="upload-icon">📷</span>
                   <span class="upload-text">ส่งรูป</span>
                 </label>
@@ -324,7 +315,8 @@
                   id="liveTypingInput"
                   class="live-textarea"
                   rows="2"
-                  placeholder="พิมพ์ที่นี่, ส่งรูป/GIF หรือ Ctrl+V วางรูปได้เลย... (กด Enter เพื่อล้างทั้งหมด)"
+                  maxlength="250"
+                  placeholder="พิมพ์ที่นี่ (สูงสุด 250 ตัวอักษร), ส่งรูป/GIF หรือ Ctrl+V วางรูป... (กด Enter เพื่อล้างทั้งหมด)"
                   autocomplete="off"
                   autocorrect="off"
                   spellcheck="false"
@@ -366,6 +358,49 @@
 
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Room QR Code Display Modal -->
+  <div id="qrDisplayModal" class="modal-backdrop hidden">
+    <div class="modal-card glass-panel">
+      <div class="modal-header">
+        <h3>📱 QR Code เข้าห้องสนทนา</h3>
+      </div>
+      <div class="modal-body">
+        <div class="qr-display-wrap">
+          <img id="roomQrImage" src="" alt="Room QR Code" class="qr-code-img" />
+        </div>
+        <p style="margin-bottom:4px;">รหัสห้อง: <strong id="qrModalRoomCode" class="mono" style="color:#a5b4fc;font-size:1.1rem;"></strong></p>
+        <small style="color:var(--text-muted);">ให้เพื่อนใช้กล้องมือถือสแกน หรือกดปุ่ม "📷 สแกน QR เข้าห้อง" ในแอปเพื่อเข้ามาคุยด้วยกันได้ทันที</small>
+      </div>
+      <div class="modal-actions">
+        <button id="btnDownloadQr" type="button" class="btn btn-secondary">💾 บันทึกรูป QR</button>
+        <button id="btnCloseQrModal" type="button" class="btn btn-primary">ปิดหน้าต่าง</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- QR Code Scanner Modal (Camera + Image Upload) -->
+  <div id="qrScannerModal" class="modal-backdrop hidden">
+    <div class="modal-card glass-panel">
+      <div class="modal-header">
+        <h3>📷 สแกน QR Code เพื่อเข้าห้อง</h3>
+      </div>
+      <div class="modal-body">
+        <div id="qrReaderBox" class="qr-scanner-box">
+          <span style="color:var(--text-muted);font-size:0.85rem;">กำลังเปิดกล้องสแกน QR...</span>
+        </div>
+        <div style="margin-top:8px;">
+          <label for="inputQrFile" class="btn btn-secondary btn-sm btn-block" style="cursor:pointer;">
+            🖼️ หรือเลือกรูปภาพ QR Code จากในเครื่อง
+          </label>
+          <input type="file" id="inputQrFile" accept="image/*" class="hidden" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="btnCloseScannerModal" type="button" class="btn btn-secondary btn-block">ยกเลิก / ปิดกล้อง</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Theme Settings Modal -->
   <div id="themeModal" class="modal-backdrop hidden">
@@ -444,6 +479,8 @@
 
   <!-- MQTT over WebSockets for 100% Serverless Realtime Pub/Sub across iOS, Android, Windows -->
   <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+  <!-- HTML5 QR Code Scanner Library (Camera & Image File QR Decoder) -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script src="./js/app.js"></script>
 </body>
 </html>

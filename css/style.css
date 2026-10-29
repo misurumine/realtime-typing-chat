@@ -170,6 +170,55 @@ html, body {
   font-size: 0.68rem;
   color: #a5b4fc;
   font-family: 'JetBrains Mono', monospace;
+  cursor: pointer;
+  text-decoration: underline dotted rgba(165, 180, 252, 0.5);
+}
+
+.user-chip-uid:hover {
+  color: #fff;
+}
+
+/* QR Code Display & Scanner Styles */
+.qr-display-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: #ffffff;
+  border-radius: var(--radius-md);
+  width: fit-content;
+  margin: 0 auto 12px;
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.35);
+}
+
+.qr-code-img {
+  width: 200px;
+  height: 200px;
+  display: block;
+}
+
+.qr-scanner-box {
+  width: 100%;
+  min-height: 240px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1.5px dashed var(--primary);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.room-qr-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.room-qr-actions .btn {
+  flex: 1;
 }
 
 /* Avatars */
@@ -1041,6 +1090,16 @@ html, body {
   border: 1.5px solid rgba(255, 255, 255, 0.2);
   object-fit: cover;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.live-card-video {
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: var(--radius-md);
+  border: 1.5px solid rgba(255, 255, 255, 0.2);
+  object-fit: cover;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  display: block;
 }
 
 .live-card-placeholder {

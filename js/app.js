@@ -151,12 +151,22 @@
   const btnInstallPwa = document.getElementById('btnInstallPwa');
 
   const sidebarPanel = document.getElementById('sidebarPanel');
-  const myUidDisplay = document.getElementById('myUidDisplay');
-  const btnCopyUid = document.getElementById('btnCopyUid');
+  const btnCopyHeaderUid = document.getElementById('btnCopyHeaderUid');
   const btnCreateRoom = document.getElementById('btnCreateRoom');
   const btnEmptyCreateRoom = document.getElementById('btnEmptyCreateRoom');
   const formJoinRoom = document.getElementById('formJoinRoom');
   const inputRoomCode = document.getElementById('inputRoomCode');
+  const btnOpenQrScanner = document.getElementById('btnOpenQrScanner');
+  const btnShowSidebarRoomQr = document.getElementById('btnShowSidebarRoomQr');
+  const btnShowRoomQr = document.getElementById('btnShowRoomQr');
+  const qrDisplayModal = document.getElementById('qrDisplayModal');
+  const roomQrImage = document.getElementById('roomQrImage');
+  const qrModalRoomCode = document.getElementById('qrModalRoomCode');
+  const btnDownloadQr = document.getElementById('btnDownloadQr');
+  const btnCloseQrModal = document.getElementById('btnCloseQrModal');
+  const qrScannerModal = document.getElementById('qrScannerModal');
+  const inputQrFile = document.getElementById('inputQrFile');
+  const btnCloseScannerModal = document.getElementById('btnCloseScannerModal');
   const formAddFriend = document.getElementById('formAddFriend');
   const inputFriendUid = document.getElementById('inputFriendUid');
   const btnRefreshFriends = document.getElementById('btnRefreshFriends');
@@ -801,20 +811,21 @@
     }
 
     if (data.type === 'typing_update') {
+      const safeText = String(data.text || '').slice(0, 250);
       if (!roomMembers.has(data.uid)) {
         // Auto-register member if they typed before join packet arrived
         roomMembers.set(data.uid, {
           uid: data.uid,
           username: data.username || data.uid,
           avatar: data.avatar || PRESET_AVATARS[0],
-          currentText: data.text || '',
+          currentText: safeText,
           image: data.image || null,
           updatedAt: Date.now()
         });
         renderAllLiveCards();
       } else {
         const m = roomMembers.get(data.uid);
-        m.currentText = data.text || '';
+        m.currentText = safeText;
         m.image = data.image !== undefined ? data.image : m.image;
         m.updatedAt = Date.now();
         updateSingleCardContent(data.uid, m.currentText, m.image);
@@ -977,10 +988,8 @@
 
     headerAvatar.src = currentUser.avatar;
     headerUsername.textContent = currentUser.username;
-    headerUid.textContent = currentUser.uid;
-    myUidDisplay.textContent = currentUser.uid;
+    headerUid.textContent = `UID: ${currentUser.uid} 📋`;
 
-    renderMySidebarTags();
     renderFriendsList();
     renderDiscoveredRooms();
     connectServerlessNetwork();
@@ -1064,13 +1073,15 @@
     broadcastMyPresence(false);
   });
 
-  // --- Copy UID ---
-  btnCopyUid.addEventListener('click', () => {
-    if (!currentUser) return;
-    navigator.clipboard.writeText(currentUser.uid).then(() => {
-      showToast(`คัดลอก UID (${currentUser.uid}) แล้ว!`);
+  // --- Copy UID (Click on Top-Right Profile Chip) ---
+  if (btnCopyHeaderUid) {
+    btnCopyHeaderUid.addEventListener('click', () => {
+      if (!currentUser) return;
+      navigator.clipboard.writeText(currentUser.uid).then(() => {
+        showToast(`📋 คัดลอก UID (${currentUser.uid}) แล้ว!`);
+      });
     });
-  });
+  }
 
   // --- Friends System ---
   function renderFriendsList() {
@@ -1243,7 +1254,7 @@
     });
 
     liveTypingInput.value = '';
-    charCounter.textContent = '0 ตัวอักษร';
+    charCounter.textContent = `0 / 250 ตัวอักษร`;
 
     if (mqttClient && mqttClient.connected) {
       mqttClient.subscribe(topicRoom(activeRoomCode), { qos: 0 }, () => {
@@ -1327,7 +1338,7 @@
   btnLeaveRoom.addEventListener('click', () => {
     leaveCurrentRoomSilent();
     liveTypingInput.value = '';
-    charCounter.textContent = '0 ตัวอักษร';
+    charCounter.textContent = `0 / 250 ตัวอักษร`;
     broadcastMyPresence(true);
     updateRoomViewUI();
     renderFriendsList();
@@ -1362,15 +1373,163 @@
     if (!activeRoomCode) {
       roomEmptyState.classList.remove('hidden');
       roomActiveView.classList.add('hidden');
+      if (btnShowSidebarRoomQr) btnShowSidebarRoomQr.classList.add('hidden');
       requestDirectoryScan();
       renderDiscoveredRooms();
       return;
     }
     roomEmptyState.classList.add('hidden');
     roomActiveView.classList.remove('hidden');
+    if (btnShowSidebarRoomQr) btnShowSidebarRoomQr.classList.remove('hidden');
     activeRoomCodeEl.textContent = activeRoomCode;
     roomMemberCount.textContent = `${roomMembers.size} คนในห้อง`;
     setTimeout(() => liveTypingInput.focus(), 80);
+  }
+
+  // --- QR Code Generation & Scanner Engine ---
+  let html5QrScanner = null;
+
+  function openRoomQrModal() {
+    if (!activeRoomCode) {
+      showToast('กรุณาสร้างหรือเข้าห้องสนทนาก่อนแสดง QR Code');
+      return;
+    }
+    const shareUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(activeRoomCode)}`;
+    const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=260x260&margin=8&data=${encodeURIComponent(shareUrl)}`;
+    roomQrImage.src = qrApiUrl;
+    qrModalRoomCode.textContent = activeRoomCode;
+    qrDisplayModal.classList.remove('hidden');
+  }
+
+  if (btnShowRoomQr) {
+    btnShowRoomQr.addEventListener('click', openRoomQrModal);
+  }
+  if (btnShowSidebarRoomQr) {
+    btnShowSidebarRoomQr.addEventListener('click', openRoomQrModal);
+  }
+  if (btnCloseQrModal) {
+    btnCloseQrModal.addEventListener('click', () => {
+      qrDisplayModal.classList.add('hidden');
+    });
+  }
+  if (btnDownloadQr) {
+    btnDownloadQr.addEventListener('click', async () => {
+      if (!roomQrImage.src || !activeRoomCode) return;
+      try {
+        const res = await fetch(roomQrImage.src);
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `LiveType-Room-${activeRoomCode}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        showToast('💾 บันทึกรูป QR Code ลงเครื่องแล้ว');
+      } catch (e) {
+        window.open(roomQrImage.src, '_blank');
+      }
+    });
+  }
+
+  function extractRoomCodeFromScannedText(decodedText) {
+    const raw = String(decodedText || '').trim();
+    if (!raw) return null;
+    try {
+      const url = new URL(raw);
+      const roomParam = url.searchParams.get('room');
+      if (roomParam) return roomParam.trim().toUpperCase();
+    } catch (e) {
+      // Not a full URL, treat as direct room code
+    }
+    if (/^[A-Z0-9-]{4,12}$/i.test(raw)) {
+      return raw.toUpperCase();
+    }
+    return null;
+  }
+
+  async function stopQrCameraScanner() {
+    if (html5QrScanner) {
+      try {
+        if (html5QrScanner.isScanning) {
+          await html5QrScanner.stop();
+        }
+        html5QrScanner.clear();
+      } catch (e) {}
+      html5QrScanner = null;
+    }
+  }
+
+  async function startQrCameraScanner() {
+    if (!qrScannerModal) return;
+    qrScannerModal.classList.remove('hidden');
+    const readerEl = document.getElementById('qrReaderBox');
+    if (readerEl) {
+      readerEl.innerHTML = '<span style="color:var(--text-muted);font-size:0.85rem;">กำลังเปิดกล้องสแกน QR...</span>';
+    }
+
+    if (!window.Html5Qrcode) {
+      if (readerEl) readerEl.innerHTML = '<span style="color:var(--text-muted);font-size:0.85rem;">กรุณาเลือกรูปภาพ QR Code จากปุ่มด้านล่าง</span>';
+      return;
+    }
+
+    await stopQrCameraScanner();
+    html5QrScanner = new window.Html5Qrcode('qrReaderBox');
+    try {
+      await html5QrScanner.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 200, height: 200 } },
+        async (decodedText) => {
+          const code = extractRoomCodeFromScannedText(decodedText);
+          if (code) {
+            await stopQrCameraScanner();
+            qrScannerModal.classList.add('hidden');
+            joinRoomByCode(code);
+          }
+        },
+        () => {}
+      );
+    } catch (err) {
+      if (readerEl) {
+        readerEl.innerHTML =
+          '<span style="color:var(--text-muted);font-size:0.82rem;padding:12px;text-align:center;">ไม่พบกล้องหรือไม่ได้อนุญาตสิทธิ์กล้อง<br>สามารถกดปุ่ม <strong>"🖼️ เลือกรูปภาพ QR Code จากในเครื่อง"</strong> ด้านล่างแทนได้เลยครับ</span>';
+      }
+    }
+  }
+
+  if (btnOpenQrScanner) {
+    btnOpenQrScanner.addEventListener('click', startQrCameraScanner);
+  }
+
+  if (btnCloseScannerModal) {
+    btnCloseScannerModal.addEventListener('click', async () => {
+      await stopQrCameraScanner();
+      qrScannerModal.classList.add('hidden');
+    });
+  }
+
+  if (inputQrFile) {
+    inputQrFile.addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file || !window.Html5Qrcode) return;
+      await stopQrCameraScanner();
+      const fileScanner = new window.Html5Qrcode('qrReaderBox');
+      try {
+        const decodedText = await fileScanner.scanFile(file, true);
+        const code = extractRoomCodeFromScannedText(decodedText);
+        if (code) {
+          qrScannerModal.classList.add('hidden');
+          joinRoomByCode(code);
+        } else {
+          showToast('ไม่พบรหัสห้องใน QR Code นี้');
+        }
+      } catch (err) {
+        showToast('ไม่สามารถอ่าน QR Code จากรูปภาพนี้ได้ กรุณาลองรูปอื่น');
+      } finally {
+        inputQrFile.value = '';
+      }
+    });
   }
 
   function renderAllLiveCards() {
@@ -1445,11 +1604,22 @@
       if (hasImage) {
         const imgWrap = document.createElement('div');
         imgWrap.className = 'live-card-image-wrap';
-        const imgEl = document.createElement('img');
-        imgEl.src = image;
-        imgEl.alt = 'Live image';
-        imgEl.className = 'live-card-img';
-        imgWrap.appendChild(imgEl);
+        if (String(image).startsWith('data:video/')) {
+          const vidEl = document.createElement('video');
+          vidEl.src = image;
+          vidEl.className = 'live-card-video';
+          vidEl.autoplay = true;
+          vidEl.loop = true;
+          vidEl.muted = true;
+          vidEl.playsInline = true;
+          imgWrap.appendChild(vidEl);
+        } else {
+          const imgEl = document.createElement('img');
+          imgEl.src = image;
+          imgEl.alt = 'Live image';
+          imgEl.className = 'live-card-img';
+          imgWrap.appendChild(imgEl);
+        }
         bodyEl.appendChild(imgWrap);
       }
 
@@ -1487,9 +1657,15 @@
     cardEl.classList.add('flash-cleared');
   }
 
-  // --- Realtime Live Input, Image & GIF Handling ---
+  // --- Realtime Live Input, Auto-Downscaling Large Image/GIF & 250 Char Limit ---
+  const MAX_CHAR_LIMIT = 250;
+
   function showInputImagePreview(dataOrUrl) {
-    inputPreviewThumb.src = dataOrUrl;
+    if (String(dataOrUrl).startsWith('data:video/')) {
+      inputPreviewThumb.src = PRESET_AVATARS[11];
+    } else {
+      inputPreviewThumb.src = dataOrUrl;
+    }
     inputImagePreviewBar.classList.remove('hidden');
   }
 
@@ -1516,14 +1692,158 @@
       uid: currentUser.uid,
       username: currentUser.username,
       avatar: currentUser.avatar,
-      text: liveTypingInput.value,
+      text: liveTypingInput.value.slice(0, MAX_CHAR_LIMIT),
       image: currentImage
     });
 
     if (labelMsg) showToast(labelMsg);
   }
 
-  function processImageFile(file) {
+  // Adaptive Image Compressor: accepts ANY huge image (e.g. 20MB+) and scales down until lightweight
+  function compressStaticImageToDataUrl(img, targetMaxBytes = 140000) {
+    let maxDim = 760;
+    let quality = 0.72;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let width = img.width;
+      let height = img.height;
+      if (width > maxDim || height > maxDim) {
+        if (width > height) {
+          height = Math.max(1, Math.round((height * maxDim) / width));
+          width = maxDim;
+        } else {
+          width = Math.max(1, Math.round((width * maxDim) / height));
+          height = maxDim;
+        }
+      }
+      canvas.width = width;
+      canvas.height = height;
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+
+      // Prefer WebP if browser supports encoding it, fallback to JPEG
+      let dataUrl = canvas.toDataURL('image/webp', quality);
+      if (!dataUrl.startsWith('data:image/webp')) {
+        dataUrl = canvas.toDataURL('image/jpeg', quality);
+      }
+
+      if (dataUrl.length <= targetMaxBytes * 1.35) {
+        return dataUrl;
+      }
+
+      maxDim = Math.round(maxDim * 0.72);
+      quality = Math.max(0.38, quality - 0.14);
+    }
+
+    return canvas.toDataURL('image/jpeg', 0.4);
+  }
+
+  // Heavy Animated GIF Compressor using WebCodecs ImageDecoder + Canvas MediaRecorder (keeps animation!)
+  async function compressLargeAnimatedGif(file) {
+    // 1. If browser supports WebCodecs ImageDecoder + MediaRecorder -> transcode animated frames into lightweight looping WebM
+    if ('ImageDecoder' in window && 'MediaRecorder' in window) {
+      try {
+        const buffer = await file.arrayBuffer();
+        const decoder = new window.ImageDecoder({ data: buffer, type: 'image/gif' });
+        await decoder.tracks.ready;
+        const track = decoder.tracks.selectedTrack;
+        const frameCount = Math.min(track.frameCount || 1, 55); // cap frames to keep size super light
+
+        if (frameCount > 1) {
+          const firstFrame = await decoder.decode({ frameIndex: 0 });
+          const origW = firstFrame.image.displayWidth || 320;
+          const origH = firstFrame.image.displayHeight || 320;
+          firstFrame.image.close();
+
+          const maxDim = 280;
+          let targetW = origW;
+          let targetH = origH;
+          if (targetW > maxDim || targetH > maxDim) {
+            if (targetW > targetH) {
+              targetH = Math.max(2, Math.round((targetH * maxDim) / targetW));
+              targetW = maxDim;
+            } else {
+              targetW = Math.max(2, Math.round((targetW * maxDim) / targetH));
+              targetH = maxDim;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext('2d');
+
+          const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+            ? 'video/webm;codecs=vp9'
+            : MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
+            ? 'video/webm;codecs=vp8'
+            : 'video/webm';
+
+          const stream = canvas.captureStream(15);
+          const recorder = new MediaRecorder(stream, {
+            mimeType,
+            videoBitsPerSecond: 260000 // ~260 kbps -> very small file size
+          });
+
+          const chunks = [];
+          recorder.ondataavailable = (ev) => {
+            if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+          };
+
+          const stoppedPromise = new Promise((resolve) => {
+            recorder.onstop = resolve;
+          });
+
+          recorder.start();
+
+          // Step through frames (skip every 2nd frame if very long GIF so it finishes fast)
+          const step = frameCount > 30 ? 2 : 1;
+          for (let i = 0; i < frameCount; i += step) {
+            const res = await decoder.decode({ frameIndex: i });
+            ctx.clearRect(0, 0, targetW, targetH);
+            ctx.drawImage(res.image, 0, 0, targetW, targetH);
+            const durationMs = Math.min(200, Math.max(40, (res.image.duration || 70000) / 1000)) * step;
+            res.image.close();
+            await new Promise((r) => setTimeout(r, durationMs));
+          }
+
+          recorder.stop();
+          await stoppedPromise;
+          decoder.close();
+
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          if (blob.size > 0 && blob.size < 650000) {
+            return await new Promise((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result);
+              reader.readAsDataURL(blob);
+            });
+          }
+        }
+      } catch (e) {
+        // Fallback to static downscaled frame below if WebCodecs fails
+      }
+    }
+
+    // 2. Fallback: load GIF into Image and compress resolution/quality via Canvas
+    return await new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(compressStaticImageToDataUrl(img, 120000));
+      };
+      img.onerror = (err) => {
+        URL.revokeObjectURL(url);
+        reject(err);
+      };
+      img.src = url;
+    });
+  }
+
+  async function processImageFile(file) {
     if (!file) return;
     if (!activeRoomCode) {
       showToast('กรุณาสร้างหรือเข้าห้องแชทก่อนส่งรูปภาพ/GIF');
@@ -1531,50 +1851,46 @@
       return;
     }
 
-    // Preserve animated GIFs directly if under 1.2MB
+    // Handle GIF files (Small GIFs sent directly; Large GIFs automatically downscaled & compressed!)
     if (file.type === 'image/gif') {
-      if (file.size > 1250000) {
-        showToast('⚠️ ไฟล์ GIF มีขนาดใหญ่เกิน 1.2MB กรุณาใช้ปุ่ม 👾 GIF หรือเลือกไฟล์ที่เล็กลง');
-        inputLiveImage.value = '';
+      if (file.size <= 450000) {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          setAndBroadcastLiveMedia(ev.target.result, '👾 ส่งภาพดุ๊กดิ๊ก GIF สดแล้ว! (กด Enter เพื่อล้าง)');
+        };
+        reader.readAsDataURL(file);
         return;
       }
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        setAndBroadcastLiveMedia(ev.target.result, '👾 ส่งภาพดุ๊กดิ๊ก GIF สดแล้ว! (กด Enter เพื่อล้าง)');
-      };
-      reader.readAsDataURL(file);
+
+      showToast('⏳ ไฟล์ GIF มีขนาดใหญ่ ระบบกำลังย่อขนาดและความชัดลงอัตโนมัติ...');
+      try {
+        const compressedMedia = await compressLargeAnimatedGif(file);
+        setAndBroadcastLiveMedia(
+          compressedMedia,
+          '👾 ย่อขนาดไฟล์ GIF ใหญ่และส่งสดเรียบร้อยแล้ว! (กด Enter เพื่อล้าง)'
+        );
+      } catch (err) {
+        showToast('ไม่สามารถประมวลผลไฟล์ GIF นี้ได้');
+      }
       return;
     }
 
-    // Standard static image -> compress for instant transmission
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const maxDim = 800;
-        let width = img.width;
-        let height = img.height;
-        if (width > maxDim || height > maxDim) {
-          if (width > height) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          } else {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
-          }
-        }
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
-
-        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.72);
-        setAndBroadcastLiveMedia(compressedDataUrl, '📷 ส่งรูปภาพสดให้ทุกคนในห้องแล้ว (กด Enter เพื่อล้าง)');
-      };
-      img.src = ev.target.result;
+    // Handle any static picture (even huge 10MB-50MB photos) using ObjectURL + multi-pass downscaling
+    if (file.size > 2000000) {
+      showToast('⏳ กำลังย่อความละเอียดรูปภาพขนาดใหญ่ให้ส่งได้เบาและไว...');
+    }
+    const objUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(objUrl);
+      const compressedDataUrl = compressStaticImageToDataUrl(img, 140000);
+      setAndBroadcastLiveMedia(compressedDataUrl, '📷 ย่อขนาดและส่งรูปภาพสดให้ทุกคนในห้องแล้ว (กด Enter เพื่อล้าง)');
     };
-    reader.readAsDataURL(file);
+    img.onerror = () => {
+      URL.revokeObjectURL(objUrl);
+      showToast('ไม่สามารถอ่านไฟล์รูปภาพนี้ได้');
+    };
+    img.src = objUrl;
   }
 
   inputLiveImage.addEventListener('change', (e) => {
@@ -1766,8 +2082,12 @@
 
   function handleLiveInputChange() {
     if (!currentUser || !activeRoomCode) return;
+    if (liveTypingInput.value.length > MAX_CHAR_LIMIT) {
+      liveTypingInput.value = liveTypingInput.value.slice(0, MAX_CHAR_LIMIT);
+    }
     const currentText = liveTypingInput.value;
-    charCounter.textContent = `${currentText.length} ตัวอักษร`;
+    charCounter.textContent = `${currentText.length} / ${MAX_CHAR_LIMIT} ตัวอักษร`;
+    charCounter.style.color = currentText.length >= MAX_CHAR_LIMIT ? 'var(--accent)' : 'var(--text-muted)';
 
     if (roomMembers.has(currentUser.uid)) {
       const myMem = roomMembers.get(currentUser.uid);
@@ -1788,7 +2108,7 @@
   function triggerEnterClear() {
     if (!currentUser || !activeRoomCode) return;
     liveTypingInput.value = '';
-    charCounter.textContent = '0 ตัวอักษร';
+    charCounter.textContent = `0 / 250 ตัวอักษร`;
     hideInputImagePreview();
 
     if (roomMembers.has(currentUser.uid)) {
