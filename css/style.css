@@ -844,6 +844,7 @@ html, body {
 .live-card-body {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: flex-start;
   overflow-y: auto;
   word-break: break-word;
@@ -852,6 +853,22 @@ html, body {
   line-height: 1.5;
   font-weight: 400;
   color: #ffffff;
+  gap: 10px;
+}
+
+.live-card-image-wrap {
+  position: relative;
+  max-width: 100%;
+  display: inline-block;
+}
+
+.live-card-img {
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: var(--radius-md);
+  border: 1.5px solid rgba(255, 255, 255, 0.2);
+  object-fit: cover;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
 }
 
 .live-card-placeholder {
@@ -930,6 +947,69 @@ kbd {
   display: flex;
   gap: 10px;
   align-items: stretch;
+}
+
+.input-image-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: var(--radius-sm);
+}
+
+.input-preview-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.input-preview-info {
+  flex: 1;
+  font-size: 0.78rem;
+  color: #c7d2fe;
+}
+
+.btn-remove-preview {
+  background: transparent;
+  border: none;
+  color: #fca5a5;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 4px;
+}
+
+.btn-upload-image {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 0 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #cbd5e1;
+  transition: all 0.15s ease;
+}
+
+.btn-upload-image:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  border-color: rgba(99, 102, 241, 0.45);
+}
+
+.upload-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.upload-text {
+  font-size: 0.68rem;
+  margin-top: 2px;
 }
 
 .live-textarea {

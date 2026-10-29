@@ -75,6 +75,7 @@
   let friendsMap = loadFriendsList(); // Map<uid, { uid, username, avatar, online, inRoom, roomCode, lastSeen }>
   let activeRoomCode = null;
   let roomMembers = new Map(); // Map<uid, { uid, username, avatar, currentText, updatedAt }>
+  let currentImage = null; // Base64 data URL for live image typing
   let pendingInviteRoomCode = null;
   let deferredInstallPrompt = null;
   let mqttClient = null;
@@ -126,6 +127,10 @@
   const liveTypingInput = document.getElementById('liveTypingInput');
   const btnClearEnter = document.getElementById('btnClearEnter');
   const charCounter = document.getElementById('charCounter');
+  const inputLiveImage = document.getElementById('inputLiveImage');
+  const inputImagePreviewBar = document.getElementById('inputImagePreviewBar');
+  const inputPreviewThumb = document.getElementById('inputPreviewThumb');
+  const btnRemoveInputImage = document.getElementById('btnRemoveInputImage');
 
   const inviteModal = document.getElementById('inviteModal');
   const inviteAvatar = document.getElementById('inviteAvatar');
@@ -481,7 +486,8 @@
         uid: currentUser.uid,
         username: currentUser.username,
         avatar: currentUser.avatar,
-        currentText: myMember ? myMember.currentText : liveTypingInput.value
+        currentText: myMember ? myMember.currentText : liveTypingInput.value,
+        image: myMember ? myMember.image : currentImage
       });
       return;
     }
@@ -493,12 +499,13 @@
         username: data.username || data.uid,
         avatar: data.avatar || PRESET_AVATARS[0],
         currentText: data.currentText || '',
+        image: data.image || null,
         updatedAt: Date.now()
       });
       if (!existed) {
         renderAllLiveCards();
       } else {
-        updateSingleCardText(data.uid, data.currentText || '');
+        updateSingleCardContent(data.uid, data.currentText || '', data.image || null);
       }
       return;
     }
@@ -521,14 +528,16 @@
           username: data.username || data.uid,
           avatar: data.avatar || PRESET_AVATARS[0],
           currentText: data.text || '',
+          image: data.image || null,
           updatedAt: Date.now()
         });
         renderAllLiveCards();
       } else {
         const m = roomMembers.get(data.uid);
         m.currentText = data.text || '';
+        m.image = data.image !== undefined ? data.image : m.image;
         m.updatedAt = Date.now();
-        updateSingleCardText(data.uid, m.currentText);
+        updateSingleCardContent(data.uid, m.currentText, m.image);
       }
       return;
     }
@@ -537,8 +546,9 @@
       if (roomMembers.has(data.uid)) {
         const m = roomMembers.get(data.uid);
         m.currentText = '';
+        m.image = null;
         m.updatedAt = Date.now();
-        updateSingleCardText(data.uid, '');
+        updateSingleCardContent(data.uid, '', null);
         flashClearCard(data.uid);
       }
     }
@@ -860,11 +870,15 @@
 
     activeRoomCode = clean;
     roomMembers.clear();
+    currentImage = null;
+    hideInputImagePreview();
+
     roomMembers.set(currentUser.uid, {
       uid: currentUser.uid,
       username: currentUser.username,
       avatar: currentUser.avatar,
       currentText: '',
+      image: null,
       updatedAt: Date.now()
     });
 
@@ -958,11 +972,11 @@
 
     sortedMembers.forEach((member) => {
       const isSelf = currentUser && member.uid === currentUser.uid;
-      const hasText = Boolean(member.currentText && member.currentText.length > 0);
+      const hasContent = Boolean((member.currentText && member.currentText.length > 0) || member.image);
 
       const card = document.createElement('div');
       card.id = `live-card-${member.uid}`;
-      card.className = `live-card ${isSelf ? 'is-self' : ''} ${hasText ? 'actively-typing' : ''}`;
+      card.className = `live-card ${isSelf ? 'is-self' : ''} ${hasContent ? 'actively-typing' : ''}`;
 
       card.innerHTML = `
         <div class="live-card-header">
@@ -976,8 +990,8 @@
               <div class="live-card-uid mono">${member.uid}</div>
             </div>
           </div>
-          <span class="typing-status-pill ${hasText ? 'active' : ''}" id="status-pill-${member.uid}">
-            ${hasText ? '⚡ กำลังพิมพ์สด...' : 'รอพิมพ์...'}
+          <span class="typing-status-pill ${hasContent ? 'active' : ''}" id="status-pill-${member.uid}">
+            ${hasContent ? '⚡ กำลังส่งสด...' : 'รอพิมพ์...'}
           </span>
         </div>
         <div class="live-card-body" id="card-body-${member.uid}"></div>
@@ -985,11 +999,11 @@
 
       card.querySelector('.name-text').textContent = member.username;
       liveCardsGrid.appendChild(card);
-      updateSingleCardText(member.uid, member.currentText);
+      updateSingleCardContent(member.uid, member.currentText, member.image);
     });
   }
 
-  function updateSingleCardText(uid, text) {
+  function updateSingleCardContent(uid, text, image) {
     const bodyEl = document.getElementById(`card-body-${uid}`);
     const cardEl = document.getElementById(`live-card-${uid}`);
     const pillEl = document.getElementById(`status-pill-${uid}`);
@@ -997,19 +1011,37 @@
 
     bodyEl.innerHTML = '';
     const hasText = Boolean(text && text.length > 0);
+    const hasImage = Boolean(image);
 
-    if (hasText) {
+    if (hasText || hasImage) {
       cardEl.classList.add('actively-typing');
       pillEl.classList.add('active');
-      pillEl.textContent = '⚡ กำลังพิมพ์สด...';
+      pillEl.textContent = '⚡ กำลังส่งสด...';
 
-      const textSpan = document.createElement('span');
-      textSpan.textContent = text;
-      const cursorSpan = document.createElement('span');
-      cursorSpan.className = 'live-cursor';
+      if (hasImage) {
+        const imgWrap = document.createElement('div');
+        imgWrap.className = 'live-card-image-wrap';
+        const imgEl = document.createElement('img');
+        imgEl.src = image;
+        imgEl.alt = 'Live image';
+        imgEl.className = 'live-card-img';
+        imgWrap.appendChild(imgEl);
+        bodyEl.appendChild(imgWrap);
+      }
 
-      bodyEl.appendChild(textSpan);
-      bodyEl.appendChild(cursorSpan);
+      if (hasText) {
+        const textSpan = document.createElement('span');
+        textSpan.textContent = text;
+        const cursorSpan = document.createElement('span');
+        cursorSpan.className = 'live-cursor';
+        bodyEl.appendChild(textSpan);
+        bodyEl.appendChild(cursorSpan);
+      } else if (!hasImage) {
+        const cursorSpan = document.createElement('span');
+        cursorSpan.className = 'live-cursor';
+        bodyEl.appendChild(cursorSpan);
+      }
+
       bodyEl.scrollTop = bodyEl.scrollHeight;
     } else {
       cardEl.classList.remove('actively-typing');
@@ -1018,7 +1050,7 @@
 
       const placeholder = document.createElement('span');
       placeholder.className = 'live-card-placeholder';
-      placeholder.textContent = 'กำลังรอพิมพ์ข้อความ... (กด Enter เมื่อต้องการล้างข้อความ)';
+      placeholder.textContent = 'กำลังรอพิมพ์ข้อความหรือส่งรูป... (กด Enter เมื่อต้องการล้างทั้งหมด)';
       bodyEl.appendChild(placeholder);
     }
   }
@@ -1031,15 +1063,108 @@
     cardEl.classList.add('flash-cleared');
   }
 
-  // --- Realtime Character-by-Character Input Handling ---
+  // --- Realtime Live Input & Image Handling ---
+  function showInputImagePreview(dataUrl) {
+    inputPreviewThumb.src = dataUrl;
+    inputImagePreviewBar.classList.remove('hidden');
+  }
+
+  function hideInputImagePreview() {
+    inputPreviewThumb.src = '';
+    inputImagePreviewBar.classList.add('hidden');
+    inputLiveImage.value = '';
+    currentImage = null;
+  }
+
+  // Handle Image Upload & Compression for Instant Zero-Lag P2P/MQTT Relay
+  inputLiveImage.addEventListener('change', (e) => {
+    if (!activeRoomCode) {
+      showToast('กรุณาสร้างหรือเข้าห้องแชทก่อนส่งรูปภาพ');
+      inputLiveImage.value = '';
+      return;
+    }
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        // Optimize & resize image so it sends instantly over public relay
+        const canvas = document.createElement('canvas');
+        const maxDim = 800;
+        let width = img.width;
+        let height = img.height;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        currentImage = canvas.toDataURL('image/jpeg', 0.72);
+        showInputImagePreview(currentImage);
+
+        // Update own card immediately
+        if (currentUser && roomMembers.has(currentUser.uid)) {
+          const myMem = roomMembers.get(currentUser.uid);
+          myMem.image = currentImage;
+          updateSingleCardContent(currentUser.uid, myMem.currentText, currentImage);
+        }
+
+        // Broadcast to everyone in room immediately
+        publishJson(topicRoom(activeRoomCode), {
+          type: 'typing_update',
+          uid: currentUser.uid,
+          username: currentUser.username,
+          avatar: currentUser.avatar,
+          text: liveTypingInput.value,
+          image: currentImage
+        });
+
+        showToast('📷 ส่งรูปภาพสดให้ทุกคนในห้องแล้ว (กด Enter เพื่อล้าง)');
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  btnRemoveInputImage.addEventListener('click', () => {
+    currentImage = null;
+    hideInputImagePreview();
+    if (currentUser && roomMembers.has(currentUser.uid)) {
+      const myMem = roomMembers.get(currentUser.uid);
+      myMem.image = null;
+      updateSingleCardContent(currentUser.uid, myMem.currentText, null);
+    }
+    if (activeRoomCode) {
+      publishJson(topicRoom(activeRoomCode), {
+        type: 'typing_update',
+        uid: currentUser.uid,
+        username: currentUser.username,
+        avatar: currentUser.avatar,
+        text: liveTypingInput.value,
+        image: null
+      });
+    }
+  });
+
   function handleLiveInputChange() {
     if (!currentUser || !activeRoomCode) return;
     const currentText = liveTypingInput.value;
     charCounter.textContent = `${currentText.length} ตัวอักษร`;
 
     if (roomMembers.has(currentUser.uid)) {
-      roomMembers.get(currentUser.uid).currentText = currentText;
-      updateSingleCardText(currentUser.uid, currentText);
+      const myMem = roomMembers.get(currentUser.uid);
+      myMem.currentText = currentText;
+      updateSingleCardContent(currentUser.uid, currentText, myMem.image);
     }
 
     publishJson(topicRoom(activeRoomCode), {
@@ -1047,7 +1172,8 @@
       uid: currentUser.uid,
       username: currentUser.username,
       avatar: currentUser.avatar,
-      text: currentText
+      text: currentText,
+      image: currentImage
     });
   }
 
@@ -1055,10 +1181,13 @@
     if (!currentUser || !activeRoomCode) return;
     liveTypingInput.value = '';
     charCounter.textContent = '0 ตัวอักษร';
+    hideInputImagePreview();
 
     if (roomMembers.has(currentUser.uid)) {
-      roomMembers.get(currentUser.uid).currentText = '';
-      updateSingleCardText(currentUser.uid, '');
+      const myMem = roomMembers.get(currentUser.uid);
+      myMem.currentText = '';
+      myMem.image = null;
+      updateSingleCardContent(currentUser.uid, '', null);
       flashClearCard(currentUser.uid);
     }
 

@@ -210,26 +210,41 @@
 
             <!-- Bottom Live Typing Input Bar -->
             <div class="live-input-bar">
+              <!-- Live Image Preview Bar (When image selected) -->
+              <div id="inputImagePreviewBar" class="input-image-preview-bar hidden">
+                <img id="inputPreviewThumb" src="" alt="Preview" class="input-preview-thumb" />
+                <div class="input-preview-info">
+                  <span>📷 แนบรูปภาพสดแล้ว (เพื่อนเห็นทันที) • กด Enter เพื่อล้างรูปทิ้ง</span>
+                </div>
+                <button id="btnRemoveInputImage" type="button" class="btn-remove-preview" title="ลบรูป">✕</button>
+              </div>
+
               <div class="live-input-meta">
                 <span class="live-indicator">
                   <span class="pulse-dot"></span>
-                  ทุกตัวอักษรที่คุณพิมพ์จะขึ้นแสดงสดทันที • กด <kbd>Enter</kbd> เพื่อล้างข้อความทั้งหมด
+                  พิมพ์สด/ส่งรูปสด • กด <kbd>Enter</kbd> หรือปุ่ม Enter เพื่อล้างทั้งหมด
                 </span>
                 <span id="charCounter" class="char-counter mono">0 ตัวอักษร</span>
               </div>
               <div class="live-input-row">
+                <label for="inputLiveImage" class="btn-upload-image" title="ส่งรูปภาพสด">
+                  <span class="upload-icon">📷</span>
+                  <span class="upload-text">ส่งรูป</span>
+                </label>
+                <input type="file" id="inputLiveImage" accept="image/*" class="hidden" />
+
                 <textarea
                   id="liveTypingInput"
                   class="live-textarea"
                   rows="2"
-                  placeholder="พิมพ์ที่นี่... ตัวอักษรจะส่งไปหาทุกคนแบบสดๆ ทันที (กด Enter เพื่อลบข้อความทั้งหมด)"
+                  placeholder="พิมพ์ที่นี่หรือแนบรูป... (กด Enter เพื่อล้างข้อความและรูปทั้งหมด)"
                   autocomplete="off"
                   autocorrect="off"
                   spellcheck="false"
                 ></textarea>
-                <button id="btnClearEnter" type="button" class="btn btn-clear-enter" title="ล้างข้อความทันที (Enter)">
+                <button id="btnClearEnter" type="button" class="btn btn-clear-enter" title="ล้างข้อความและรูปทันที (Enter)">
                   <span class="enter-icon">⏎</span>
-                  <span class="enter-text">Enter<br><small>ล้างข้อความ</small></span>
+                  <span class="enter-text">Enter<br><small>ล้างทั้งหมด</small></span>
                 </button>
               </div>
             </div>
