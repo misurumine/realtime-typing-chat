@@ -12,8 +12,9 @@
   const STORAGE_KEY_FILE_ID = 'livetype_drive_file_id';
   const DATA_FILENAME = 'livetype_user_backup.json';
 
-  // Default Client ID (Users can set their own Client ID or enter via UI)
-  let activeClientId = localStorage.getItem(STORAGE_KEY_CLIENT_ID) || '';
+  // Built-in Default Client ID (Registered with Google Cloud Console)
+  const DEFAULT_CLIENT_ID = '485292734285-4n3dvr4vd5mg8mjiptqae67963h2j9ei.apps.googleusercontent.com';
+  let activeClientId = localStorage.getItem(STORAGE_KEY_CLIENT_ID) || DEFAULT_CLIENT_ID;
   let tokenClient = null;
   let currentAccessToken = sessionStorage.getItem(STORAGE_KEY_TOKEN) || null;
   let appDataFileId = localStorage.getItem(STORAGE_KEY_FILE_ID) || null;
@@ -35,7 +36,7 @@
   }
 
   function getClientId() {
-    return activeClientId || localStorage.getItem(STORAGE_KEY_CLIENT_ID) || '';
+    return activeClientId || localStorage.getItem(STORAGE_KEY_CLIENT_ID) || DEFAULT_CLIENT_ID;
   }
 
   function setClientId(id) {
@@ -44,6 +45,7 @@
       localStorage.setItem(STORAGE_KEY_CLIENT_ID, activeClientId);
     } else {
       localStorage.removeItem(STORAGE_KEY_CLIENT_ID);
+      activeClientId = DEFAULT_CLIENT_ID;
     }
     tokenClient = null; // Re-create client on next login
   }

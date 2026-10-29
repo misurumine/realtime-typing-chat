@@ -1811,13 +1811,6 @@
 
     if (inputGoogleClientId && window.LiveTypeDrive) {
       inputGoogleClientId.value = window.LiveTypeDrive.getClientId();
-      if (googleClientIdStatus) {
-        const hasId = window.LiveTypeDrive.hasValidClientId();
-        googleClientIdStatus.textContent = hasId 
-          ? '✅ Client ID พร้อมใช้งาน' 
-          : (window.LiveTypeDrive.getClientId() ? '⚠️ Client ID อาจไม่ถูกต้อง (รูปแบบ: xxx.apps.googleusercontent.com)' : '⚠️ ยังไม่ได้ระบุ Client ID');
-        googleClientIdStatus.style.color = hasId ? '#6ee7b7' : '#fcd34d';
-      }
     }
   }
 
