@@ -87,6 +87,25 @@
             />
           </div>
 
+          <!-- Interest Filter Tags Selection -->
+          <div class="interest-tags-section">
+            <label class="section-label">ความสนใจของคุณ (Filter Tags — ใช้จับคู่ค้นหาห้องที่ตรงกัน)</label>
+            <div id="presetTagsContainer" class="preset-tags-wrap">
+              <!-- Populated by JS -->
+            </div>
+            <div class="inline-form" style="margin-top:4px;">
+              <input
+                type="text"
+                id="inputCustomTag"
+                class="input-field"
+                placeholder="+ เพิ่ม Tag ความสนใจของคุณเอง (เช่น Valorant, K-Pop, นอนดึก)..."
+                maxlength="20"
+                autocomplete="off"
+              />
+              <button type="button" id="btnAddCustomTag" class="btn btn-secondary btn-sm">เพิ่ม Tag</button>
+            </div>
+          </div>
+
           <div id="existingUidNotice" class="uid-notice hidden">
             <span>UID ปัจจุบันของคุณ: <strong id="setupUidText" class="mono"></strong></span>
           </div>
@@ -113,7 +132,8 @@
               <span id="myUidDisplay" class="uid-code mono">----</span>
               <button id="btnCopyUid" class="btn btn-secondary btn-sm">📋 คัดลอก</button>
             </div>
-            <p class="my-id-hint">ส่ง UID นี้ให้เพื่อนแอด หรือแอด UID ของเพื่อนด้านล่างเพื่อคุย 1-ต่อ-1</p>
+            <p class="my-id-hint">ส่ง UID นี้ให้เพื่อนแอด หรือตั้งค่า Tag เพื่อหาห้องที่สนใจเรื่องเดียวกัน</p>
+            <div id="mySidebarTags" class="my-tags-list"></div>
           </div>
 
           <!-- Room Quick Join / Create -->
@@ -168,17 +188,41 @@
 
         <!-- Right Main Area: Live Typing Room -->
         <section class="chat-stage glass-panel">
-          <!-- Empty State (When not in a room yet) -->
+          <!-- Empty State (When not in a room yet) + Tag Matching Room Discovery -->
           <div id="roomEmptyState" class="room-empty-state">
             <div class="empty-illustration">⚡💬</div>
             <h2>พร้อมคุยแบบ Realtime Live-Typing</h2>
             <p>
               เลือกเพื่อนจากรายชื่อด้านซ้ายเพื่อกด <strong>"ชวนคุย"</strong> แบบ 1-ต่อ-1<br />
-              หรือกด <strong>"สร้างห้องใหม่"</strong> / กรอก <strong>Room Code</strong> เพื่อเข้าห้องสนทนาได้เลย
+              หรือค้นหาห้องที่มี <strong>Filter Tag ความสนใจตรงกับคุณ</strong> ด้านล่างได้เลย!
             </p>
-            <div class="empty-actions">
+            <div class="empty-actions" style="margin-bottom: 22px;">
               <button id="btnEmptyCreateRoom" class="btn btn-primary btn-lg">✨ สร้างห้องแชททันที</button>
-              <button id="btnMobileToggleSidebar" class="btn btn-secondary btn-lg mobile-only">👥 ดูรายชื่อเพื่อน / ใส่รหัสห้อง</button>
+              <button id="btnAutoMatchRoom" class="btn btn-secondary btn-lg">🎯 สุ่มเข้าห้องที่ Tag ตรงกับเรา</button>
+              <button id="btnMobileToggleSidebar" class="btn btn-outline btn-lg mobile-only">👥 เพื่อน / รหัสห้อง</button>
+            </div>
+
+            <!-- Room Discovery Radar -->
+            <div class="room-Match-section glass-panel" style="padding: 16px;">
+              <div class="discover-header">
+                <div>
+                  <h3 style="font-size: 1rem;">📡 ค้นหาห้องออนไลน์ที่มี Tag ความสนใจคล้ายคุณ</h3>
+                  <small style="color: var(--text-muted); font-size: 0.76rem;">เรียงลำดับตามความเข้ากันของ Tag อัตโนมัติ</small>
+                </div>
+                <div style="display:flex; gap:6px; align-items:center;">
+                  <input
+                    type="text"
+                    id="inputFilterRoomsTag"
+                    class="input-field"
+                    style="padding: 6px 10px; font-size: 0.8rem; width: 150px;"
+                    placeholder="🔍 กรองชื่อ Tag..."
+                  />
+                  <button id="btnScanRooms" type="button" class="btn btn-secondary btn-sm">🔄 สแกนหาห้อง</button>
+                </div>
+              </div>
+              <div id="discoverRoomsList" class="discover-rooms-list">
+                <!-- Populated by JS -->
+              </div>
             </div>
           </div>
 
@@ -192,6 +236,9 @@
                   <span class="room-label">ROOM CODE:</span>
                   <span id="activeRoomCode" class="room-code-pill mono">------</span>
                 </div>
+                <button id="btnToggleRoomPublic" type="button" class="room-privacy-toggle public" title="เปิด/ปิดให้คนอื่นค้นหาห้องนี้เจอจาก Tag">
+                  🌐 ห้องสาธารณะ (ค้นหาเจอด้วย Tag)
+                </button>
                 <button id="btnCopyRoomCode" class="btn btn-secondary btn-sm" title="คัดลอกรหัสห้อง">
                   📋 รหัสห้อง
                 </button>
@@ -213,29 +260,35 @@
 
             <!-- Bottom Live Typing Input Bar -->
             <div class="live-input-bar">
-              <!-- GIF Picker Popover -->
+              <!-- GIF Picker Popover (Powered by KLIPY) -->
               <div id="gifPickerPopover" class="gif-picker-popover hidden">
                 <div class="gif-picker-header">
                   <input
                     type="text"
                     id="inputGifSearch"
                     class="input-field gif-search-input"
-                    placeholder="🔍 ค้นหาภาพ GIF หรือวางลิงก์ .gif..."
+                    placeholder="🔍 ค้นหา GIF / Sticker จาก KLIPY.com..."
                     autocomplete="off"
                   />
                   <button id="btnCloseGifPicker" type="button" class="btn-icon" title="ปิด">✕</button>
                 </div>
                 <div class="gif-categories-row">
+                  <button type="button" class="btn-gif-type active" data-type="gifs">👾 GIFs</button>
+                  <button type="button" class="btn-gif-type" data-type="stickers">✨ Stickers</button>
+                  <span style="opacity:0.25;">|</span>
                   <button type="button" class="btn-gif-cat active" data-query="trending">🔥 ยอดฮิต</button>
-                  <button type="button" class="btn-gif-cat" data-query="hello cute">👋 ทักทาย</button>
-                  <button type="button" class="btn-gif-cat" data-query="funny laugh">😂 ขำๆ</button>
-                  <button type="button" class="btn-gif-cat" data-query="cat meme">🐱 แมวมีม</button>
+                  <button type="button" class="btn-gif-cat" data-query="hello">👋 ทักทาย</button>
+                  <button type="button" class="btn-gif-cat" data-query="laugh funny">😂 ขำๆ</button>
+                  <button type="button" class="btn-gif-cat" data-query="cat">🐱 แมว</button>
                   <button type="button" class="btn-gif-cat" data-query="love hug">💖 รักเลย</button>
-                  <button type="button" class="btn-gif-cat" data-query="shocked omg">😱 ตกใจ</button>
-                  <button type="button" class="btn-gif-cat" data-query="dance party">🎉 เต้นฉลอง</button>
+                  <button type="button" class="btn-gif-cat" data-query="shocked">😱 ตกใจ</button>
+                  <button type="button" class="btn-gif-cat" data-query="dance">🎉 เต้นฉลอง</button>
                 </div>
                 <div id="gifResultsGrid" class="gif-results-grid">
-                  <!-- Populated by JS -->
+                  <!-- Populated by KLIPY API -->
+                </div>
+                <div class="gif-powered-by">
+                  Powered by <a href="https://klipy.com" target="_blank" rel="noopener noreferrer">KLIPY.com</a>
                 </div>
               </div>
 

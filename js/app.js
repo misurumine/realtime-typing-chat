@@ -36,6 +36,24 @@
     'wss://broker.hivemq.com:8884/mqtt'
   ];
 
+  // Default Interest Filter Tags
+  const PRESET_INTEREST_TAGS = [
+    '🎮 เล่นเกม',
+    '🎵 ฟังเพลง',
+    '🎬 ดูหนัง/ซีรีส์',
+    '🎌 อนิเมะ/มังงะ',
+    '💻 เขียนโค้ด/ไอที',
+    '🎨 วาดรูป/ศิลปะ',
+    '🐱 ทาสแมว/สัตว์เลี้ยง',
+    '🍜 สายกิน/คาเฟ่',
+    '⚽ กีฬา/ฟิตเนส',
+    '📚 อ่านหนังสือ',
+    '✈️ ท่องเที่ยว',
+    '🌙 คนนอนดึก',
+    '💬 คุยเล่นเรื่อยเปื่อย',
+    '❤️ หาเพื่อนคุย'
+  ];
+
   // Built-in SVG Data URI Avatars
   const PRESET_AVATARS = [
     createSvgAvatar('🦊', '#f97316', '#ea580c'),
@@ -88,11 +106,14 @@
   }
 
   // Application State
-  let currentUser = loadUserSession(); // { uid, username, avatar } or null
+  let currentUser = loadUserSession(); // { uid, username, avatar, tags } or null
   let selectedAvatar = currentUser ? currentUser.avatar : PRESET_AVATARS[0];
-  let friendsMap = loadFriendsList(); // Map<uid, { uid, username, avatar, online, inRoom, roomCode, lastSeen }>
+  let selectedTags = new Set(currentUser && Array.isArray(currentUser.tags) ? currentUser.tags : ['💬 คุยเล่นเรื่อยเปื่อย']);
+  let friendsMap = loadFriendsList(); // Map<uid, { uid, username, avatar, tags, online, inRoom, roomCode, lastSeen }>
   let activeRoomCode = null;
-  let roomMembers = new Map(); // Map<uid, { uid, username, avatar, currentText, updatedAt }>
+  let isRoomPublic = true; // Whether active room is discoverable via Tag Matchmaking
+  let roomMembers = new Map(); // Map<uid, { uid, username, avatar, tags, currentText, image, updatedAt }>
+  let discoveredRooms = new Map(); // Map<roomCode, { roomCode, hostName, hostAvatar, memberCount, tags, updatedAt }>
   let currentImage = null; // Base64 data URL for live image typing
   let pendingInviteRoomCode = null;
   let deferredInstallPrompt = null;
@@ -110,6 +131,15 @@
   const presetAvatarGrid = document.getElementById('presetAvatarGrid');
   const existingUidNotice = document.getElementById('existingUidNotice');
   const setupUidText = document.getElementById('setupUidText');
+  const presetTagsContainer = document.getElementById('presetTagsContainer');
+  const inputCustomTag = document.getElementById('inputCustomTag');
+  const btnAddCustomTag = document.getElementById('btnAddCustomTag');
+  const mySidebarTags = document.getElementById('mySidebarTags');
+  const btnAutoMatchRoom = document.getElementById('btnAutoMatchRoom');
+  const inputFilterRoomsTag = document.getElementById('inputFilterRoomsTag');
+  const btnScanRooms = document.getElementById('btnScanRooms');
+  const discoverRoomsList = document.getElementById('discoverRoomsList');
+  const btnToggleRoomPublic = document.getElementById('btnToggleRoomPublic');
 
   const userChip = document.getElementById('userChip');
   const headerAvatar = document.getElementById('headerAvatar');
@@ -185,6 +215,7 @@
   const topicInbox = (uid) => `${TOPIC_PREFIX}/inbox/${uid}`;
   const topicPresence = (uid) => `${TOPIC_PREFIX}/presence/${uid}`;
   const topicRoom = (code) => `${TOPIC_PREFIX}/room/${code}`;
+  const topicDirectory = () => `${TOPIC_PREFIX}/directory`;
 
   // --- LocalStorage Helpers ---
   function loadUserSession() {
@@ -305,19 +336,24 @@
       // 1. Subscribe to our personal inbox (for direct friend pings & room invitations)
       mqttClient.subscribe(topicInbox(currentUser.uid), { qos: 0 });
 
-      // 2. Subscribe to all friends' presence channels
+      // 2. Subscribe to public room directory for Tag Matchmaking
+      mqttClient.subscribe(topicDirectory(), { qos: 0 });
+
+      // 3. Subscribe to all friends' presence channels
       friendsMap.forEach((_, friendUid) => {
         mqttClient.subscribe(topicPresence(friendUid), { qos: 0 });
       });
 
-      // 3. Re-subscribe to active room if currently in one
+      // 4. Re-subscribe to active room if currently in one
       if (activeRoomCode) {
         mqttClient.subscribe(topicRoom(activeRoomCode), { qos: 0 });
         broadcastRoomJoin();
+        broadcastActiveRoomToDirectory();
       }
 
-      // 4. Broadcast our online status & ping all friends for their live status
+      // 5. Broadcast our online status, query public rooms & ping all friends
       broadcastMyPresence(true);
+      requestDirectoryScan();
       pingAllFriends();
       checkUrlRoomInvite();
     });
@@ -343,6 +379,8 @@
 
       if (currentUser && topic === topicInbox(currentUser.uid)) {
         handleInboxMessage(data);
+      } else if (topic === topicDirectory()) {
+        handleDirectoryMessage(data);
       } else if (topic.startsWith(`${TOPIC_PREFIX}/presence/`)) {
         handlePresenceMessage(data);
       } else if (activeRoomCode && topic === topicRoom(activeRoomCode)) {
@@ -350,11 +388,14 @@
       }
     });
 
-    // Periodic heartbeat so friends know we're still online
+    // Periodic heartbeat so friends & room radar know we're still online
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = setInterval(() => {
       if (mqttClient && mqttClient.connected && currentUser) {
         broadcastMyPresence(true);
+        if (activeRoomCode && isRoomPublic) {
+          broadcastActiveRoomToDirectory();
+        }
       }
       // Mark friends offline if no heartbeat for 75s
       const now = Date.now();
@@ -368,7 +409,17 @@
         }
       });
       if (changed) renderFriendsList();
-    }, 25000);
+
+      // Clean up stale discovered rooms older than 65s
+      let roomsChanged = false;
+      discoveredRooms.forEach((r, code) => {
+        if (now - r.updatedAt > 65000) {
+          discoveredRooms.delete(code);
+          roomsChanged = true;
+        }
+      });
+      if (roomsChanged && !activeRoomCode) renderDiscoveredRooms();
+    }, 22000);
   }
 
   function publishJson(topic, payload) {
@@ -384,11 +435,195 @@
       uid: currentUser.uid,
       username: currentUser.username,
       avatar: currentUser.avatar,
+      tags: Array.from(selectedTags),
       online: Boolean(isOnline),
       inRoom: Boolean(isOnline && activeRoomCode),
       roomCode: isOnline ? activeRoomCode : null,
       ts: Date.now()
     });
+  }
+
+  // --- Room Directory & Tag Matchmaking Engine ---
+  function getAggregatedRoomTags() {
+    const tagSet = new Set(selectedTags);
+    roomMembers.forEach((m) => {
+      if (Array.isArray(m.tags)) {
+        m.tags.forEach((t) => tagSet.add(t));
+      }
+    });
+    return Array.from(tagSet);
+  }
+
+  function broadcastActiveRoomToDirectory() {
+    if (!currentUser || !activeRoomCode || !isRoomPublic) return;
+    publishJson(topicDirectory(), {
+      type: 'room_announce',
+      roomCode: activeRoomCode,
+      hostUid: currentUser.uid,
+      hostName: currentUser.username,
+      hostAvatar: currentUser.avatar,
+      memberCount: Math.max(1, roomMembers.size),
+      tags: getAggregatedRoomTags(),
+      ts: Date.now()
+    });
+  }
+
+  function broadcastRoomClosedToDirectory(code) {
+    if (!code) return;
+    publishJson(topicDirectory(), {
+      type: 'room_closed',
+      roomCode: code
+    });
+  }
+
+  function requestDirectoryScan() {
+    if (!currentUser) return;
+    publishJson(topicDirectory(), {
+      type: 'room_query',
+      fromUid: currentUser.uid
+    });
+  }
+
+  function handleDirectoryMessage(data) {
+    if (!data) return;
+
+    // 1. Someone is scanning for active rooms -> if we are in a public room, announce our room & tags!
+    if (data.type === 'room_query') {
+      if (activeRoomCode && isRoomPublic && currentUser && data.fromUid !== currentUser.uid) {
+        broadcastActiveRoomToDirectory();
+      }
+      return;
+    }
+
+    // 2. Received an active room announcement
+    if (data.type === 'room_announce' && data.roomCode) {
+      discoveredRooms.set(data.roomCode, {
+        roomCode: data.roomCode,
+        hostUid: data.hostUid,
+        hostName: data.hostName || 'ไม่ระบุชื่อ',
+        hostAvatar: data.hostAvatar || PRESET_AVATARS[0],
+        memberCount: data.memberCount || 1,
+        tags: Array.isArray(data.tags) ? data.tags : [],
+        updatedAt: Date.now()
+      });
+      if (!activeRoomCode) {
+        renderDiscoveredRooms();
+      }
+      return;
+    }
+
+    // 3. Room closed or switched to private
+    if (data.type === 'room_closed' && data.roomCode) {
+      if (discoveredRooms.has(data.roomCode)) {
+        discoveredRooms.delete(data.roomCode);
+        if (!activeRoomCode) {
+          renderDiscoveredRooms();
+        }
+      }
+    }
+  }
+
+  function calculateTagMatch(roomTags) {
+    if (!Array.isArray(roomTags) || roomTags.length === 0) {
+      return { matchedTags: [], score: 0 };
+    }
+    const myTagsLower = new Map();
+    selectedTags.forEach((t) => myTagsLower.set(t.toLowerCase(), t));
+
+    const matchedTags = [];
+    roomTags.forEach((rt) => {
+      const clean = String(rt).trim();
+      if (myTagsLower.has(clean.toLowerCase())) {
+        matchedTags.push(clean);
+      }
+    });
+
+    const totalMyTags = Math.max(1, selectedTags.size);
+    const score = Math.round((matchedTags.length / totalMyTags) * 100);
+    return { matchedTags, score };
+  }
+
+  function renderDiscoveredRooms() {
+    if (!discoverRoomsList) return;
+    discoverRoomsList.innerHTML = '';
+
+    const filterKeyword = (inputFilterRoomsTag && inputFilterRoomsTag.value || '').trim().toLowerCase();
+    const myTagsLower = new Set(Array.from(selectedTags).map((t) => t.toLowerCase()));
+
+    const scoredRooms = Array.from(discoveredRooms.values())
+      .filter((r) => {
+        if (!filterKeyword) return true;
+        const matchCode = r.roomCode.toLowerCase().includes(filterKeyword);
+        const matchHost = (r.hostName || '').toLowerCase().includes(filterKeyword);
+        const matchTag = (r.tags || []).some((t) => String(t).toLowerCase().includes(filterKeyword));
+        return matchCode || matchHost || matchTag;
+      })
+      .map((r) => {
+        const match = calculateTagMatch(r.tags);
+        return { ...r, matchedTags: match.matchedTags, matchCount: match.matchedTags.length, score: match.score };
+      })
+      .sort((a, b) => {
+        if (b.matchCount !== a.matchCount) return b.matchCount - a.matchCount;
+        return b.updatedAt - a.updatedAt;
+      });
+
+    if (scoredRooms.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'friend-empty';
+      empty.innerHTML =
+        'ยังไม่มีห้องสาธารณะที่เปิดอยู่ตอนนี้ หรือไม่มีห้องที่ตรงกับคำค้นหา<br>กด <strong>"✨ สร้างห้องแชททันที"</strong> เพื่อเปิดห้องด้วย Tag ของคุณให้คนอื่นเข้ามาคุยได้เลย!';
+      discoverRoomsList.appendChild(empty);
+      return;
+    }
+
+    scoredRooms.forEach((room) => {
+      const card = document.createElement('div');
+      card.className = `discover-room-card ${room.matchCount > 0 ? 'high-match' : ''}`;
+
+      const matchBadgeHtml =
+        room.matchCount > 0
+          ? `<span class="match-score-pill">🎯 ตรงกับคุณ ${room.matchCount} Tag (${room.score}%)</span>`
+          : `<span class="typing-status-pill">ห้องทั่วไป</span>`;
+
+      const tagsHtml =
+        room.tags && room.tags.length > 0
+          ? room.tags
+              .map((t) => {
+                const isMatch = myTagsLower.has(String(t).toLowerCase());
+                return `<span class="tag-badge-mini ${isMatch ? 'matched' : ''}">${isMatch ? '✓ ' : ''}${escapeHtml(t)}</span>`;
+              })
+              .join('')
+          : '<span class="tag-badge-mini">ไม่มี Tag</span>';
+
+      card.innerHTML = `
+        <div class="discover-room-info">
+          <div class="discover-room-top">
+            <img src="${room.hostAvatar || PRESET_AVATARS[0]}" alt="Host" class="avatar-xs" />
+            <span class="discover-room-title">ห้องของ <span class="host-name-text"></span></span>
+            <span class="mono" style="font-size:0.75rem; color:#a5b4fc;">#${room.roomCode}</span>
+            <span class="member-count-badge" style="font-size:0.7rem; padding:2px 8px;">👥 ${room.memberCount} คน</span>
+            ${matchBadgeHtml}
+          </div>
+          <div class="discover-room-tags">${tagsHtml}</div>
+        </div>
+        <button type="button" class="btn btn-primary btn-sm btn-join-discovered">เข้าร่วม</button>
+      `;
+
+      card.querySelector('.host-name-text').textContent = room.hostName;
+      card.querySelector('.btn-join-discovered').addEventListener('click', () => {
+        joinRoomByCode(room.roomCode);
+      });
+
+      discoverRoomsList.appendChild(card);
+    });
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
   function pingFriend(friendUid) {
@@ -511,6 +746,7 @@
         uid: data.uid,
         username: data.username || data.uid,
         avatar: data.avatar || PRESET_AVATARS[0],
+        tags: Array.isArray(data.tags) ? data.tags : [],
         currentText: data.currentText || '',
         updatedAt: Date.now()
       });
@@ -526,9 +762,11 @@
         uid: currentUser.uid,
         username: currentUser.username,
         avatar: currentUser.avatar,
+        tags: Array.from(selectedTags),
         currentText: myMember ? myMember.currentText : liveTypingInput.value,
         image: myMember ? myMember.image : currentImage
       });
+      broadcastActiveRoomToDirectory();
       return;
     }
 
@@ -538,12 +776,14 @@
         uid: data.uid,
         username: data.username || data.uid,
         avatar: data.avatar || PRESET_AVATARS[0],
+        tags: Array.isArray(data.tags) ? data.tags : [],
         currentText: data.currentText || '',
         image: data.image || null,
         updatedAt: Date.now()
       });
       if (!existed) {
         renderAllLiveCards();
+        broadcastActiveRoomToDirectory();
       } else {
         updateSingleCardContent(data.uid, data.currentText || '', data.image || null);
       }
@@ -642,7 +882,73 @@
     reader.readAsDataURL(file);
   });
 
-  // --- Views Navigation ---
+  // --- Views Navigation & Interest Tags Picker ---
+  function initInterestTagsPicker() {
+    if (!presetTagsContainer) return;
+    presetTagsContainer.innerHTML = '';
+
+    // Combine default tags with any custom tags the user already added
+    const allTags = new Set([...PRESET_INTEREST_TAGS, ...selectedTags]);
+
+    allTags.forEach((tag) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'tag-chip' + (selectedTags.has(tag) ? ' selected' : '');
+      chip.textContent = tag;
+      chip.addEventListener('click', () => {
+        if (selectedTags.has(tag)) {
+          selectedTags.delete(tag);
+          chip.classList.remove('selected');
+        } else {
+          if (selectedTags.size >= 8) {
+            showToast('เลือก Tag ความสนใจได้สูงสุด 8 รายการครับ');
+            return;
+          }
+          selectedTags.add(tag);
+          chip.classList.add('selected');
+        }
+      });
+      presetTagsContainer.appendChild(chip);
+    });
+  }
+
+  if (btnAddCustomTag && inputCustomTag) {
+    btnAddCustomTag.addEventListener('click', () => {
+      const val = inputCustomTag.value.trim();
+      if (!val) return;
+      if (selectedTags.size >= 8) {
+        showToast('เลือก Tag ความสนใจได้สูงสุด 8 รายการครับ');
+        return;
+      }
+      const formatted = val.startsWith('#') ? val : `#${val}`;
+      selectedTags.add(formatted);
+      inputCustomTag.value = '';
+      initInterestTagsPicker();
+    });
+
+    inputCustomTag.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        btnAddCustomTag.click();
+      }
+    });
+  }
+
+  function renderMySidebarTags() {
+    if (!mySidebarTags) return;
+    mySidebarTags.innerHTML = '';
+    if (selectedTags.size === 0) {
+      mySidebarTags.innerHTML = '<span class="tag-badge-mini">ยังไม่ได้เลือก Tag (กด ⚙️ เพื่อตั้งค่า)</span>';
+      return;
+    }
+    selectedTags.forEach((t) => {
+      const span = document.createElement('span');
+      span.className = 'tag-badge-mini';
+      span.textContent = t;
+      mySidebarTags.appendChild(span);
+    });
+  }
+
   function showSetupView() {
     viewSetup.classList.add('active');
     viewWorkspace.classList.remove('active');
@@ -651,6 +957,7 @@
     if (currentUser) {
       inputUsername.value = currentUser.username;
       selectedAvatar = currentUser.avatar || PRESET_AVATARS[0];
+      selectedTags = new Set(Array.isArray(currentUser.tags) && currentUser.tags.length > 0 ? currentUser.tags : ['💬 คุยเล่นเรื่อยเปื่อย']);
       existingUidNotice.classList.remove('hidden');
       setupUidText.textContent = currentUser.uid;
     } else {
@@ -659,6 +966,7 @@
       existingUidNotice.classList.add('hidden');
     }
     initAvatarPicker();
+    initInterestTagsPicker();
     inputUsername.focus();
   }
 
@@ -672,7 +980,9 @@
     headerUid.textContent = currentUser.uid;
     myUidDisplay.textContent = currentUser.uid;
 
+    renderMySidebarTags();
     renderFriendsList();
+    renderDiscoveredRooms();
     connectServerlessNetwork();
   }
 
@@ -696,7 +1006,8 @@
     currentUser = {
       uid,
       username: name,
-      avatar: selectedAvatar
+      avatar: selectedAvatar,
+      tags: Array.from(selectedTags)
     };
     saveUserSession(currentUser);
 
@@ -705,7 +1016,9 @@
       const m = roomMembers.get(uid);
       m.username = name;
       m.avatar = selectedAvatar;
+      m.tags = Array.from(selectedTags);
       renderAllLiveCards();
+      broadcastActiveRoomToDirectory();
     }
 
     showWorkspaceView();
@@ -882,18 +1195,24 @@
       uid: currentUser.uid,
       username: currentUser.username,
       avatar: currentUser.avatar,
+      tags: Array.from(selectedTags),
       currentText: myMember ? myMember.currentText : ''
     });
   }
 
   function leaveCurrentRoomSilent() {
     if (!activeRoomCode || !currentUser) return;
-    publishJson(topicRoom(activeRoomCode), {
+    const oldCode = activeRoomCode;
+    publishJson(topicRoom(oldCode), {
       type: 'member_leave',
       uid: currentUser.uid
     });
+    if (roomMembers.size <= 1) {
+      broadcastRoomClosedToDirectory(oldCode);
+      discoveredRooms.delete(oldCode);
+    }
     if (mqttClient && mqttClient.connected) {
-      mqttClient.unsubscribe(topicRoom(activeRoomCode));
+      mqttClient.unsubscribe(topicRoom(oldCode));
     }
     activeRoomCode = null;
     roomMembers.clear();
@@ -917,6 +1236,7 @@
       uid: currentUser.uid,
       username: currentUser.username,
       avatar: currentUser.avatar,
+      tags: Array.from(selectedTags),
       currentText: '',
       image: null,
       updatedAt: Date.now()
@@ -928,6 +1248,7 @@
     if (mqttClient && mqttClient.connected) {
       mqttClient.subscribe(topicRoom(activeRoomCode), { qos: 0 }, () => {
         broadcastRoomJoin();
+        broadcastActiveRoomToDirectory();
       });
     }
 
@@ -946,6 +1267,57 @@
 
   btnCreateRoom.addEventListener('click', createNewRoom);
   btnEmptyCreateRoom.addEventListener('click', createNewRoom);
+
+  if (btnScanRooms) {
+    btnScanRooms.addEventListener('click', () => {
+      requestDirectoryScan();
+      renderDiscoveredRooms();
+      showToast('📡 กำลังสแกนหาห้องที่มี Tag ตรงกับคุณ...');
+    });
+  }
+
+  if (inputFilterRoomsTag) {
+    inputFilterRoomsTag.addEventListener('input', () => {
+      renderDiscoveredRooms();
+    });
+  }
+
+  if (btnAutoMatchRoom) {
+    btnAutoMatchRoom.addEventListener('click', () => {
+      const scored = Array.from(discoveredRooms.values())
+        .map((r) => ({ ...r, ...calculateTagMatch(r.tags) }))
+        .sort((a, b) => b.matchedTags.length - a.matchedTags.length);
+
+      if (scored.length > 0 && scored[0].matchedTags.length > 0) {
+        const best = scored[0];
+        joinRoomByCode(best.roomCode);
+        showToast(`🎯 จับคู่เข้าห้อง #${best.roomCode} (ตรงกัน ${best.matchedTags.length} Tag)!`);
+      } else if (scored.length > 0) {
+        joinRoomByCode(scored[0].roomCode);
+        showToast(`เข้าร่วมห้อง #${scored[0].roomCode}`);
+      } else {
+        createNewRoom();
+        showToast('✨ ยังไม่มีห้องที่เปิดอยู่ ระบบสร้างห้องสาธารณะตาม Tag ของคุณให้แล้ว รอเพื่อนที่มี Tag ตรงกันเข้ามาได้เลย!');
+      }
+    });
+  }
+
+  if (btnToggleRoomPublic) {
+    btnToggleRoomPublic.addEventListener('click', () => {
+      isRoomPublic = !isRoomPublic;
+      if (isRoomPublic) {
+        btnToggleRoomPublic.classList.add('public');
+        btnToggleRoomPublic.textContent = '🌐 ห้องสาธารณะ (ค้นหาเจอด้วย Tag)';
+        broadcastActiveRoomToDirectory();
+        showToast('เปิดห้องเป็นสาธารณะแล้ว คนที่มี Tag ตรงกับคุณจะค้นหาห้องนี้เจอ');
+      } else {
+        btnToggleRoomPublic.classList.remove('public');
+        btnToggleRoomPublic.textContent = '🔒 ห้องส่วนตัว (เข้าได้เฉพาะรหัส/คำเชิญ)';
+        broadcastRoomClosedToDirectory(activeRoomCode);
+        showToast('เปลี่ยนเป็นห้องส่วนตัวแล้ว จะไม่แสดงในหน้าค้นหา Tag');
+      }
+    });
+  }
 
   formJoinRoom.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -990,6 +1362,8 @@
     if (!activeRoomCode) {
       roomEmptyState.classList.remove('hidden');
       roomActiveView.classList.add('hidden');
+      requestDirectoryScan();
+      renderDiscoveredRooms();
       return;
     }
     roomEmptyState.classList.add('hidden');
@@ -1002,6 +1376,7 @@
   function renderAllLiveCards() {
     liveCardsGrid.innerHTML = '';
     roomMemberCount.textContent = `${roomMembers.size} คนในห้อง`;
+    const myTagsLower = new Set(Array.from(selectedTags).map((t) => t.toLowerCase()));
 
     // Always place currentUser card first
     const sortedMembers = Array.from(roomMembers.values()).sort((a, b) => {
@@ -1013,6 +1388,14 @@
     sortedMembers.forEach((member) => {
       const isSelf = currentUser && member.uid === currentUser.uid;
       const hasContent = Boolean((member.currentText && member.currentText.length > 0) || member.image);
+      const memberTags = Array.isArray(member.tags) ? member.tags : [];
+      const tagsHtml = memberTags
+        .slice(0, 5)
+        .map((t) => {
+          const isMatch = !isSelf && myTagsLower.has(String(t).toLowerCase());
+          return `<span class="tag-badge-mini ${isMatch ? 'matched' : ''}">${isMatch ? '✓ ' : ''}${escapeHtml(t)}</span>`;
+        })
+        .join('');
 
       const card = document.createElement('div');
       card.id = `live-card-${member.uid}`;
@@ -1028,6 +1411,7 @@
                 ${isSelf ? '<span class="self-tag">คุณ</span>' : ''}
               </div>
               <div class="live-card-uid mono">${member.uid}</div>
+              ${tagsHtml ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">${tagsHtml}</div>` : ''}
             </div>
           </div>
           <span class="typing-status-pill ${hasContent ? 'active' : ''}" id="status-pill-${member.uid}">
@@ -1213,15 +1597,42 @@
     }
   });
 
-  // --- Built-in GIF Search & Picker (Tenor Public API + Direct GIF URL) ---
-  const TENOR_PUBLIC_KEY = 'LIVDSRZULELA';
+  // --- Built-in GIF & Sticker Search Powered by KLIPY.com ---
+  const KLIPY_API_BASE = 'https://api.klipy.com/api/v1/pmpZyPifwSulBfELHCbpaOllUfgsjqt9yeImc2XWIcHSWjnAUBw9oueRf4kD5r25';
+  let activeKlipyType = 'gifs'; // 'gifs' or 'stickers'
+  let activeKlipyQuery = 'trending';
   let gifSearchTimer = null;
 
-  async function fetchGifs(query) {
-    gifResultsGrid.innerHTML = '<div class="gif-empty-status">⏳ กำลังโหลดภาพ GIF...</div>';
-    const cleanQuery = (query || '').trim();
+  function extractKlipyUrls(item) {
+    const f = item && (item.file || item.files);
+    if (!f) return null;
 
-    // If user pasted a direct .gif or image URL in the GIF search box
+    // KLIPY v1 structure: file.{xs, sm, md, hd}.{gif, webp}
+    const preview =
+      (f.xs && f.xs.webp && f.xs.webp.url) ||
+      (f.xs && f.xs.gif && f.xs.gif.url) ||
+      (f.sm && f.sm.webp && f.sm.webp.url) ||
+      (f.sm && f.sm.gif && f.sm.gif.url) ||
+      (f.tinygif && f.tinygif.url) ||
+      (f.gif && f.gif.url);
+
+    const full =
+      (f.sm && f.sm.gif && f.sm.gif.url) ||
+      (f.md && f.md.gif && f.md.gif.url) ||
+      (f.hd && f.hd.gif && f.hd.gif.url) ||
+      (f.sm && f.sm.webp && f.sm.webp.url) ||
+      (f.gif && f.gif.url);
+
+    if (!preview && !full) return null;
+    return { previewUrl: preview || full, fullUrl: full || preview };
+  }
+
+  async function fetchGifs(query) {
+    gifResultsGrid.innerHTML = '<div class="gif-empty-status">⏳ กำลังดึงข้อมูลจาก KLIPY.com...</div>';
+    const cleanQuery = (query || '').trim();
+    activeKlipyQuery = cleanQuery || 'trending';
+
+    // Direct URL support if user pastes a link
     if (/^https?:\/\/.+\.(gif|webp|png|jpg|jpeg)(\?.*)?$/i.test(cleanQuery)) {
       gifResultsGrid.innerHTML = '';
       const btn = document.createElement('button');
@@ -1242,36 +1653,38 @@
 
     const endpoint =
       !cleanQuery || cleanQuery === 'trending'
-        ? `https://g.tenor.com/v1/trending?key=${TENOR_PUBLIC_KEY}&limit=18&media_filter=minimal`
-        : `https://g.tenor.com/v1/search?q=${encodeURIComponent(cleanQuery)}&key=${TENOR_PUBLIC_KEY}&limit=18&media_filter=minimal`;
+        ? `${KLIPY_API_BASE}/${activeKlipyType}/trending?page=1&per_page=24&locale=th`
+        : `${KLIPY_API_BASE}/${activeKlipyType}/search?q=${encodeURIComponent(cleanQuery)}&page=1&per_page=24&locale=th`;
 
     try {
       const res = await fetch(endpoint);
-      const data = await res.json();
-      const results = (data && data.results) || [];
-      if (results.length === 0) {
-        gifResultsGrid.innerHTML = '<div class="gif-empty-status">ไม่พบภาพ GIF ที่ค้นหา ลองคำอื่นดูนะครับ</div>';
+      const json = await res.json();
+      const items = (json && json.data && Array.isArray(json.data.data) && json.data.data) || [];
+
+      if (items.length === 0) {
+        gifResultsGrid.innerHTML = '<div class="gif-empty-status">ไม่พบภาพใน KLIPY ที่ค้นหา ลองคำอื่นดูนะครับ</div>';
         return;
       }
+
       gifResultsGrid.innerHTML = '';
-      results.forEach((item) => {
-        const media = item.media && item.media[0];
-        if (!media) return;
-        const previewUrl = (media.tinygif && media.tinygif.url) || (media.nanogif && media.nanogif.url) || (media.gif && media.gif.url);
-        const fullUrl = (media.tinygif && media.tinygif.url) || (media.gif && media.gif.url);
-        if (!previewUrl || !fullUrl) return;
+      items.forEach((item) => {
+        const urls = extractKlipyUrls(item);
+        if (!urls) return;
 
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'gif-item-btn';
         const img = document.createElement('img');
-        img.src = previewUrl;
+        img.src = urls.previewUrl;
         img.loading = 'lazy';
-        img.alt = item.content_description || 'GIF';
+        img.alt = item.title || item.slug || 'KLIPY GIF';
         btn.appendChild(img);
 
         btn.addEventListener('click', () => {
-          setAndBroadcastLiveMedia(fullUrl, '👾 ส่งภาพ GIF สดให้เพื่อนในห้องแล้ว! (กด Enter เพื่อล้าง)');
+          setAndBroadcastLiveMedia(
+            urls.fullUrl,
+            `👾 ส่ง ${activeKlipyType === 'stickers' ? 'Sticker' : 'GIF'} จาก KLIPY สดแล้ว! (กด Enter เพื่อล้าง)`
+          );
           gifPickerPopover.classList.add('hidden');
           liveTypingInput.focus();
         });
@@ -1279,7 +1692,8 @@
         gifResultsGrid.appendChild(btn);
       });
     } catch (err) {
-      gifResultsGrid.innerHTML = '<div class="gif-empty-status">ไม่สามารถเชื่อมต่อคลัง GIF ได้ในขณะนี้ สามารถวางลิงก์ .gif ลงในช่องค้นหาด้านบนได้โดยตรง</div>';
+      gifResultsGrid.innerHTML =
+        '<div class="gif-empty-status">ไม่สามารถเชื่อมต่อ KLIPY.com ได้ในขณะนี้ สามารถวางลิงก์ .gif ลงในช่องค้นหาด้านบนได้โดยตรง</div>';
     }
   }
 
@@ -1309,6 +1723,15 @@
     gifSearchTimer = setTimeout(() => {
       fetchGifs(inputGifSearch.value);
     }, 350);
+  });
+
+  document.querySelectorAll('.btn-gif-type').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.btn-gif-type').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeKlipyType = btn.getAttribute('data-type') || 'gifs';
+      fetchGifs(inputGifSearch.value || activeKlipyQuery);
+    });
   });
 
   document.querySelectorAll('.btn-gif-cat').forEach((btn) => {
