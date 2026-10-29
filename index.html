@@ -213,11 +213,37 @@
 
             <!-- Bottom Live Typing Input Bar -->
             <div class="live-input-bar">
-              <!-- Live Image Preview Bar (When image selected) -->
+              <!-- GIF Picker Popover -->
+              <div id="gifPickerPopover" class="gif-picker-popover hidden">
+                <div class="gif-picker-header">
+                  <input
+                    type="text"
+                    id="inputGifSearch"
+                    class="input-field gif-search-input"
+                    placeholder="🔍 ค้นหาภาพ GIF หรือวางลิงก์ .gif..."
+                    autocomplete="off"
+                  />
+                  <button id="btnCloseGifPicker" type="button" class="btn-icon" title="ปิด">✕</button>
+                </div>
+                <div class="gif-categories-row">
+                  <button type="button" class="btn-gif-cat active" data-query="trending">🔥 ยอดฮิต</button>
+                  <button type="button" class="btn-gif-cat" data-query="hello cute">👋 ทักทาย</button>
+                  <button type="button" class="btn-gif-cat" data-query="funny laugh">😂 ขำๆ</button>
+                  <button type="button" class="btn-gif-cat" data-query="cat meme">🐱 แมวมีม</button>
+                  <button type="button" class="btn-gif-cat" data-query="love hug">💖 รักเลย</button>
+                  <button type="button" class="btn-gif-cat" data-query="shocked omg">😱 ตกใจ</button>
+                  <button type="button" class="btn-gif-cat" data-query="dance party">🎉 เต้นฉลอง</button>
+                </div>
+                <div id="gifResultsGrid" class="gif-results-grid">
+                  <!-- Populated by JS -->
+                </div>
+              </div>
+
+              <!-- Live Image Preview Bar (When image/GIF selected) -->
               <div id="inputImagePreviewBar" class="input-image-preview-bar hidden">
                 <img id="inputPreviewThumb" src="" alt="Preview" class="input-preview-thumb" />
                 <div class="input-preview-info">
-                  <span>📷 แนบรูปภาพสดแล้ว (เพื่อนเห็นทันที) • กด Enter เพื่อล้างรูปทิ้ง</span>
+                  <span>📷 แนบรูปภาพ/GIF สดแล้ว (เพื่อนเห็นทันที) • กด Enter เพื่อล้างทิ้ง</span>
                 </div>
                 <button id="btnRemoveInputImage" type="button" class="btn-remove-preview" title="ลบรูป">✕</button>
               </div>
@@ -225,22 +251,27 @@
               <div class="live-input-meta">
                 <span class="live-indicator">
                   <span class="pulse-dot"></span>
-                  พิมพ์สด/ส่งรูปสด • กด <kbd>Enter</kbd> หรือปุ่ม Enter เพื่อล้างทั้งหมด
+                  พิมพ์สด/ส่งรูป/GIF สด • กด <kbd>Enter</kbd> หรือปุ่ม Enter เพื่อล้างทั้งหมด
                 </span>
                 <span id="charCounter" class="char-counter mono">0 ตัวอักษร</span>
               </div>
               <div class="live-input-row">
-                <label for="inputLiveImage" class="btn-upload-image" title="ส่งรูปภาพสด">
+                <label for="inputLiveImage" class="btn-upload-image" title="ส่งรูปภาพหรือไฟล์ GIF จากเครื่อง">
                   <span class="upload-icon">📷</span>
                   <span class="upload-text">ส่งรูป</span>
                 </label>
-                <input type="file" id="inputLiveImage" accept="image/*" class="hidden" />
+                <input type="file" id="inputLiveImage" accept="image/*,.gif" class="hidden" />
+
+                <button id="btnToggleGifPicker" type="button" class="btn-upload-image" title="ค้นหาและส่งภาพดุ๊กดิ๊ก (GIF)">
+                  <span class="upload-icon">👾</span>
+                  <span class="upload-text">GIF</span>
+                </button>
 
                 <textarea
                   id="liveTypingInput"
                   class="live-textarea"
                   rows="2"
-                  placeholder="พิมพ์ที่นี่หรือแนบรูป... (กด Enter เพื่อล้างข้อความและรูปทั้งหมด)"
+                  placeholder="พิมพ์ที่นี่, ส่งรูป/GIF หรือ Ctrl+V วางรูปได้เลย... (กด Enter เพื่อล้างทั้งหมด)"
                   autocomplete="off"
                   autocorrect="off"
                   spellcheck="false"

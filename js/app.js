@@ -149,6 +149,11 @@
   const inputImagePreviewBar = document.getElementById('inputImagePreviewBar');
   const inputPreviewThumb = document.getElementById('inputPreviewThumb');
   const btnRemoveInputImage = document.getElementById('btnRemoveInputImage');
+  const btnToggleGifPicker = document.getElementById('btnToggleGifPicker');
+  const gifPickerPopover = document.getElementById('gifPickerPopover');
+  const inputGifSearch = document.getElementById('inputGifSearch');
+  const btnCloseGifPicker = document.getElementById('btnCloseGifPicker');
+  const gifResultsGrid = document.getElementById('gifResultsGrid');
 
   const inviteModal = document.getElementById('inviteModal');
   const inviteAvatar = document.getElementById('inviteAvatar');
@@ -1098,9 +1103,9 @@
     cardEl.classList.add('flash-cleared');
   }
 
-  // --- Realtime Live Input & Image Handling ---
-  function showInputImagePreview(dataUrl) {
-    inputPreviewThumb.src = dataUrl;
+  // --- Realtime Live Input, Image & GIF Handling ---
+  function showInputImagePreview(dataOrUrl) {
+    inputPreviewThumb.src = dataOrUrl;
     inputImagePreviewBar.classList.remove('hidden');
   }
 
@@ -1111,21 +1116,57 @@
     currentImage = null;
   }
 
-  // Handle Image Upload & Compression for Instant Zero-Lag P2P/MQTT Relay
-  inputLiveImage.addEventListener('change', (e) => {
+  function setAndBroadcastLiveMedia(mediaSource, labelMsg) {
+    if (!activeRoomCode || !currentUser) return;
+    currentImage = mediaSource;
+    showInputImagePreview(currentImage);
+
+    if (roomMembers.has(currentUser.uid)) {
+      const myMem = roomMembers.get(currentUser.uid);
+      myMem.image = currentImage;
+      updateSingleCardContent(currentUser.uid, myMem.currentText, currentImage);
+    }
+
+    publishJson(topicRoom(activeRoomCode), {
+      type: 'typing_update',
+      uid: currentUser.uid,
+      username: currentUser.username,
+      avatar: currentUser.avatar,
+      text: liveTypingInput.value,
+      image: currentImage
+    });
+
+    if (labelMsg) showToast(labelMsg);
+  }
+
+  function processImageFile(file) {
+    if (!file) return;
     if (!activeRoomCode) {
-      showToast('กรุณาสร้างหรือเข้าห้องแชทก่อนส่งรูปภาพ');
+      showToast('กรุณาสร้างหรือเข้าห้องแชทก่อนส่งรูปภาพ/GIF');
       inputLiveImage.value = '';
       return;
     }
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
 
+    // Preserve animated GIFs directly if under 1.2MB
+    if (file.type === 'image/gif') {
+      if (file.size > 1250000) {
+        showToast('⚠️ ไฟล์ GIF มีขนาดใหญ่เกิน 1.2MB กรุณาใช้ปุ่ม 👾 GIF หรือเลือกไฟล์ที่เล็กลง');
+        inputLiveImage.value = '';
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        setAndBroadcastLiveMedia(ev.target.result, '👾 ส่งภาพดุ๊กดิ๊ก GIF สดแล้ว! (กด Enter เพื่อล้าง)');
+      };
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    // Standard static image -> compress for instant transmission
     const reader = new FileReader();
     reader.onload = (ev) => {
       const img = new Image();
       img.onload = () => {
-        // Optimize & resize image so it sends instantly over public relay
         const canvas = document.createElement('canvas');
         const maxDim = 800;
         let width = img.width;
@@ -1144,31 +1185,140 @@
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
 
-        currentImage = canvas.toDataURL('image/jpeg', 0.72);
-        showInputImagePreview(currentImage);
-
-        // Update own card immediately
-        if (currentUser && roomMembers.has(currentUser.uid)) {
-          const myMem = roomMembers.get(currentUser.uid);
-          myMem.image = currentImage;
-          updateSingleCardContent(currentUser.uid, myMem.currentText, currentImage);
-        }
-
-        // Broadcast to everyone in room immediately
-        publishJson(topicRoom(activeRoomCode), {
-          type: 'typing_update',
-          uid: currentUser.uid,
-          username: currentUser.username,
-          avatar: currentUser.avatar,
-          text: liveTypingInput.value,
-          image: currentImage
-        });
-
-        showToast('📷 ส่งรูปภาพสดให้ทุกคนในห้องแล้ว (กด Enter เพื่อล้าง)');
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.72);
+        setAndBroadcastLiveMedia(compressedDataUrl, '📷 ส่งรูปภาพสดให้ทุกคนในห้องแล้ว (กด Enter เพื่อล้าง)');
       };
       img.src = ev.target.result;
     };
     reader.readAsDataURL(file);
+  }
+
+  inputLiveImage.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    processImageFile(file);
+  });
+
+  // Support Ctrl+V / Paste image or GIF directly into textarea
+  liveTypingInput.addEventListener('paste', (e) => {
+    if (!activeRoomCode) return;
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        e.preventDefault();
+        const file = items[i].getAsFile();
+        processImageFile(file);
+        return;
+      }
+    }
+  });
+
+  // --- Built-in GIF Search & Picker (Tenor Public API + Direct GIF URL) ---
+  const TENOR_PUBLIC_KEY = 'LIVDSRZULELA';
+  let gifSearchTimer = null;
+
+  async function fetchGifs(query) {
+    gifResultsGrid.innerHTML = '<div class="gif-empty-status">⏳ กำลังโหลดภาพ GIF...</div>';
+    const cleanQuery = (query || '').trim();
+
+    // If user pasted a direct .gif or image URL in the GIF search box
+    if (/^https?:\/\/.+\.(gif|webp|png|jpg|jpeg)(\?.*)?$/i.test(cleanQuery)) {
+      gifResultsGrid.innerHTML = '';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'gif-item-btn';
+      btn.style.gridColumn = '1 / -1';
+      btn.style.height = '140px';
+      const img = document.createElement('img');
+      img.src = cleanQuery;
+      btn.appendChild(img);
+      btn.addEventListener('click', () => {
+        setAndBroadcastLiveMedia(cleanQuery, '👾 ส่งลิงก์ GIF สดแล้ว! (กด Enter เพื่อล้าง)');
+        gifPickerPopover.classList.add('hidden');
+      });
+      gifResultsGrid.appendChild(btn);
+      return;
+    }
+
+    const endpoint =
+      !cleanQuery || cleanQuery === 'trending'
+        ? `https://g.tenor.com/v1/trending?key=${TENOR_PUBLIC_KEY}&limit=18&media_filter=minimal`
+        : `https://g.tenor.com/v1/search?q=${encodeURIComponent(cleanQuery)}&key=${TENOR_PUBLIC_KEY}&limit=18&media_filter=minimal`;
+
+    try {
+      const res = await fetch(endpoint);
+      const data = await res.json();
+      const results = (data && data.results) || [];
+      if (results.length === 0) {
+        gifResultsGrid.innerHTML = '<div class="gif-empty-status">ไม่พบภาพ GIF ที่ค้นหา ลองคำอื่นดูนะครับ</div>';
+        return;
+      }
+      gifResultsGrid.innerHTML = '';
+      results.forEach((item) => {
+        const media = item.media && item.media[0];
+        if (!media) return;
+        const previewUrl = (media.tinygif && media.tinygif.url) || (media.nanogif && media.nanogif.url) || (media.gif && media.gif.url);
+        const fullUrl = (media.tinygif && media.tinygif.url) || (media.gif && media.gif.url);
+        if (!previewUrl || !fullUrl) return;
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'gif-item-btn';
+        const img = document.createElement('img');
+        img.src = previewUrl;
+        img.loading = 'lazy';
+        img.alt = item.content_description || 'GIF';
+        btn.appendChild(img);
+
+        btn.addEventListener('click', () => {
+          setAndBroadcastLiveMedia(fullUrl, '👾 ส่งภาพ GIF สดให้เพื่อนในห้องแล้ว! (กด Enter เพื่อล้าง)');
+          gifPickerPopover.classList.add('hidden');
+          liveTypingInput.focus();
+        });
+
+        gifResultsGrid.appendChild(btn);
+      });
+    } catch (err) {
+      gifResultsGrid.innerHTML = '<div class="gif-empty-status">ไม่สามารถเชื่อมต่อคลัง GIF ได้ในขณะนี้ สามารถวางลิงก์ .gif ลงในช่องค้นหาด้านบนได้โดยตรง</div>';
+    }
+  }
+
+  btnToggleGifPicker.addEventListener('click', () => {
+    if (!activeRoomCode) {
+      showToast('กรุณาสร้างหรือเข้าห้องแชทก่อนส่ง GIF');
+      return;
+    }
+    const isHidden = gifPickerPopover.classList.contains('hidden');
+    if (isHidden) {
+      gifPickerPopover.classList.remove('hidden');
+      inputGifSearch.focus();
+      if (gifResultsGrid.children.length === 0) {
+        fetchGifs('trending');
+      }
+    } else {
+      gifPickerPopover.classList.add('hidden');
+    }
+  });
+
+  btnCloseGifPicker.addEventListener('click', () => {
+    gifPickerPopover.classList.add('hidden');
+  });
+
+  inputGifSearch.addEventListener('input', () => {
+    if (gifSearchTimer) clearTimeout(gifSearchTimer);
+    gifSearchTimer = setTimeout(() => {
+      fetchGifs(inputGifSearch.value);
+    }, 350);
+  });
+
+  document.querySelectorAll('.btn-gif-cat').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.btn-gif-cat').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      const q = btn.getAttribute('data-query');
+      inputGifSearch.value = q === 'trending' ? '' : q;
+      fetchGifs(q);
+    });
   });
 
   btnRemoveInputImage.addEventListener('click', () => {
