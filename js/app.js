@@ -8,6 +8,24 @@
   // Storage Keys (Session persists until explicit Logout)
   const STORAGE_KEY_USER = 'livetype_user_session_v1';
   const STORAGE_KEY_FRIENDS = 'livetype_friends_list_v1';
+  const STORAGE_KEY_THEME = 'livetype_custom_theme_v1';
+
+  // Default Theme Palette
+  const DEFAULT_THEME = {
+    primary: '#6366f1',
+    accent: '#ec4899',
+    bg: '#070a12',
+    card: '#111827',
+    text: '#f8fafc',
+    radius: 14
+  };
+
+  const PRESET_THEMES = {
+    neon: { primary: '#6366f1', accent: '#ec4899', bg: '#070a12', card: '#111827', text: '#f8fafc', radius: 14 },
+    emerald: { primary: '#10b981', accent: '#14b8a6', bg: '#061611', card: '#0f291e', text: '#ecfdf5', radius: 12 },
+    sunset: { primary: '#f43f5e', accent: '#f59e0b', bg: '#18070b', card: '#2b0e15', text: '#fff1f2', radius: 16 },
+    amoled: { primary: '#38bdf8', accent: '#a855f7', bg: '#000000', card: '#0a0a0a', text: '#f0f9ff', radius: 8 }
+  };
 
   // Topic prefix for public WebSocket relay (Ephemeral QoS 0, retain: false -> zero history stored)
   const TOPIC_PREFIX = 'livetype_zero_history_v1_9f8a7b';
@@ -140,6 +158,23 @@
   const btnAcceptInvite = document.getElementById('btnAcceptInvite');
   const btnDeclineInvite = document.getElementById('btnDeclineInvite');
   const toastContainer = document.getElementById('toastContainer');
+
+  // Theme Customizer Elements
+  const btnOpenTheme = document.getElementById('btnOpenTheme');
+  const themeModal = document.getElementById('themeModal');
+  const btnCloseTheme = document.getElementById('btnCloseTheme');
+  const btnResetTheme = document.getElementById('btnResetTheme');
+  const colorPickerPrimary = document.getElementById('colorPickerPrimary');
+  const colorPickerAccent = document.getElementById('colorPickerAccent');
+  const colorPickerBg = document.getElementById('colorPickerBg');
+  const colorPickerCard = document.getElementById('colorPickerCard');
+  const colorPickerText = document.getElementById('colorPickerText');
+  const rangeRadius = document.getElementById('rangeRadius');
+  const hexPrimary = document.getElementById('hexPrimary');
+  const hexAccent = document.getElementById('hexAccent');
+  const hexBg = document.getElementById('hexBg');
+  const hexCard = document.getElementById('hexCard');
+  const hexText = document.getElementById('hexText');
 
   // --- Topic Builders ---
   const topicInbox = (uid) => `${TOPIC_PREFIX}/inbox/${uid}`;
@@ -1258,4 +1293,108 @@
   } else {
     showSetupView();
   }
+
+  // --- Theme Customizer Engine ---
+  function loadCustomTheme() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_THEME);
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    return { ...DEFAULT_THEME };
+  }
+
+  function applyTheme(theme) {
+    const root = document.documentElement;
+    root.style.setProperty('--primary', theme.primary);
+    root.style.setProperty('--primary-hover', theme.primary);
+    root.style.setProperty('--accent', theme.accent);
+    root.style.setProperty('--bg-dark', theme.bg);
+    root.style.setProperty('--bg-panel', hexToRgba(theme.card, 0.85));
+    root.style.setProperty('--bg-card', hexToRgba(theme.card, 0.7));
+    root.style.setProperty('--bg-card-self', hexToRgba(theme.primary, 0.16));
+    root.style.setProperty('--text-main', theme.text);
+    root.style.setProperty('--radius-lg', `${theme.radius + 4}px`);
+    root.style.setProperty('--radius-md', `${theme.radius}px`);
+    root.style.setProperty('--radius-sm', `${Math.max(4, theme.radius - 4)}px`);
+
+    // Sync input controls
+    if (colorPickerPrimary) {
+      colorPickerPrimary.value = theme.primary;
+      hexPrimary.textContent = theme.primary;
+      colorPickerAccent.value = theme.accent;
+      hexAccent.textContent = theme.accent;
+      colorPickerBg.value = theme.bg;
+      hexBg.textContent = theme.bg;
+      colorPickerCard.value = theme.card;
+      hexCard.textContent = theme.card;
+      colorPickerText.value = theme.text;
+      hexText.textContent = theme.text;
+      rangeRadius.value = theme.radius;
+    }
+
+    localStorage.setItem(STORAGE_KEY_THEME, JSON.stringify(theme));
+  }
+
+  function hexToRgba(hex, alpha) {
+    let c = hex.replace('#', '');
+    if (c.length === 3) c = c.split('').map(x => x + x).join('');
+    const num = parseInt(c, 16);
+    return `rgba(${(num >> 16) & 255}, ${(num >> 8) & 255}, ${num & 255}, ${alpha})`;
+  }
+
+  let activeTheme = loadCustomTheme();
+  applyTheme(activeTheme);
+
+  btnOpenTheme.addEventListener('click', () => {
+    themeModal.classList.remove('hidden');
+  });
+
+  btnCloseTheme.addEventListener('click', () => {
+    themeModal.classList.add('hidden');
+    showToast('บันทึกการตั้งค่าธีมสีเรียบร้อยแล้ว');
+  });
+
+  btnResetTheme.addEventListener('click', () => {
+    activeTheme = { ...DEFAULT_THEME };
+    applyTheme(activeTheme);
+    showToast('รีเซ็ตธีมกลับเป็นค่าเริ่มต้นแล้ว');
+  });
+
+  // Color picker events
+  colorPickerPrimary.addEventListener('input', (e) => {
+    activeTheme.primary = e.target.value;
+    applyTheme(activeTheme);
+  });
+  colorPickerAccent.addEventListener('input', (e) => {
+    activeTheme.accent = e.target.value;
+    applyTheme(activeTheme);
+  });
+  colorPickerBg.addEventListener('input', (e) => {
+    activeTheme.bg = e.target.value;
+    applyTheme(activeTheme);
+  });
+  colorPickerCard.addEventListener('input', (e) => {
+    activeTheme.card = e.target.value;
+    applyTheme(activeTheme);
+  });
+  colorPickerText.addEventListener('input', (e) => {
+    activeTheme.text = e.target.value;
+    applyTheme(activeTheme);
+  });
+  rangeRadius.addEventListener('input', (e) => {
+    activeTheme.radius = parseInt(e.target.value, 10);
+    applyTheme(activeTheme);
+  });
+
+  // Preset theme buttons
+  document.querySelectorAll('.btn-preset-theme').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const themeKey = btn.getAttribute('data-theme');
+      if (PRESET_THEMES[themeKey]) {
+        activeTheme = { ...PRESET_THEMES[themeKey] };
+        applyTheme(activeTheme);
+        showToast(`สลับไปใช้ธีม ${btn.textContent.trim()} แล้ว`);
+      }
+    });
+  });
 })();

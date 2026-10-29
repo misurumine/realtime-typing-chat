@@ -28,6 +28,9 @@
     </div>
 
     <div class="topbar-actions">
+      <button id="btnOpenTheme" class="btn btn-outline btn-sm" title="ปรับแต่งธีมและสี">
+        🎨 ธีมสี
+      </button>
       <button id="btnInstallPwa" class="btn btn-outline btn-sm hidden" title="ติดตั้งลงเครื่อง">
         📲 ติดตั้งแอป
       </button>
@@ -279,6 +282,81 @@
 
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Theme Settings Modal -->
+  <div id="themeModal" class="modal-backdrop hidden">
+    <div class="modal-card theme-modal-card glass-panel">
+      <div class="modal-header">
+        <h3>🎨 ปรับแต่งโทนสี UI</h3>
+      </div>
+      <div class="modal-body">
+        <label class="section-label">ธีมสำเร็จรูป:</label>
+        <div class="theme-presets-row">
+          <button type="button" class="btn-preset-theme" data-theme="neon">
+            <span class="preset-dot" style="background:#6366f1;"></span> Cyber Neon
+          </button>
+          <button type="button" class="btn-preset-theme" data-theme="emerald">
+            <span class="preset-dot" style="background:#10b981;"></span> Emerald Forest
+          </button>
+          <button type="button" class="btn-preset-theme" data-theme="sunset">
+            <span class="preset-dot" style="background:#f43f5e;"></span> Sunset Glow
+          </button>
+          <button type="button" class="btn-preset-theme" data-theme="amoled">
+            <span class="preset-dot" style="background:#38bdf8;"></span> Pure AMOLED
+          </button>
+        </div>
+
+        <label class="section-label">ปรับแต่งโทนสีเอง:</label>
+        <div class="theme-controls-grid">
+          <div class="theme-control-item">
+            <label>สีหลัก (Primary)</label>
+            <div class="color-input-wrap">
+              <input type="color" id="colorPickerPrimary" class="color-picker" />
+              <span id="hexPrimary" class="color-hex mono">#6366f1</span>
+            </div>
+          </div>
+          <div class="theme-control-item">
+            <label>สีไฮไลท์ (Accent)</label>
+            <div class="color-input-wrap">
+              <input type="color" id="colorPickerAccent" class="color-picker" />
+              <span id="hexAccent" class="color-hex mono">#ec4899</span>
+            </div>
+          </div>
+          <div class="theme-control-item">
+            <label>สีพื้นหลังจอ (Background)</label>
+            <div class="color-input-wrap">
+              <input type="color" id="colorPickerBg" class="color-picker" />
+              <span id="hexBg" class="color-hex mono">#070a12</span>
+            </div>
+          </div>
+          <div class="theme-control-item">
+            <label>สีกล่องหน้าต่าง (Panels)</label>
+            <div class="color-input-wrap">
+              <input type="color" id="colorPickerCard" class="color-picker" />
+              <span id="hexCard" class="color-hex mono">#111827</span>
+            </div>
+          </div>
+          <div class="theme-control-item">
+            <label>สีข้อความ (Text)</label>
+            <div class="color-input-wrap">
+              <input type="color" id="colorPickerText" class="color-picker" />
+              <span id="hexText" class="color-hex mono">#f8fafc</span>
+            </div>
+          </div>
+          <div class="theme-control-item">
+            <label>ความโค้งมนของขอบ</label>
+            <div class="color-input-wrap">
+              <input type="range" id="rangeRadius" min="0" max="24" value="14" style="width: 100%; accent-color: var(--primary);" />
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="btnResetTheme" class="btn btn-secondary">รีเซ็ตค่าเริ่มต้น</button>
+        <button id="btnCloseTheme" class="btn btn-primary">เสร็จสิ้น</button>
+      </div>
+    </div>
+  </div>
 
   <!-- MQTT over WebSockets for 100% Serverless Realtime Pub/Sub across iOS, Android, Windows -->
   <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
