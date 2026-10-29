@@ -1588,22 +1588,57 @@ html, body {
   animation: liveBlink 2s infinite;
 }
 
-/* Live Typing Cards List (Vertical Stack from Top to Bottom) */
+/* Live Typing Cards Grid (2-Column Grid on Desktop, 1-Column on Mobile) */
 .live-cards-grid {
   flex: 1;
   padding: 16px;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  align-items: stretch;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-content: start;
+  align-items: start;
+}
+
+/* Fallback to 1 column when screen is narrower (< 992px) while sidebar is open */
+@media (max-width: 992px) {
+  .live-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* If sidebar is collapsed on medium screen (>= 780px), allow 2 columns */
+@media (min-width: 780px) {
+  .workspace-grid.sidebar-collapsed .live-cards-grid:not(.layout-single-col) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Manual 1-Column mode when user toggles */
+.live-cards-grid.layout-single-col {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+}
+
+.live-cards-grid.layout-single-col > .live-card {
+  width: 100% !important;
+  grid-column: auto !important;
+}
+
+/* When in 2-Column mode:
+   1. If user is alone in the room (:only-child), let card span full width
+   2. If user is streaming (.is-streamer), let streamer card span full width at top */
+.live-cards-grid:not(.layout-single-col) > .live-card:only-child,
+.live-cards-grid:not(.layout-single-col) > .live-card.is-streamer {
+  grid-column: 1 / -1;
 }
 
 .live-card {
   display: flex;
   flex-direction: row;
   align-items: flex-start;
-  gap: 16px;
+  gap: 14px;
   background: var(--bg-card);
   border: 1.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -1646,9 +1681,9 @@ html, body {
 /* Card Profile Column (Left side of card) */
 .live-card-profile-col {
   flex-shrink: 0;
-  width: 230px;
-  min-width: 180px;
-  max-width: 260px;
+  width: 210px;
+  min-width: 150px;
+  max-width: 240px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2701,8 +2736,13 @@ kbd {
   }
 
   .live-cards-grid {
+    grid-template-columns: 1fr !important;
     padding: 10px;
     gap: 10px;
+  }
+
+  #btnToggleRoomLayout {
+    display: none !important;
   }
 
   .live-card-body {

@@ -334,6 +334,9 @@
   const activeRoomCodeEl = document.getElementById('activeRoomCode');
   const btnCopyRoomCode = document.getElementById('btnCopyRoomCode');
   const btnCopyRoomLink = document.getElementById('btnCopyRoomLink');
+  const btnToggleRoomLayout = document.getElementById('btnToggleRoomLayout');
+  const roomLayoutIcon = document.getElementById('roomLayoutIcon');
+  const roomLayoutLabel = document.getElementById('roomLayoutLabel');
   const roomMemberCount = document.getElementById('roomMemberCount');
   const btnLeaveRoom = document.getElementById('btnLeaveRoom');
   const btnMobileToggleSidebar = document.getElementById('btnMobileToggleSidebar');
@@ -2452,6 +2455,45 @@
   btnBackToSidebar.addEventListener('click', () => {
     sidebarPanel.classList.toggle('mobile-open');
   });
+
+  // --- Room Layout Controls (2 Columns Grid vs 1 Column Single) ---
+  function applyRoomLayout(isSingle) {
+    if (!liveCardsGrid) return;
+    if (isSingle) {
+      liveCardsGrid.classList.add('layout-single-col');
+      if (roomLayoutIcon) roomLayoutIcon.textContent = '☰';
+      if (roomLayoutLabel) roomLayoutLabel.textContent = '1 คอลัมน์';
+      if (btnToggleRoomLayout) btnToggleRoomLayout.title = 'สลับเป็นมุมมอง 2 คอลัมน์คู่';
+    } else {
+      liveCardsGrid.classList.remove('layout-single-col');
+      if (roomLayoutIcon) roomLayoutIcon.textContent = '⊞';
+      if (roomLayoutLabel) roomLayoutLabel.textContent = '2 คอลัมน์';
+      if (btnToggleRoomLayout) btnToggleRoomLayout.title = 'สลับเป็นมุมมอง 1 คอลัมน์เดี่ยว';
+    }
+  }
+
+  function initRoomLayoutPreference() {
+    try {
+      const saved = localStorage.getItem('livetype_room_layout');
+      // Default to 2 columns ('double') on desktop
+      const isSingle = saved === 'single';
+      applyRoomLayout(isSingle);
+    } catch (e) {
+      applyRoomLayout(false);
+    }
+  }
+
+  if (btnToggleRoomLayout) {
+    btnToggleRoomLayout.addEventListener('click', () => {
+      const isCurrentlySingle = liveCardsGrid ? liveCardsGrid.classList.contains('layout-single-col') : false;
+      const nextIsSingle = !isCurrentlySingle;
+      applyRoomLayout(nextIsSingle);
+      try {
+        localStorage.setItem('livetype_room_layout', nextIsSingle ? 'single' : 'double');
+      } catch (e) {}
+      showToast(nextIsSingle ? 'สลับเป็นมุมมอง 1 คอลัมน์เดี่ยวแล้ว' : 'สลับเป็นมุมมอง 2 คอลัมน์คู่แล้ว');
+    });
+  }
 
   // --- Room UI & Live Cards Rendering ---
   function updateRoomViewUI() {
@@ -4977,7 +5019,8 @@
     }
   }
 
-  // Initialize Floating Stream & Google Auth UI
+  // Initialize Floating Stream, Google Auth UI & Room Layout
   initFloatingStreamControls();
   updateAuthUIState();
+  initRoomLayoutPreference();
 })();
