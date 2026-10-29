@@ -1588,7 +1588,7 @@
       email: currentUser ? currentUser.email : null
     };
     saveUserSession(currentUser);
-    syncFirestoreIfAuthenticated();
+    syncGoogleDriveIfAuthenticated();
 
     // If already in a room, update our profile inside the room
     if (activeRoomCode && roomMembers.has(uid)) {
