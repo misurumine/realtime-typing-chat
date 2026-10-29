@@ -2,8 +2,19 @@
   /**
    * LiveType — 100% Serverless Realtime Live-Typing Chat (PWA)
    * Works on GitHub Pages, Cloudflare Pages, Vercel, Netlify, or Localhost
-   * without renting or running any backend server!
+   * with Google Sign-In & Cloud Firestore P2P Architecture!
    */
+
+  // Anti-Clickjacking Frame Buster: Ensure application is never embedded inside malicious iframes
+  try {
+    if (window.top !== window.self) {
+      window.top.location = window.self.location;
+    }
+  } catch (e) {
+    if (document.documentElement) {
+      document.documentElement.style.display = 'none';
+    }
+  }
 
   // --- Anti-Macro & Spam Throttle (1s Cooldown on all user actions except typing) ---
   const ACTION_COOLDOWN_MS = 1000;
@@ -39,7 +50,7 @@
         return;
       }
       // Never block or throttle video player or stream controls
-      if (e.target.closest('#liveStreamStage') || e.target.closest('#btnToggleScreenShare')) {
+      if (e.target.closest('#floatingStreamWindow') || e.target.closest('#btnToggleScreenShare') || e.target.closest('.btn-stream-card-trigger')) {
         return;
       }
       const clickable = e.target.closest('button, .tag-chip, .btn-sidebar-pill, .btn-picker-tab, .discord-cat-tile, .btn-preset-theme');
@@ -253,10 +264,32 @@
   const headerAvatar = document.getElementById('headerAvatar');
   const headerUsername = document.getElementById('headerUsername');
   const headerUid = document.getElementById('headerUid');
+  const headerAuthBadge = document.getElementById('headerAuthBadge');
   const btnEditProfile = document.getElementById('btnEditProfile');
   const btnLogout = document.getElementById('btnLogout');
   const connectionStatus = document.getElementById('connectionStatus');
   const btnInstallPwa = document.getElementById('btnInstallPwa');
+
+  const btnGoogleSignIn = document.getElementById('btnGoogleSignIn');
+  const googleAuthSuccessBox = document.getElementById('googleAuthSuccessBox');
+  const googleEmailLabel = document.getElementById('googleEmailLabel');
+  const btnGoogleSignOut = document.getElementById('btnGoogleSignOut');
+
+  const btnOpenGoogleDriveModal = document.getElementById('btnOpenGoogleDriveModal');
+  const googleDriveModal = document.getElementById('googleDriveModal');
+  const btnCloseGoogleDriveModal = document.getElementById('btnCloseGoogleDriveModal');
+  const modalGoogleAccountBox = document.getElementById('modalGoogleAccountBox');
+  const modalGoogleSignInBox = document.getElementById('modalGoogleSignInBox');
+  const modalGoogleAvatar = document.getElementById('modalGoogleAvatar');
+  const modalGoogleName = document.getElementById('modalGoogleName');
+  const modalGoogleEmail = document.getElementById('modalGoogleEmail');
+  const btnModalGoogleSignIn = document.getElementById('btnModalGoogleSignIn');
+  const btnModalGoogleSignOut = document.getElementById('btnModalGoogleSignOut');
+  const btnManualSyncDrive = document.getElementById('btnManualSyncDrive');
+  const btnManualDownloadDrive = document.getElementById('btnManualDownloadDrive');
+  const inputGoogleClientId = document.getElementById('inputGoogleClientId');
+  const btnSaveGoogleClientId = document.getElementById('btnSaveGoogleClientId');
+  const googleClientIdStatus = document.getElementById('googleClientIdStatus');
 
   const workspaceGrid = document.getElementById('workspaceGrid');
   const sidebarPanel = document.getElementById('sidebarPanel');
@@ -302,7 +335,13 @@
   const btnMobileToggleSidebar = document.getElementById('btnMobileToggleSidebar');
   const btnBackToSidebar = document.getElementById('btnBackToSidebar');
   const btnToggleScreenShare = document.getElementById('btnToggleScreenShare');
-  const liveStreamStage = document.getElementById('liveStreamStage');
+  const floatingStreamWindow = document.getElementById('floatingStreamWindow');
+  const streamDragHandle = document.getElementById('streamDragHandle');
+  const floatingStreamerTitle = document.getElementById('floatingStreamerTitle');
+  const btnMinimizeFloatingStream = document.getElementById('btnMinimizeFloatingStream');
+  const btnFloatingFullscreen = document.getElementById('btnFloatingFullscreen');
+  const btnCloseFloatingStream = document.getElementById('btnCloseFloatingStream');
+  const streamResizeHandle = document.getElementById('streamResizeHandle');
   const streamContainer = document.getElementById('streamContainer');
   const liveStreamVideo = document.getElementById('liveStreamVideo');
   const streamPlaceholderOverlay = document.getElementById('streamPlaceholderOverlay');
@@ -423,6 +462,29 @@
     return map;
   }
 
+  async function syncGoogleDriveIfAuthenticated() {
+    if (window.LiveTypeDrive && currentUser && currentUser.authProvider === 'google') {
+      const token = window.LiveTypeDrive.getAccessToken();
+      if (!token) return;
+      try {
+        await window.LiveTypeDrive.saveAppData(token, {
+          username: currentUser.username,
+          avatar: currentUser.avatar,
+          tags: Array.isArray(currentUser.tags) ? currentUser.tags : Array.from(selectedTags),
+          email: currentUser.email,
+          friends: Array.from(friendsMap.values()).map((f) => ({
+            uid: f.uid,
+            username: f.username,
+            avatar: f.avatar
+          })),
+          updatedAt: Date.now()
+        });
+      } catch (e) {
+        console.warn('Background Google Drive AppData sync error:', e);
+      }
+    }
+  }
+
   function saveFriendsList() {
     const arr = Array.from(friendsMap.values()).map((f) => ({
       uid: f.uid,
@@ -430,6 +492,7 @@
       avatar: f.avatar
     }));
     localStorage.setItem(STORAGE_KEY_FRIENDS, JSON.stringify(arr));
+    syncGoogleDriveIfAuthenticated();
   }
 
   // --- Toast Notification ---
@@ -843,11 +906,13 @@
   }
 
   function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
     return String(str)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function pingFriend(friendUid) {
@@ -1118,6 +1183,7 @@
         activeStreamerUsername = data.streamerUsername || 'เพื่อน';
 
         if (streamerNameBadge) streamerNameBadge.textContent = `${activeStreamerUsername} (กำลังแชร์หน้าจอ)`;
+        if (floatingStreamerTitle) floatingStreamerTitle.textContent = `${activeStreamerUsername} (กำลังไลฟ์สด)`;
         if (streamPlaceholderTitle) streamPlaceholderTitle.textContent = `${activeStreamerUsername} กำลังไลฟ์สดหน้าจอ`;
         if (streamPlaceholderSub) streamPlaceholderSub.textContent = 'คลิกที่วิดีโอ หรือกดปุ่มด้านล่างเพื่อเริ่มรับชม';
         if (btnToggleWatchStream) btnToggleWatchStream.textContent = '▶ ดูไลฟ์สด';
@@ -1127,12 +1193,13 @@
           streamPlaceholderOverlay.classList.remove('hidden');
         }
 
-        if (liveStreamStage) liveStreamStage.classList.remove('hidden');
+        // Do NOT force open floating window automatically if not watching — badge appears in card!
         updateScreenShareButtonState();
         reorderLiveCards();
+        renderAllLiveCards();
 
         if (data.type === 'stream_started') {
-          showToast(`📺 ${activeStreamerUsername} เริ่มต้นไลฟ์สดหน้าจอแล้ว! (คลิกที่วิดีโอเพื่อดู)`);
+          showToast(`📺 ${activeStreamerUsername} เริ่มต้นไลฟ์สดหน้าจอแล้ว! (คลิกปุ่มดูไลฟ์ที่การ์ดเพื่อรับชม)`);
         }
       }
       return;
@@ -1145,9 +1212,10 @@
         }
         activeStreamerUid = null;
         activeStreamerUsername = null;
-        if (liveStreamStage) liveStreamStage.classList.add('hidden');
+        if (floatingStreamWindow) floatingStreamWindow.classList.add('hidden');
         updateScreenShareButtonState();
         reorderLiveCards();
+        renderAllLiveCards();
 
         showToast('ℹ️ การไลฟ์สดสิ้นสุดลงแล้ว');
       }
@@ -1242,7 +1310,7 @@
         if (isWatching) stopWatchingStream();
         activeStreamerUid = null;
         activeStreamerUsername = null;
-        if (liveStreamStage) liveStreamStage.classList.add('hidden');
+        if (floatingStreamWindow) floatingStreamWindow.classList.add('hidden');
         updateScreenShareButtonState();
         reorderLiveCards();
         showToast('ℹ️ ผู้ไลฟ์สดออกจากห้อง การไลฟ์สิ้นสุดลง');
@@ -1429,6 +1497,27 @@
     });
   }
 
+  function updateAuthUIState() {
+    if (!btnGoogleSignIn) return;
+    const isGoogleAuth = Boolean(currentUser && currentUser.authProvider === 'google');
+    if (isGoogleAuth) {
+      btnGoogleSignIn.classList.add('hidden');
+      if (googleAuthSuccessBox) {
+        googleAuthSuccessBox.classList.remove('hidden');
+        if (googleEmailLabel) {
+          googleEmailLabel.textContent = currentUser.email || 'เชื่อมต่อกับ Google แล้ว';
+        }
+      }
+      if (headerAuthBadge) headerAuthBadge.classList.remove('hidden');
+    } else {
+      btnGoogleSignIn.classList.remove('hidden');
+      if (googleAuthSuccessBox) {
+        googleAuthSuccessBox.classList.add('hidden');
+      }
+      if (headerAuthBadge) headerAuthBadge.classList.add('hidden');
+    }
+  }
+
   function showSetupView() {
     viewSetup.classList.add('active');
     viewWorkspace.classList.remove('active');
@@ -1447,6 +1536,7 @@
     }
     initAvatarPicker();
     initInterestTagsPicker();
+    updateAuthUIState();
     inputUsername.focus();
   }
 
@@ -1458,6 +1548,14 @@
     headerAvatar.src = currentUser.avatar;
     headerUsername.textContent = currentUser.username;
     headerUid.textContent = `UID: ${currentUser.uid} 📋`;
+
+    if (headerAuthBadge) {
+      if (currentUser && currentUser.authProvider === 'google') {
+        headerAuthBadge.classList.remove('hidden');
+      } else {
+        headerAuthBadge.classList.add('hidden');
+      }
+    }
 
     renderFriendsList();
     renderDiscoveredRooms();
@@ -1485,9 +1583,12 @@
       uid,
       username: name,
       avatar: selectedAvatar,
-      tags: Array.from(selectedTags)
+      tags: Array.from(selectedTags),
+      authProvider: currentUser ? currentUser.authProvider : null,
+      email: currentUser ? currentUser.email : null
     };
     saveUserSession(currentUser);
+    syncFirestoreIfAuthenticated();
 
     // If already in a room, update our profile inside the room
     if (activeRoomCode && roomMembers.has(uid)) {
@@ -1506,9 +1607,9 @@
     showSetupView();
   });
 
-  // --- Logout (Destroys UID and Session) ---
+  // --- Logout (Destroys Session and signs out of Google Drive) ---
   btnLogout.addEventListener('click', () => {
-    if (!confirm('ต้องการออกจากระบบใช่หรือไม่? (UID ปัจจุบันและรายชื่อเพื่อนในเครื่องจะถูกล้างใหม่ทั้งหมด)')) {
+    if (!confirm('ต้องการออกจากระบบใช่หรือไม่? (คุณสามารถเข้าสู่ระบบด้วย Google หรือสร้างโปรไฟล์ใหม่ได้ตลอดเวลา)')) {
       return;
     }
     if (activeRoomCode) {
@@ -1521,6 +1622,11 @@
       } catch (e) {}
       mqttClient = null;
     }
+
+    if (window.LiveTypeDrive) {
+      window.LiveTypeDrive.revokeToken();
+    }
+
     clearUserSession();
     currentUser = null;
     friendsMap.clear();
@@ -1528,8 +1634,305 @@
     roomMembers.clear();
     updateRoomViewUI();
     showSetupView();
-    showToast('ออกจากระบบและล้าง UID เรียบร้อยแล้ว');
+    updateAuthUIState();
+    showToast('ออกจากระบบเรียบร้อยแล้ว');
   });
+
+  // --- Google Sign-In & Google Drive AppData Cloud Sync Integration ---
+  async function handleGoogleDriveLogin() {
+    if (!window.LiveTypeDrive) {
+      showToast('⚠️ ระบบเชื่อมต่อ Google Drive กำลังโหลด กรุณารอสักครู่');
+      return;
+    }
+
+    if (!window.LiveTypeDrive.getClientId()) {
+      openGoogleDriveModal();
+      showToast('⚠️ กรุณาระบุ Google OAuth Client ID ก่อนเริ่มใช้งาน');
+      return;
+    }
+
+    try {
+      if (btnGoogleSignIn) {
+        btnGoogleSignIn.disabled = true;
+        btnGoogleSignIn.style.opacity = '0.6';
+      }
+      showToast('⏳ กำลังเปิดหน้าต่างลงชื่อเข้าใช้ Google...');
+
+      const token = await window.LiveTypeDrive.promptGoogleLogin();
+      if (!token) return;
+
+      showToast('⏳ ดึงข้อมูลโปรไฟล์และซิงก์ Google Drive AppData...');
+      const userInfo = await window.LiveTypeDrive.fetchGoogleUserInfo(token);
+
+      const sanitizedName = window.LiveTypeDrive.sanitizeUsername(userInfo.name || 'Google User');
+      const sanitizedAvatar = window.LiveTypeDrive.sanitizeAvatarUrl(userInfo.picture, PRESET_AVATARS[0]);
+
+      // Check for backup on Google Drive appDataFolder
+      let backupData = null;
+      try {
+        const fileId = await window.LiveTypeDrive.findAppDataFile(token);
+        if (fileId) {
+          backupData = await window.LiveTypeDrive.downloadAppData(token, fileId);
+        }
+      } catch (err) {
+        console.warn('Could not read existing backup from Google Drive:', err);
+      }
+
+      if (backupData) {
+        currentUser = {
+          uid: currentUser ? currentUser.uid : generateNewUid(),
+          username: backupData.username || sanitizedName,
+          avatar: backupData.avatar || sanitizedAvatar,
+          tags: Array.isArray(backupData.tags) && backupData.tags.length > 0 ? backupData.tags : Array.from(selectedTags),
+          email: userInfo.email,
+          authProvider: 'google'
+        };
+
+        if (Array.isArray(backupData.friends)) {
+          backupData.friends.forEach((f) => {
+            if (f && f.uid) {
+              friendsMap.set(f.uid, {
+                uid: f.uid,
+                username: f.username || f.uid,
+                avatar: f.avatar || PRESET_AVATARS[0],
+                tags: [],
+                online: false,
+                inRoom: false,
+                roomCode: null,
+                lastSeen: Date.now()
+              });
+            }
+          });
+          saveFriendsList();
+        }
+      } else {
+        currentUser = {
+          uid: currentUser ? currentUser.uid : generateNewUid(),
+          username: currentUser ? currentUser.username : sanitizedName,
+          avatar: currentUser ? currentUser.avatar : sanitizedAvatar,
+          tags: Array.from(selectedTags),
+          email: userInfo.email,
+          authProvider: 'google'
+        };
+
+        // Save initial backup to Drive AppData
+        await window.LiveTypeDrive.saveAppData(token, {
+          username: currentUser.username,
+          avatar: currentUser.avatar,
+          tags: currentUser.tags,
+          email: currentUser.email,
+          friends: Array.from(friendsMap.values()).map(f => ({
+            uid: f.uid,
+            username: f.username,
+            avatar: f.avatar
+          })),
+          updatedAt: Date.now()
+        });
+      }
+
+      saveUserSession(currentUser);
+      selectedAvatar = currentUser.avatar;
+      selectedTags = new Set(currentUser.tags);
+      inputUsername.value = currentUser.username;
+      setupAvatarPreview.src = currentUser.avatar;
+
+      updateAuthUIState();
+      updateGoogleModalUI();
+      renderFriendsList();
+      showToast(`🛡️ เข้าสู่ระบบสำเร็จ: ${currentUser.username} (ซิงก์ข้อมูลกับ Google Drive แล้ว)`);
+      showWorkspaceView();
+    } catch (err) {
+      console.error('Google Sign-In failed:', err);
+      if (err.message === 'NO_CLIENT_ID') {
+        openGoogleDriveModal();
+        showToast('⚠️ กรุณาระบุ Google Client ID ก่อนลงชื่อเข้าใช้');
+      } else if (err.message === 'GIS_NOT_LOADED') {
+        showToast('⚠️ Google Identity Services กำลังโหลด กรุณาลองใหม่อีกครั้ง');
+      } else if (err.message && (err.message.includes('popup_closed_by_user') || err.message.includes('access_denied'))) {
+        showToast('ℹ️ ยกเลิกการลงชื่อเข้าใช้');
+      } else {
+        showToast('❌ ไม่สามารถลงชื่อเข้าใช้ Google ได้: ' + (err.message || 'เกิดข้อผิดพลาด'));
+      }
+    } finally {
+      if (btnGoogleSignIn) {
+        btnGoogleSignIn.disabled = false;
+        btnGoogleSignIn.style.opacity = '1';
+      }
+    }
+  }
+
+  if (btnGoogleSignIn) {
+    btnGoogleSignIn.addEventListener('click', handleGoogleDriveLogin);
+  }
+
+  if (btnModalGoogleSignIn) {
+    btnModalGoogleSignIn.addEventListener('click', handleGoogleDriveLogin);
+  }
+
+  function handleGoogleSignOut() {
+    if (confirm('ต้องการออกจากระบบบัญชี Google หรือไม่?')) {
+      if (window.LiveTypeDrive) {
+        window.LiveTypeDrive.revokeToken();
+      }
+      clearUserSession();
+      currentUser = null;
+      friendsMap.clear();
+      updateAuthUIState();
+      updateGoogleModalUI();
+      showSetupView();
+      showToast('ออกจากระบบบัญชี Google เรียบร้อยแล้ว');
+    }
+  }
+
+  if (btnGoogleSignOut) {
+    btnGoogleSignOut.addEventListener('click', handleGoogleSignOut);
+  }
+
+  if (btnModalGoogleSignOut) {
+    btnModalGoogleSignOut.addEventListener('click', handleGoogleSignOut);
+  }
+
+  // --- Google Drive Modal Management ---
+  function updateGoogleModalUI() {
+    if (!googleDriveModal) return;
+    const isGoogleAuth = Boolean(currentUser && currentUser.authProvider === 'google');
+    if (isGoogleAuth) {
+      if (modalGoogleSignInBox) modalGoogleSignInBox.classList.add('hidden');
+      if (modalGoogleAccountBox) {
+        modalGoogleAccountBox.classList.remove('hidden');
+        if (modalGoogleName) modalGoogleName.textContent = currentUser.username || 'Google User';
+        if (modalGoogleEmail) modalGoogleEmail.textContent = currentUser.email || '';
+        if (modalGoogleAvatar) modalGoogleAvatar.src = currentUser.avatar || PRESET_AVATARS[0];
+      }
+    } else {
+      if (modalGoogleSignInBox) modalGoogleSignInBox.classList.remove('hidden');
+      if (modalGoogleAccountBox) modalGoogleAccountBox.classList.add('hidden');
+    }
+
+    if (inputGoogleClientId && window.LiveTypeDrive) {
+      inputGoogleClientId.value = window.LiveTypeDrive.getClientId();
+      if (googleClientIdStatus) {
+        const hasId = window.LiveTypeDrive.hasValidClientId();
+        googleClientIdStatus.textContent = hasId 
+          ? '✅ Client ID พร้อมใช้งาน' 
+          : (window.LiveTypeDrive.getClientId() ? '⚠️ Client ID อาจไม่ถูกต้อง (รูปแบบ: xxx.apps.googleusercontent.com)' : '⚠️ ยังไม่ได้ระบุ Client ID');
+        googleClientIdStatus.style.color = hasId ? '#6ee7b7' : '#fcd34d';
+      }
+    }
+  }
+
+  function openGoogleDriveModal() {
+    updateGoogleModalUI();
+    if (googleDriveModal) googleDriveModal.classList.remove('hidden');
+  }
+
+  function closeGoogleDriveModal() {
+    if (googleDriveModal) googleDriveModal.classList.add('hidden');
+  }
+
+  if (btnOpenGoogleDriveModal) {
+    btnOpenGoogleDriveModal.addEventListener('click', openGoogleDriveModal);
+  }
+
+  if (btnCloseGoogleDriveModal) {
+    btnCloseGoogleDriveModal.addEventListener('click', closeGoogleDriveModal);
+  }
+
+  if (btnSaveGoogleClientId && inputGoogleClientId) {
+    btnSaveGoogleClientId.addEventListener('click', () => {
+      const val = inputGoogleClientId.value.trim();
+      if (window.LiveTypeDrive) {
+        window.LiveTypeDrive.setClientId(val);
+        updateGoogleModalUI();
+        showToast('✅ บันทึก Google Client ID สำเร็จแล้ว!');
+      }
+    });
+  }
+
+  if (btnManualSyncDrive) {
+    btnManualSyncDrive.addEventListener('click', async () => {
+      if (!currentUser || currentUser.authProvider !== 'google') {
+        showToast('⚠️ กรุณาลงชื่อเข้าใช้ Google ก่อนซิงก์');
+        return;
+      }
+      const token = window.LiveTypeDrive ? window.LiveTypeDrive.getAccessToken() : null;
+      if (!token) {
+        showToast('⚠️ ไม่พบโทเคนการเข้าสู่ระบบ กรุณากดลงชื่อเข้าใช้อีกครั้ง');
+        return;
+      }
+      showToast('⏳ กำลังซิงก์ข้อมูลขึ้น Google Drive AppData...');
+      const ok = await window.LiveTypeDrive.saveAppData(token, {
+        username: currentUser.username,
+        avatar: currentUser.avatar,
+        tags: Array.isArray(currentUser.tags) ? currentUser.tags : Array.from(selectedTags),
+        email: currentUser.email,
+        friends: Array.from(friendsMap.values()).map(f => ({
+          uid: f.uid,
+          username: f.username,
+          avatar: f.avatar
+        })),
+        updatedAt: Date.now()
+      });
+      if (ok) {
+        showToast('✅ บันทึกข้อมูลลง Google Drive appDataFolder เรียบร้อยแล้ว!');
+      } else {
+        showToast('❌ ไม่สามารถบันทึกข้อมูลลง Google Drive ได้');
+      }
+    });
+  }
+
+  if (btnManualDownloadDrive) {
+    btnManualDownloadDrive.addEventListener('click', async () => {
+      if (!currentUser || currentUser.authProvider !== 'google') {
+        showToast('⚠️ กรุณาลงชื่อเข้าใช้ Google ก่อนดาวน์โหลด');
+        return;
+      }
+      const token = window.LiveTypeDrive ? window.LiveTypeDrive.getAccessToken() : null;
+      if (!token) {
+        showToast('⚠️ ไม่พบโทเคนการเข้าสู่ระบบ กรุณากดลงชื่อเข้าใช้อีกครั้ง');
+        return;
+      }
+      showToast('⏳ กำลังค้นหาไฟล์สำรองข้อมูลบน Google Drive...');
+      const fileId = await window.LiveTypeDrive.findAppDataFile(token);
+      if (!fileId) {
+        showToast('ℹ️ ไม่พบไฟล์สำรองข้อมูล (livetype_user_backup.json) บน Google Drive');
+        return;
+      }
+      const data = await window.LiveTypeDrive.downloadAppData(token, fileId);
+      if (data) {
+        if (data.username) currentUser.username = data.username;
+        if (data.avatar) currentUser.avatar = data.avatar;
+        if (Array.isArray(data.tags)) {
+          currentUser.tags = data.tags;
+          selectedTags = new Set(data.tags);
+        }
+        if (Array.isArray(data.friends)) {
+          friendsMap.clear();
+          data.friends.forEach((f) => {
+            if (f && f.uid) {
+              friendsMap.set(f.uid, {
+                uid: f.uid,
+                username: f.username || f.uid,
+                avatar: f.avatar || PRESET_AVATARS[0],
+                tags: [],
+                online: false,
+                inRoom: false,
+                roomCode: null,
+                lastSeen: Date.now()
+              });
+            }
+          });
+          saveFriendsList();
+        }
+        saveUserSession(currentUser);
+        renderFriendsList();
+        updateHeaderUserChip();
+        showToast('✅ กู้คืนข้อมูลและรายชื่อเพื่อนจาก Google Drive สำเร็จแล้ว!');
+      } else {
+        showToast('❌ ไม่สามารถดาวน์โหลดข้อมูลได้');
+      }
+    });
+  }
 
   // Cleanly notify room & friends if tab is closed
   window.addEventListener('beforeunload', () => {
@@ -2372,31 +2775,70 @@
         statusPillHtml = `<span class="typing-status-pill idle" id="status-pill-${member.uid}">💤 Non-Active</span>`;
       }
 
+      // Stream Icon Badge next to profile if member is streaming
+      let streamBadgeHtml = '';
+      if (info.isStreamer) {
+        if (isSelf) {
+          streamBadgeHtml = `<button type="button" class="btn-card-stream-badge btn-stream-card-trigger" title="คุณกำลังไลฟ์สด (คลิกเพื่อเปิดหน้าต่างไลฟ์)"><span class="live-dot-pulse"></span> 🖥️ ไลฟ์ของคุณ</button>`;
+        } else if (isWatching) {
+          streamBadgeHtml = `<button type="button" class="btn-card-stream-badge watching btn-stream-card-trigger" title="กำลังรับชมไลฟ์ (คลิกเพื่อเปิด/ปิดหน้าต่างไลฟ์)"><span class="live-dot-pulse"></span> 🖥️ ดูไลฟ์อยู่</button>`;
+        } else {
+          streamBadgeHtml = `<button type="button" class="btn-card-stream-badge btn-stream-card-trigger" title="คลิกเพื่อเริ่มรับชมไลฟ์สดของ ${escapeHtml(member.username)}"><span class="live-dot-pulse"></span> 🖥️ ดูไลฟ์สด</button>`;
+        }
+      }
+
       const card = document.createElement('div');
       card.id = `live-card-${member.uid}`;
       card.style.order = index;
       card.className = `live-card ${isSelf ? 'is-self' : ''} ${info.isStreamer ? 'is-streamer' : ''} ${hasContent ? 'actively-typing' : ''} ${info.tier === 2 ? 'is-active-engagement' : ''} ${info.tier === 3 ? 'is-idle' : ''}`;
 
       card.innerHTML = `
-        <div class="live-card-header">
-          <div class="live-card-user">
-            <img src="${member.avatar || PRESET_AVATARS[0]}" alt="Avatar" class="avatar-md" />
-            <div>
+        <!-- Left Side: User Profile Column -->
+        <div class="live-card-profile-col">
+          <div class="live-card-user-row">
+            <div class="live-card-avatar-wrap">
+              <img src="${member.avatar || PRESET_AVATARS[0]}" alt="Avatar" class="avatar-md" />
+            </div>
+            <div class="live-card-meta">
               <div class="live-card-username">
                 <span class="name-text"></span>
                 ${isSelf ? '<span class="self-tag">คุณ</span>' : ''}
-                ${friendActionHtml}
               </div>
               <div class="live-card-uid mono">${member.uid}</div>
-              ${tagsHtml ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">${tagsHtml}</div>` : ''}
             </div>
           </div>
-          ${statusPillHtml}
+          <div class="live-card-status-row">
+            ${friendActionHtml}
+            ${streamBadgeHtml}
+            ${statusPillHtml}
+          </div>
+          ${tagsHtml ? `<div class="live-card-tags">${tagsHtml}</div>` : ''}
         </div>
+
+        <!-- Right Side: Realtime Live Message / Media in the Same Row (Expands downward) -->
         <div class="live-card-body" id="card-body-${member.uid}"></div>
       `;
 
       card.querySelector('.name-text').textContent = member.username;
+
+      // Stream badge click handler
+      const streamBtn = card.querySelector('.btn-stream-card-trigger');
+      if (streamBtn) {
+        streamBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (info.isStreamer) {
+            if (isSelf) {
+              if (floatingStreamWindow) floatingStreamWindow.classList.remove('hidden');
+            } else {
+              if (floatingStreamWindow) floatingStreamWindow.classList.remove('hidden');
+              if (!isWatching) {
+                toggleWatchStream();
+              }
+            }
+          }
+        });
+      }
+
       const addFriendBtn = card.querySelector('.btn-card-add-friend');
       if (addFriendBtn && !addFriendBtn.disabled) {
         addFriendBtn.addEventListener('click', () => {
@@ -2509,7 +2951,7 @@
   function spawnEmoteBubbleOnCard(uid, emote) {
     const cardEl = document.getElementById(`live-card-${uid}`);
     if (!cardEl) return;
-    const userWrap = cardEl.querySelector('.live-card-user') || cardEl;
+    const userWrap = cardEl.querySelector('.live-card-avatar-wrap') || cardEl.querySelector('.live-card-profile-col') || cardEl;
 
     const bubble = document.createElement('div');
     bubble.className = 'emote-bubble';
@@ -3636,10 +4078,11 @@
       liveStreamVideo.play().catch(() => {});
     }
 
-    // Show stage & hide viewer overlay
-    if (liveStreamStage) liveStreamStage.classList.remove('hidden');
+    // Show floating stream window & hide placeholder
+    if (floatingStreamWindow) floatingStreamWindow.classList.remove('hidden');
     if (streamPlaceholderOverlay) streamPlaceholderOverlay.classList.add('hidden');
 
+    if (floatingStreamerTitle) floatingStreamerTitle.textContent = 'คุณ (กำลังแชร์หน้าจอ)';
     if (streamerNameBadge) streamerNameBadge.textContent = 'คุณ (กำลังแชร์หน้าจอ)';
     if (btnStopWatchStream) btnStopWatchStream.textContent = '🔴 หยุดไลฟ์';
     updateScreenShareButtonState();
@@ -3681,8 +4124,8 @@
       liveStreamVideo.srcObject = null;
     }
 
-    if (liveStreamStage) {
-      liveStreamStage.classList.add('hidden');
+    if (floatingStreamWindow) {
+      floatingStreamWindow.classList.add('hidden');
     }
 
     const wasStreamer = activeStreamerUid === (currentUser && currentUser.uid);
@@ -3690,6 +4133,7 @@
     activeStreamerUsername = null;
     updateScreenShareButtonState();
     reorderLiveCards();
+    renderAllLiveCards();
 
     if (wasStreamer && activeRoomCode) {
       publishJson(topicRoom(activeRoomCode), {
@@ -3718,6 +4162,8 @@
     if (!isWatching) {
       // START WATCHING
       isWatching = true;
+      if (floatingStreamWindow) floatingStreamWindow.classList.remove('hidden');
+      if (floatingStreamerTitle) floatingStreamerTitle.textContent = `${activeStreamerUsername || 'เพื่อน'} (กำลังไลฟ์สด)`;
       if (streamPlaceholderOverlay) streamPlaceholderOverlay.classList.add('hidden');
       if (btnStopWatchStream) btnStopWatchStream.textContent = '⏹ หยุดดู';
 
@@ -3786,6 +4232,10 @@
       liveStreamVideo.srcObject = null;
     }
 
+    if (floatingStreamWindow) {
+      floatingStreamWindow.classList.add('hidden');
+    }
+
     if (streamPlaceholderOverlay) {
       if (streamPlaceholderTitle) streamPlaceholderTitle.textContent = '⏸️ หยุดดูไลฟ์สดแล้ว';
       if (streamPlaceholderSub) streamPlaceholderSub.textContent = 'คลิกที่วิดีโอ หรือกดปุ่มด้านล่างเพื่อกลับมารับชมต่อ';
@@ -3798,6 +4248,8 @@
     }
 
     updateScreenShareButtonState();
+    reorderLiveCards();
+    renderAllLiveCards();
 
     // Notify streamer to release encoding bandwidth
     if (activeStreamerUid && currentUser) {
@@ -3819,7 +4271,7 @@
     }
     activeStreamerUid = null;
     activeStreamerUsername = null;
-    if (liveStreamStage) liveStreamStage.classList.add('hidden');
+    if (floatingStreamWindow) floatingStreamWindow.classList.add('hidden');
     updateScreenShareButtonState();
     reorderLiveCards();
   }
@@ -3992,6 +4444,7 @@
       if (isScreenSharing) {
         stopScreenShare();
       } else if (activeStreamerUid && (!currentUser || activeStreamerUid !== currentUser.uid)) {
+        if (floatingStreamWindow) floatingStreamWindow.classList.remove('hidden');
         toggleWatchStream();
       } else {
         startScreenShare();
@@ -4116,4 +4569,171 @@
       }
     });
   }
+
+  // --- Floating Stream Window Drag, Minimize, & Resize Management ---
+  let isFloatingDragging = false;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let dragStartLeft = 0;
+  let dragStartTop = 0;
+
+  function initFloatingStreamControls() {
+    if (!floatingStreamWindow || !streamDragHandle) return;
+
+    // Draggable header via mouse & touch
+    function onDragStart(e) {
+      if (e.target.closest('.floating-header-actions') || e.target.closest('button') || e.target.closest('select') || e.target.closest('input')) return;
+      isFloatingDragging = true;
+      floatingStreamWindow.classList.add('is-dragging');
+
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+      dragStartX = clientX;
+      dragStartY = clientY;
+
+      const rect = floatingStreamWindow.getBoundingClientRect();
+      dragStartLeft = rect.left;
+      dragStartTop = rect.top;
+
+      floatingStreamWindow.style.right = 'auto';
+      floatingStreamWindow.style.bottom = 'auto';
+      floatingStreamWindow.style.left = `${dragStartLeft}px`;
+      floatingStreamWindow.style.top = `${dragStartTop}px`;
+
+      document.addEventListener('mousemove', onDragMove);
+      document.addEventListener('mouseup', onDragEnd);
+      document.addEventListener('touchmove', onDragMove, { passive: false });
+      document.addEventListener('touchend', onDragEnd);
+    }
+
+    function onDragMove(e) {
+      if (!isFloatingDragging) return;
+      if (e.cancelable) e.preventDefault();
+
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+      const deltaX = clientX - dragStartX;
+      const deltaY = clientY - dragStartY;
+
+      let newLeft = dragStartLeft + deltaX;
+      let newTop = dragStartTop + deltaY;
+
+      const maxLeft = Math.max(10, window.innerWidth - floatingStreamWindow.offsetWidth - 10);
+      const maxTop = Math.max(10, window.innerHeight - floatingStreamWindow.offsetHeight - 10);
+
+      newLeft = Math.max(10, Math.min(newLeft, maxLeft));
+      newTop = Math.max(10, Math.min(newTop, maxTop));
+
+      floatingStreamWindow.style.left = `${newLeft}px`;
+      floatingStreamWindow.style.top = `${newTop}px`;
+    }
+
+    function onDragEnd() {
+      if (!isFloatingDragging) return;
+      isFloatingDragging = false;
+      floatingStreamWindow.classList.remove('is-dragging');
+      document.removeEventListener('mousemove', onDragMove);
+      document.removeEventListener('mouseup', onDragEnd);
+      document.removeEventListener('touchmove', onDragMove);
+      document.removeEventListener('touchend', onDragEnd);
+    }
+
+    streamDragHandle.addEventListener('mousedown', onDragStart);
+    streamDragHandle.addEventListener('touchstart', onDragStart, { passive: true });
+
+    // Minimize / Expand Toggle
+    if (btnMinimizeFloatingStream) {
+      btnMinimizeFloatingStream.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isMin = floatingStreamWindow.classList.toggle('is-minimized');
+        btnMinimizeFloatingStream.textContent = isMin ? '🗖' : '🗕';
+        btnMinimizeFloatingStream.title = isMin ? 'ขยายหน้าต่างไลฟ์' : 'ย่อหน้าต่างไลฟ์';
+      });
+    }
+
+    // Fullscreen Toggle
+    if (btnFloatingFullscreen) {
+      btnFloatingFullscreen.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!document.fullscreenElement) {
+          if (floatingStreamWindow.requestFullscreen) {
+            floatingStreamWindow.requestFullscreen().catch(() => {});
+          }
+        } else {
+          if (document.exitFullscreen) {
+            document.exitFullscreen().catch(() => {});
+          }
+        }
+      });
+    }
+
+    // Close button
+    if (btnCloseFloatingStream) {
+      btnCloseFloatingStream.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isScreenSharing) {
+          if (confirm('คุณกำลังไลฟ์สดอยู่ ต้องการหยุดการไลฟ์สดหรือไม่?')) {
+            stopScreenShare();
+          }
+        } else if (isWatching) {
+          stopWatchingStream();
+        } else {
+          floatingStreamWindow.classList.add('hidden');
+        }
+      });
+    }
+
+    // Bottom-right corner resizer
+    if (streamResizeHandle) {
+      let isResizing = false;
+      let resizeStartX = 0;
+      let resizeStartY = 0;
+      let startW = 0;
+      let startH = 0;
+
+      function onResizeStart(e) {
+        e.stopPropagation();
+        isResizing = true;
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        resizeStartX = clientX;
+        resizeStartY = clientY;
+        startW = floatingStreamWindow.offsetWidth;
+        startH = floatingStreamWindow.offsetHeight;
+
+        document.addEventListener('mousemove', onResizeMove);
+        document.addEventListener('mouseup', onResizeEnd);
+        document.addEventListener('touchmove', onResizeMove, { passive: false });
+        document.addEventListener('touchend', onResizeEnd);
+      }
+
+      function onResizeMove(e) {
+        if (!isResizing) return;
+        if (e.cancelable) e.preventDefault();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        const newW = Math.max(280, Math.min(window.innerWidth - 20, startW + (clientX - resizeStartX)));
+        const newH = Math.max(180, Math.min(window.innerHeight - 20, startH + (clientY - resizeStartY)));
+        floatingStreamWindow.style.width = `${newW}px`;
+        floatingStreamWindow.style.height = `${newH}px`;
+      }
+
+      function onResizeEnd() {
+        isResizing = false;
+        document.removeEventListener('mousemove', onResizeMove);
+        document.removeEventListener('mouseup', onResizeEnd);
+        document.removeEventListener('touchmove', onResizeMove);
+        document.removeEventListener('touchend', onResizeEnd);
+      }
+
+      streamResizeHandle.addEventListener('mousedown', onResizeStart);
+      streamResizeHandle.addEventListener('touchstart', onResizeStart, { passive: true });
+    }
+  }
+
+  // Initialize Floating Stream & Google Auth UI
+  initFloatingStreamControls();
+  updateAuthUIState();
 })();

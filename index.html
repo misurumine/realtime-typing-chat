@@ -31,6 +31,9 @@
       <button id="btnOpenTheme" class="btn btn-outline btn-sm" title="ปรับแต่งธีมและสี">
         🎨 ธีมสี
       </button>
+      <button id="btnOpenGoogleDriveModal" class="btn btn-outline btn-sm" title="ตั้งค่าเชื่อมต่อ Google Drive AppData Sync">
+        ☁️ Google Drive
+      </button>
       <button id="btnInstallPwa" class="btn btn-outline btn-sm hidden" title="ติดตั้งลงเครื่อง">
         📲 ติดตั้งแอป
       </button>
@@ -41,11 +44,14 @@
       <div id="userChip" class="user-chip hidden">
         <img id="headerAvatar" src="" alt="Avatar" class="avatar-xs" />
         <div class="user-chip-info" id="btnCopyHeaderUid" title="คลิกเพื่อคัดลอก UID">
-          <span id="headerUsername" class="user-chip-name"></span>
+          <div class="user-chip-name-row">
+            <span id="headerUsername" class="user-chip-name"></span>
+            <span id="headerAuthBadge" class="auth-provider-badge hidden" title="ลงชื่อเข้าใช้ด้วยบัญชี Google ยืนยันตัวตนแล้ว">🛡️ Google</span>
+          </div>
           <span id="headerUid" class="user-chip-uid"></span>
         </div>
         <button id="btnEditProfile" class="btn-icon" title="แก้ไขโปรไฟล์และ Tag">⚙️</button>
-        <button id="btnLogout" class="btn-icon btn-danger-icon" title="ออกจากระบบ (ล้าง UID)">🚪</button>
+        <button id="btnLogout" class="btn-icon btn-danger-icon" title="ออกจากระบบ">🚪</button>
       </div>
     </div>
   </header>
@@ -58,6 +64,34 @@
         <div class="setup-header">
           <h1>ยินดีต้อนรับสู่ <span class="gradient-text">LiveType</span></h1>
           <p>พิมพ์คุยกันสดๆ ทีละตัวอักษร กด Enter เพื่อล้างข้อความทันที ไม่มีการเก็บประวัติใดๆ ทั้งสิ้น</p>
+        </div>
+
+        <!-- Google Authentication & Google Drive AppData Sync Box -->
+        <div class="google-auth-section">
+          <button type="button" id="btnGoogleSignIn" class="btn btn-google btn-lg btn-block" title="ลงชื่อเข้าใช้ด้วยบัญชี Google เพื่อซิงค์โปรไฟล์และเพื่อนอัตโนมัติ">
+            <svg class="google-icon" viewBox="0 0 24 24" width="22" height="22">
+              <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
+              <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/>
+              <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+              <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+            </svg>
+            <span>ลงชื่อเข้าใช้ด้วย Google (Google Sign-In)</span>
+          </button>
+
+          <div id="googleAuthSuccessBox" class="google-auth-success-box hidden">
+            <div class="google-auth-info">
+              <span class="auth-check-icon">🛡️</span>
+              <div>
+                <div class="auth-success-title">เชื่อมต่อบัญชี Google แล้ว</div>
+                <div id="googleEmailLabel" class="auth-email-text mono"></div>
+              </div>
+            </div>
+            <button type="button" id="btnGoogleSignOut" class="btn btn-secondary btn-xs" title="ออกจากระบบ Google">สลับบัญชี</button>
+          </div>
+
+          <div class="auth-divider">
+            <span>หรือ ปรับแต่งโปรไฟล์ & ใช้งานแบบ Guest / ออฟไลน์</span>
+          </div>
         </div>
 
         <form id="formSetup" class="setup-form">
@@ -288,76 +322,6 @@
               </div>
             </div>
 
-            <!-- Live Stream Stage (Displayed when someone is streaming in the room) -->
-            <div id="liveStreamStage" class="live-stream-stage hidden">
-              <div class="stream-container" id="streamContainer" title="คลิกที่วิดีโอเพื่อเริ่มดู หรือหยุดดูไลฟ์สด">
-                <video id="liveStreamVideo" autoplay playsinline></video>
-
-                <!-- Click-to-Watch / Click-to-Stop Overlay -->
-                <div id="streamPlaceholderOverlay" class="stream-placeholder-overlay">
-                  <div class="placeholder-icon">📺</div>
-                  <h3 id="streamPlaceholderTitle">มีผู้ใช้งานกำลังไลฟ์สดหน้าจอ</h3>
-                  <p id="streamPlaceholderSub">คลิกที่วิดีโอ หรือกดปุ่มด้านล่างเพื่อเริ่มรับชม</p>
-                  <button type="button" id="btnToggleWatchStream" class="btn btn-primary btn-md">
-                    ▶ ดูไลฟ์สด
-                  </button>
-                </div>
-
-                <!-- Live Stream HUD Bar -->
-                <div class="stream-hud" id="streamHud">
-                  <div class="stream-hud-left">
-                    <span class="live-badge-glow">🔴 LIVE</span>
-                    <span id="streamerNameBadge" class="streamer-name">ชื่อผู้ไลฟ์</span>
-                    <span id="streamStatusBadge" class="stream-status-pill mono">720p @ 30 FPS</span>
-                  </div>
-
-                  <div class="stream-hud-right" id="streamHudControls">
-                    <!-- Resolution Selector -->
-                    <div class="hud-control-item">
-                      <label for="selectStreamResolution" class="hud-label">ความชัด:</label>
-                      <select id="selectStreamResolution" class="hud-select">
-                        <option value="original">Original (ต้นฉบับ)</option>
-                        <option value="1080p">1080p (FHD)</option>
-                        <option value="720p" selected>720p (HD)</option>
-                        <option value="480p">480p (SD)</option>
-                        <option value="360p">360p (ประหยัดเน็ต)</option>
-                      </select>
-                    </div>
-
-                    <!-- FPS Selector -->
-                    <div class="hud-control-item">
-                      <label for="selectStreamFps" class="hud-label">FPS:</label>
-                      <select id="selectStreamFps" class="hud-select">
-                        <option value="60">60 FPS</option>
-                        <option value="30" selected>30 FPS</option>
-                        <option value="15">15 FPS</option>
-                      </select>
-                    </div>
-
-                    <!-- Audio Volume Toggle & 0-200% Booster Slider -->
-                    <div class="hud-control-item stream-volume-wrap">
-                      <button id="btnStreamVolume" type="button" class="btn-icon btn-hud-icon" title="เปิด/ปิดเสียง">🔊</button>
-                      <input
-                        type="range"
-                        id="rangeStreamVolume"
-                        class="hud-volume-slider"
-                        min="0"
-                        max="200"
-                        step="1"
-                        value="100"
-                        title="ปรับระดับเสียง (0% - 200%)"
-                      />
-                      <span id="streamVolumeText" class="hud-volume-text mono" title="ระดับเสียงปัจจุบัน">100%</span>
-                    </div>
-                    <!-- Fullscreen Toggle -->
-                    <button id="btnStreamFullscreen" type="button" class="btn-icon btn-hud-icon" title="เต็มจอ">⛶</button>
-                    <!-- Stop Watching / Stop Streaming Button -->
-                    <button id="btnStopWatchStream" type="button" class="btn btn-secondary btn-sm" title="หยุดดูไลฟ์">⏹ หยุดดู</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
             <!-- Live Typing Cards Grid (Everyone types simultaneously!) -->
             <div id="liveCardsGrid" class="live-cards-grid">
               <!-- Populated dynamically with each member's live typing card -->
@@ -462,6 +426,96 @@
       </div>
     </section>
   </main>
+
+  <!-- Floating, Draggable, Resizable Live Stream Window (Picture-in-Picture) -->
+  <div id="floatingStreamWindow" class="floating-stream-window hidden">
+    <!-- Draggable Header -->
+    <div class="floating-stream-header" id="streamDragHandle">
+      <div class="floating-header-left">
+        <span class="stream-drag-grip" title="คลิกค้างเพื่อลากเลื่อนหน้าต่าง">⠿</span>
+        <span class="live-badge-glow">🔴 LIVE</span>
+        <span id="floatingStreamerTitle" class="floating-streamer-title">ถ่ายทอดสดหน้าจอ</span>
+      </div>
+      <div class="floating-header-actions">
+        <button id="btnMinimizeFloatingStream" type="button" class="btn-floating-tool" title="ย่อ / ขยายหน้าต่าง">🗕</button>
+        <button id="btnFloatingFullscreen" type="button" class="btn-floating-tool" title="เต็มจอ">⛶</button>
+        <button id="btnCloseFloatingStream" type="button" class="btn-floating-tool btn-floating-close" title="ปิดหน้าต่าง / หยุดดู">✕</button>
+      </div>
+    </div>
+
+    <!-- Floating Video Body -->
+    <div class="floating-stream-body" id="floatingStreamBody">
+      <div class="stream-container" id="streamContainer" title="คลิกที่วิดีโอเพื่อเริ่มดู หรือหยุดดูไลฟ์สด">
+        <video id="liveStreamVideo" autoplay playsinline></video>
+
+        <!-- Click-to-Watch / Click-to-Stop Overlay -->
+        <div id="streamPlaceholderOverlay" class="stream-placeholder-overlay">
+          <div class="placeholder-icon">📺</div>
+          <h3 id="streamPlaceholderTitle">มีผู้ใช้งานกำลังไลฟ์สดหน้าจอ</h3>
+          <p id="streamPlaceholderSub">คลิกที่วิดีโอ หรือกดปุ่มด้านล่างเพื่อเริ่มรับชม</p>
+          <button type="button" id="btnToggleWatchStream" class="btn btn-primary btn-md">
+            ▶ ดูไลฟ์สด
+          </button>
+        </div>
+
+        <!-- Live Stream HUD Bar -->
+        <div class="stream-hud" id="streamHud">
+          <div class="stream-hud-left">
+            <span id="streamerNameBadge" class="streamer-name">ชื่อผู้ไลฟ์</span>
+            <span id="streamStatusBadge" class="stream-status-pill mono">720p @ 30 FPS</span>
+          </div>
+
+          <div class="stream-hud-right" id="streamHudControls">
+            <!-- Resolution Selector -->
+            <div class="hud-control-item">
+              <label for="selectStreamResolution" class="hud-label">ความชัด:</label>
+              <select id="selectStreamResolution" class="hud-select">
+                <option value="original">Original (ต้นฉบับ)</option>
+                <option value="1080p">1080p (FHD)</option>
+                <option value="720p" selected>720p (HD)</option>
+                <option value="480p">480p (SD)</option>
+                <option value="360p">360p (ประหยัดเน็ต)</option>
+              </select>
+            </div>
+
+            <!-- FPS Selector -->
+            <div class="hud-control-item">
+              <label for="selectStreamFps" class="hud-label">FPS:</label>
+              <select id="selectStreamFps" class="hud-select">
+                <option value="60">60 FPS</option>
+                <option value="30" selected>30 FPS</option>
+                <option value="15">15 FPS</option>
+              </select>
+            </div>
+
+            <!-- Audio Volume Toggle & 0-200% Booster Slider -->
+            <div class="hud-control-item stream-volume-wrap">
+              <button id="btnStreamVolume" type="button" class="btn-icon btn-hud-icon" title="เปิด/ปิดเสียง">🔊</button>
+              <input
+                type="range"
+                id="rangeStreamVolume"
+                class="hud-volume-slider"
+                min="0"
+                max="200"
+                step="1"
+                value="100"
+                title="ปรับระดับเสียง (0% - 200%)"
+              />
+              <span id="streamVolumeText" class="hud-volume-text mono" title="ระดับเสียงปัจจุบัน">100%</span>
+            </div>
+
+            <!-- Fullscreen Toggle -->
+            <button id="btnStreamFullscreen" type="button" class="btn-icon btn-hud-icon" title="เต็มจอ">⛶</button>
+            <!-- Stop Watching / Stop Streaming Button -->
+            <button id="btnStopWatchStream" type="button" class="btn btn-secondary btn-sm" title="หยุดดูไลฟ์">⏹ หยุดดู</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Custom Corner Resize Handle -->
+    <div class="floating-stream-resizer" id="streamResizeHandle" title="ลากมุมนี้เพื่อปรับขนาดหน้าต่าง"></div>
+  </div>
 
   <!-- Incoming Room Invitation Modal -->
   <div id="inviteModal" class="modal-backdrop hidden">
@@ -615,6 +669,86 @@
       </div>
     </div>
   </div>
+
+  <!-- Google Drive AppData Sync Modal -->
+  <div id="googleDriveModal" class="modal-backdrop hidden">
+    <div class="modal-card google-drive-modal-card glass-panel">
+      <div class="modal-header">
+        <h3>☁️ Google Drive AppData Cloud Sync</h3>
+      </div>
+      <div class="modal-body">
+        <div class="google-drive-guide-box">
+          <strong>💡 ซิงก์ข้อมูลส่วนตัวผ่าน Google Drive (ฟรี & ปลอดภัย 100%):</strong>
+          <p style="margin-top:6px; font-size:0.84rem; color:var(--text-muted); line-height:1.5;">
+            ข้อมูลโปรไฟล์, รูปภาพ, Tag ความสนใจ และรายชื่อเพื่อนจะถูกสำรองไว้ในโฟลเดอร์ <code>appDataFolder</code> บน Google Drive ส่วนตัวของคุณโดยตรง ไม่ผ่านเซิร์ฟเวอร์ใดๆ ผู้อื่นไม่สามารถมองเห็นหรือเข้าถึงได้
+          </p>
+        </div>
+
+        <!-- Google User Status Box (When signed in) -->
+        <div id="modalGoogleAccountBox" class="google-account-status-box hidden">
+          <div class="google-account-details">
+            <img id="modalGoogleAvatar" src="./assets/avatars/avatar-1.svg" alt="Google User" class="avatar-md" />
+            <div>
+              <div id="modalGoogleName" class="google-account-name">ชื่อผู้ใช้ Google</div>
+              <div id="modalGoogleEmail" class="google-account-email mono">user@gmail.com</div>
+              <div class="sync-status-indicator">
+                <span class="dot-online"></span> เชื่อมต่อ Google Drive สำเร็จ • ไฟล์: <code>livetype_user_backup.json</code>
+              </div>
+            </div>
+          </div>
+          <div class="google-sync-actions-row">
+            <button type="button" id="btnManualSyncDrive" class="btn btn-primary btn-sm">🔄 ซิงก์ข้อมูลขึ้น Drive เดี๋ยวนี้</button>
+            <button type="button" id="btnManualDownloadDrive" class="btn btn-secondary btn-sm">📥 ดาวน์โหลดข้อมูลจาก Drive</button>
+            <button type="button" id="btnModalGoogleSignOut" class="btn btn-danger btn-sm">🚪 ออกจากระบบ Google</button>
+          </div>
+        </div>
+
+        <!-- Not Signed In Box -->
+        <div id="modalGoogleSignInBox" class="google-signin-prompt-box">
+          <p style="margin-bottom:12px; font-size:0.88rem; color:var(--text-main);">
+            เชื่อมต่อบัญชี Google ของคุณเพื่อซิงก์ข้อมูลและรายชื่อเพื่อนอัตโนมัติ:
+          </p>
+          <button type="button" id="btnModalGoogleSignIn" class="btn btn-google btn-block">
+            <svg class="google-icon" viewBox="0 0 24 24" width="20" height="20">
+              <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
+              <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/>
+              <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+              <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+            </svg>
+            <span>ลงชื่อเข้าใช้ด้วย Google (Google Sign-In)</span>
+          </button>
+
+          <!-- Client ID Configuration Box -->
+          <div class="google-client-id-config" style="margin-top:16px;">
+            <label for="inputGoogleClientId" class="section-label" style="display:flex; justify-content:space-between; align-items:center;">
+              <span>Google OAuth 2.0 Client ID (Web Client):</span>
+              <small style="color:var(--text-muted);"><a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" style="color:#818cf8; text-decoration:underline;">ดูวิธีสร้าง Client ID</a></small>
+            </label>
+            <input
+              type="text"
+              id="inputGoogleClientId"
+              class="input-field mono"
+              style="font-size:0.8rem;"
+              placeholder="เช่น 123456789-abc.apps.googleusercontent.com"
+              autocomplete="off"
+            />
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+              <small id="googleClientIdStatus" style="font-size:0.75rem; color:var(--text-muted);">สถานะ: กำลังตรวจสอบ Client ID</small>
+              <button type="button" id="btnSaveGoogleClientId" class="btn btn-secondary btn-sm">บันทึก Client ID</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="btnCloseGoogleDriveModal" type="button" class="btn btn-primary">ปิดหน้าต่าง</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Google Identity Services (GIS) Client Library -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <!-- Google Drive AppData Sync Library -->
+  <script src="./js/google-drive-sync.js"></script>
 
   <!-- MQTT over WebSockets for 100% Serverless Realtime Pub/Sub across iOS, Android, Windows -->
   <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>

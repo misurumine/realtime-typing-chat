@@ -1184,14 +1184,166 @@ html, body {
   border-radius: 999px;
 }
 
-/* Live Screen Streaming Stage */
-.live-stream-stage {
+/* ========================================================
+   Floating, Draggable, Resizable Live Stream Window (PiP)
+   Top-level overlay over all UI layers (z-index: 10000)
+   ======================================================== */
+.floating-stream-window {
+  position: fixed;
+  top: 80px;
+  right: 24px;
+  width: 520px;
+  max-width: 95vw;
+  min-width: 290px;
+  min-height: 180px;
+  max-height: 90vh;
+  background: rgba(11, 15, 25, 0.96);
+  backdrop-filter: blur(16px);
+  border: 1.5px solid rgba(99, 102, 241, 0.5);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.75), 0 0 24px rgba(99, 102, 241, 0.2);
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  resize: both;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.floating-stream-window.is-dragging {
+  user-select: none;
+  opacity: 0.95;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.85);
+}
+
+.floating-stream-window.is-minimized {
+  width: 300px !important;
+  min-height: 44px !important;
+  height: 44px !important;
+  resize: none !important;
+  overflow: hidden !important;
+  border-color: rgba(239, 68, 68, 0.6);
+}
+
+.floating-stream-window.is-minimized .floating-stream-body,
+.floating-stream-window.is-minimized .floating-stream-resizer {
+  display: none !important;
+}
+
+.floating-stream-header {
+  height: 42px;
+  padding: 0 12px;
+  background: linear-gradient(90deg, rgba(20, 26, 46, 0.98), rgba(15, 23, 42, 0.95));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: grab;
+  user-select: none;
   flex-shrink: 0;
+}
+
+.floating-stream-header:active {
+  cursor: grabbing;
+}
+
+.floating-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.stream-drag-grip {
+  font-size: 1.1rem;
+  color: var(--text-muted);
+  cursor: grab;
+  margin-right: 2px;
+}
+
+.floating-streamer-title {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #fff;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.floating-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-floating-tool {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: #cbd5e1;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-floating-tool:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.btn-floating-close:hover {
+  background: #ef4444 !important;
+  color: #fff !important;
+  border-color: #ef4444 !important;
+}
+
+.floating-stream-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background: #000;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.floating-stream-body .stream-container {
   width: 100%;
-  padding: 12px 16px 6px 16px;
-  background: rgba(10, 15, 29, 0.5);
-  border-bottom: 1px solid var(--border-subtle);
-  transition: all 0.25s ease;
+  height: 100%;
+  max-width: 100%;
+  max-height: none;
+  aspect-ratio: auto;
+  border: none;
+  border-radius: 0;
+  margin: 0;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.floating-stream-body #liveStreamVideo {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.floating-stream-resizer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: se-resize;
+  background: linear-gradient(135deg, transparent 50%, rgba(99, 102, 241, 0.6) 50%);
+  border-bottom-right-radius: 12px;
+  pointer-events: auto;
 }
 
 .stream-container {
@@ -1449,7 +1601,9 @@ html, body {
 
 .live-card {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 16px;
   background: var(--bg-card);
   border: 1.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -1457,7 +1611,8 @@ html, body {
   position: relative;
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease, background 0.2s ease;
   overflow: visible;
-  min-height: 100px;
+  min-height: 80px;
+  height: auto;
   width: 100%;
 }
 
@@ -1486,6 +1641,131 @@ html, body {
 .live-card.is-idle:hover {
   opacity: 0.95;
   border-color: var(--border-subtle);
+}
+
+/* Card Profile Column (Left side of card) */
+.live-card-profile-col {
+  flex-shrink: 0;
+  width: 230px;
+  min-width: 180px;
+  max-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  padding-right: 14px;
+  position: relative;
+}
+
+.live-card-user-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+}
+
+.live-card-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.live-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.live-card-username {
+  font-weight: 600;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.live-card-uid {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.live-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.live-card-status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Live Stream Icon Button next to Profile */
+.btn-card-stream-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  background: rgba(239, 68, 68, 0.22);
+  border: 1px solid rgba(239, 68, 68, 0.65);
+  border-radius: 999px;
+  color: #fca5a5;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+  animation: streamBadgePulse 2s infinite;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.35);
+}
+
+.btn-card-stream-badge:hover {
+  background: #ef4444;
+  color: #ffffff;
+  transform: translateY(-1px) scale(1.04);
+  box-shadow: 0 0 16px rgba(239, 68, 68, 0.6);
+}
+
+.btn-card-stream-badge.watching {
+  background: rgba(16, 185, 129, 0.22);
+  border-color: rgba(16, 185, 129, 0.65);
+  color: #6ee7b7;
+  animation: none;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.35);
+}
+
+.btn-card-stream-badge.watching:hover {
+  background: #10b981;
+  color: #ffffff;
+}
+
+.live-dot-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 8px #ef4444;
+}
+
+.btn-card-stream-badge.watching .live-dot-pulse {
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+}
+
+@keyframes streamBadgePulse {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+    border-color: rgba(239, 68, 68, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 18px rgba(239, 68, 68, 0.8);
+    border-color: rgba(239, 68, 68, 1);
+  }
 }
 
 /* Floating Soap-Bubble Emote Animation */
@@ -1650,10 +1930,12 @@ html, body {
 
 .live-card-body {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  overflow-y: auto;
+  justify-content: flex-start;
+  overflow: visible;
   word-break: break-word;
   white-space: pre-wrap;
   font-size: 1.25rem;
@@ -1661,6 +1943,7 @@ html, body {
   font-weight: 400;
   color: var(--text-main);
   gap: 10px;
+  height: auto;
 }
 
 .live-card-image-wrap {
@@ -1671,19 +1954,20 @@ html, body {
 
 .live-card-img {
   max-width: 100%;
-  max-height: 240px;
+  max-height: 420px;
   border-radius: var(--radius-md);
   border: 1.5px solid rgba(255, 255, 255, 0.2);
-  object-fit: cover;
+  object-fit: contain;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  display: block;
 }
 
 .live-card-video {
   max-width: 100%;
-  max-height: 240px;
+  max-height: 420px;
   border-radius: var(--radius-md);
   border: 1.5px solid rgba(255, 255, 255, 0.2);
-  object-fit: cover;
+  object-fit: contain;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
   display: block;
 }
@@ -2434,3 +2718,211 @@ kbd {
     padding: 0 8px;
   }
 }
+
+/* ==========================================================================
+   Google Authentication & Google Drive AppData Sync Styles
+   ========================================================================== */
+.google-auth-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.btn-google {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: #ffffff;
+  color: #1f2937 !important;
+  font-weight: 600;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.btn-google:hover {
+  background: #f3f4f6;
+  color: #111827 !important;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.btn-google:active {
+  transform: translateY(0);
+}
+
+.google-icon {
+  flex-shrink: 0;
+}
+
+.google-auth-success-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: var(--radius-md);
+  gap: 10px;
+}
+
+.google-auth-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auth-check-icon {
+  font-size: 1.3rem;
+}
+
+.auth-success-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #6ee7b7;
+}
+
+.auth-email-text {
+  font-size: 0.72rem;
+  color: #a7f3d0;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  margin: 4px 0;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.auth-divider span {
+  padding: 0 10px;
+}
+
+.auth-provider-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  font-size: 0.65rem;
+  border-radius: 999px;
+  background: rgba(66, 133, 244, 0.22);
+  border: 1px solid rgba(66, 133, 244, 0.5);
+  color: #93c5fd;
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+.user-chip-name-row {
+  display: flex;
+  align-items: center;
+}
+
+/* Google Drive AppData Sync Modal */
+.google-drive-modal-card {
+  max-width: 560px;
+  width: 92%;
+}
+
+.google-drive-guide-box {
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  font-size: 0.82rem;
+  color: #c7d2fe;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.google-account-status-box {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.google-account-details {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.google-account-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #fff;
+}
+
+.google-account-email {
+  font-size: 0.78rem;
+  color: #a7f3d0;
+}
+
+.sync-status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.dot-online {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
+}
+
+.google-sync-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+}
+
+.google-client-id-config {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+
+@media (max-width: 580px) {
+  .live-card {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .live-card-profile-col {
+    width: 100%;
+    max-width: 100%;
+    border-right: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding-right: 0;
+    padding-bottom: 8px;
+  }
+  .floating-stream-window {
+    width: calc(100vw - 20px) !important;
+    right: 10px !important;
+    left: 10px !important;
+  }
+}
+
