@@ -1,6 +1,6 @@
 {
-  "name": "LiveType — Realtime Ephemeral Chat",
-  "short_name": "LiveType",
+  "name": "Realtime Typing Chat — Zero-History Realtime",
+  "short_name": "Realtime Typing Chat",
   "description": "Realtime Character-by-Character Live Typing Chat with Zero History",
   "start_url": "./index.html",
   "display": "standalone",

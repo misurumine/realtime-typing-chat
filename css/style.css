@@ -2422,6 +2422,7 @@ kbd {
 .upload-icon {
   font-size: 1.25rem;
   line-height: 1;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
 }
 
 .upload-text {
@@ -2682,6 +2683,7 @@ kbd {
   border-radius: var(--radius-sm);
   height: 52px;
   font-size: 1.65rem;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3193,6 +3195,12 @@ kbd {
 }
 
 @media (max-width: 580px) {
+  .brand-title {
+    font-size: 0.95rem;
+  }
+  .brand-badge {
+    font-size: 0.62rem;
+  }
   .custom-bg-sliders-row {
     grid-template-columns: 1fr;
   }

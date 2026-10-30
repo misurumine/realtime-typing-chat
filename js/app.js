@@ -1,6 +1,6 @@
 (() => {
   /**
-   * LiveType — 100% Serverless Realtime Live-Typing Chat (PWA)
+   * Realtime Typing Chat — 100% Serverless Realtime Live-Typing Chat (PWA)
    * Works on GitHub Pages, Cloudflare Pages, Vercel, Netlify, or Localhost
    * with Google Sign-In & Cloud Firestore P2P Architecture!
    */
@@ -141,7 +141,7 @@
     '😱', '🤯', '😡', '🤬', '👍', '👏',
     '🙏', '🙌', '👀', '💀', '👻', '👽',
     '🐱', '🐶', '🦊', '🐼', '🦄', '🐸',
-    '🎉', '✨', '💯', '⚡', '🌈', '🫧'
+    '🎉', '✨', '💯', '⚡', '🌈', '🎈'
   ];
 
   // Default Theme Palette (Full Website Customizer)
@@ -4129,7 +4129,7 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `LiveType-Room-${activeRoomCode}.png`;
+        a.download = `RealtimeTypingChat-Room-${activeRoomCode}.png`;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -4514,7 +4514,7 @@
           pillEl.innerHTML = '<span class="pulse-dot"></span> ' + (info.hasImage && !info.hasText ? '🖼️ ส่งรูป/GIF สด' : '⚡ กำลังส่งสด...');
         } else if (info.hasRecentEmote) {
           pillEl.className = 'typing-status-pill active emote-active';
-          pillEl.textContent = `🫧 ส่งอีโมจิ ${member.lastEmote || ''}`;
+          pillEl.textContent = `✨ ส่งอีโมจิ ${member.lastEmote || ''}`;
         } else {
           pillEl.className = 'typing-status-pill idle';
           pillEl.textContent = '💤 Non-Active';
@@ -4597,7 +4597,7 @@
       } else if (hasContent) {
         statusPillHtml = `<span class="typing-status-pill active" id="status-pill-${safeMemberUid}"><span class="pulse-dot"></span> ${member.image && !member.currentText ? '🖼️ ส่งรูป/GIF สด' : '⚡ กำลังส่งสด...'}</span>`;
       } else if (info.hasRecentEmote) {
-        statusPillHtml = `<span class="typing-status-pill active emote-active" id="status-pill-${safeMemberUid}">🫧 ส่งอีโมจิ ${escapeHtml(member.lastEmote || '')}</span>`;
+        statusPillHtml = `<span class="typing-status-pill active emote-active" id="status-pill-${safeMemberUid}">✨ ส่งอีโมจิ ${escapeHtml(member.lastEmote || '')}</span>`;
       } else {
         statusPillHtml = `<span class="typing-status-pill idle" id="status-pill-${safeMemberUid}">💤 Non-Active</span>`;
       }
@@ -4867,7 +4867,7 @@
       pillEl.innerHTML = '<span class="pulse-dot"></span> ' + (hasImage && !hasText ? '🖼️ ส่งรูป/GIF สด' : '⚡ กำลังส่งสด...');
     } else if (info.hasRecentEmote) {
       pillEl.className = 'typing-status-pill active emote-active';
-      pillEl.textContent = `🫧 ส่งอีโมจิ ${member ? member.lastEmote || '' : ''}`;
+      pillEl.textContent = `✨ ส่งอีโมจิ ${member ? member.lastEmote || '' : ''}`;
     } else {
       pillEl.className = 'typing-status-pill idle';
       pillEl.textContent = '💤 Non-Active';
@@ -5562,7 +5562,7 @@
       gifSearchRow.classList.add('hidden');
       gifResultsGrid.classList.add('hidden');
       emotePickerGrid.classList.remove('hidden');
-      if (gifPoweredByText) gifPoweredByText.textContent = '🫧 กดที่อีโมจิเพื่อปล่อยลอยขึ้นจากโปรไฟล์ของคุณแบบฟองสบู่!';
+      if (gifPoweredByText) gifPoweredByText.textContent = '✨ กดที่อีโมจิเพื่อปล่อยลอยขึ้นจากโปรไฟล์ของคุณแบบฟองสบู่!';
     } else {
       activeKlipyType = tabName === 'stickers' ? 'stickers' : 'gifs';
       gifSearchRow.classList.remove('hidden');
