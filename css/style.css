@@ -3714,4 +3714,260 @@ kbd {
   padding: 8px 16px;
 }
 
+/* ==========================================================================
+   Content Safety & Moderation Settings (Adult Content & Profanity Filter)
+   ========================================================================== */
+
+.content-safety-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  margin-top: 4px;
+}
+
+.safety-toggle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.safety-toggle-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.safety-toggle-card:hover {
+  border-color: var(--primary-border);
+  background: var(--surface-hover);
+}
+
+.safety-toggle-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  text-align: left;
+}
+
+.safety-toggle-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.safety-icon {
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.safety-toggle-desc {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* Modern iOS/Discord-style Switch Toggle */
+.switch-toggle {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.switch-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider-round {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.15);
+  transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.slider-round:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 2px;
+  bottom: 2px;
+  background-color: #ffffff;
+  transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 50%;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.35);
+}
+
+.switch-toggle input:checked + .slider-round {
+  background-color: var(--primary, #6366f1);
+  border-color: var(--primary, #6366f1);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.45);
+}
+
+.switch-toggle input:focus + .slider-round {
+  outline: 2px solid var(--primary-border);
+}
+
+.switch-toggle input:checked + .slider-round:before {
+  transform: translateX(20px);
+  background-color: #ffffff;
+}
+
+/* ==========================================================================
+   Censored Adult / NSFW Sensitive Content Elements in Chat
+   ========================================================================== */
+
+.censored-media-container {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  max-width: 280px;
+  width: 100%;
+  border: 1px solid rgba(244, 63, 94, 0.35);
+  background: #140b17;
+  box-shadow: 0 4px 16px rgba(225, 29, 72, 0.15);
+  transition: all 0.2s ease;
+}
+
+.censored-media-container.is-censored .blurred-under-censor {
+  display: none !important;
+}
+
+.censored-media-container.is-revealed .censored-artwork-wrap {
+  display: none !important;
+}
+
+.censored-media-container.is-revealed {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: transparent;
+}
+
+.censored-warning-banner {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.censored-artwork-wrap {
+  width: 100%;
+  height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  background: #100813;
+}
+
+.censored-artwork-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.censored-actions-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 10px;
+  background: rgba(20, 11, 23, 0.95);
+  border-top: 1px solid rgba(244, 63, 94, 0.2);
+}
+
+.censored-media-container.is-revealed .censored-actions-bar {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.btn-toggle-censored {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(244, 63, 94, 0.18);
+  border: 1px solid rgba(244, 63, 94, 0.4);
+  color: #fecdd3;
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-toggle-censored:hover {
+  background: rgba(244, 63, 94, 0.32);
+  border-color: #f43f5e;
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.censored-media-container.is-revealed .btn-toggle-censored {
+  background: rgba(0, 0, 0, 0.6);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.68rem;
+  padding: 3px 8px;
+}
+
+.censored-media-container.is-revealed .btn-toggle-censored:hover {
+  background: rgba(239, 68, 68, 0.85);
+  border-color: #ef4444;
+  color: #ffffff;
+}
+
+/* Live Card with Censored Content */
+.live-card-body.has-censored-image {
+  flex-direction: row;
+}
+
+/* Setup Profile Actions Row */
+.setup-actions-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+@media (max-width: 580px) {
+  .censored-media-container {
+    max-width: 150px;
+  }
+  .censored-artwork-wrap {
+    height: 120px;
+  }
+}
+
+
 

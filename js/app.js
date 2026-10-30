@@ -1029,6 +1029,11 @@
   const connectionStatus = document.getElementById('connectionStatus');
   const btnInstallPwa = document.getElementById('btnInstallPwa');
 
+  // Content Safety & Moderation Settings Elements
+  const toggleAdultFilter = document.getElementById('toggleAdultFilter');
+  const toggleProfanityFilter = document.getElementById('toggleProfanityFilter');
+  const btnBackToChat = document.getElementById('btnBackToChat');
+
   const btnGoogleSignIn = document.getElementById('btnGoogleSignIn');
   const googleAuthSuccessBox = document.getElementById('googleAuthSuccessBox');
   const googleEmailLabel = document.getElementById('googleEmailLabel');
@@ -2998,6 +3003,22 @@
     initAvatarPicker();
     initInterestTagsPicker();
     updateAuthUIState();
+
+    // Sync Content Safety Toggle States in Profile View
+    if (toggleAdultFilter && window.ContentFilter) {
+      toggleAdultFilter.checked = window.ContentFilter.isAdultFilterEnabled();
+    }
+    if (toggleProfanityFilter && window.ContentFilter) {
+      toggleProfanityFilter.checked = window.ContentFilter.isProfanityFilterEnabled();
+    }
+    if (btnBackToChat) {
+      if (activeRoomCode) {
+        btnBackToChat.classList.remove('hidden');
+      } else {
+        btnBackToChat.classList.add('hidden');
+      }
+    }
+
     inputUsername.focus();
   }
 
@@ -3049,7 +3070,9 @@
       avatar: safeAvatar,
       tags: safeTags,
       authProvider: currentUser ? currentUser.authProvider : null,
-      email: currentUser ? currentUser.email : null
+      email: currentUser ? currentUser.email : null,
+      adultFilterEnabled: window.ContentFilter ? window.ContentFilter.isAdultFilterEnabled() : true,
+      profanityFilterEnabled: window.ContentFilter ? window.ContentFilter.isProfanityFilterEnabled() : true
     };
     saveUserSession(currentUser);
     syncGoogleDriveIfAuthenticated();
@@ -3069,6 +3092,54 @@
 
   btnEditProfile.addEventListener('click', () => {
     showSetupView();
+  });
+
+  if (btnBackToChat) {
+    btnBackToChat.addEventListener('click', () => {
+      showWorkspaceView();
+    });
+  }
+
+  // --- Content Safety Toggles Event Listeners ---
+  if (toggleAdultFilter) {
+    toggleAdultFilter.addEventListener('change', (e) => {
+      const isChecked = e.target.checked;
+      if (window.ContentFilter) {
+        window.ContentFilter.setAdultFilterEnabled(isChecked);
+      }
+      showToast(
+        isChecked
+          ? '🔞 เปิดใช้งานระบบซ่อนเนื้อหาสำหรับผู้ใหญ่แล้ว'
+          : 'ℹ️ ปิดระบบซ่อนเนื้อหาสำหรับผู้ใหญ่แล้ว (แสดงภาพเดิมตามปกติ)'
+      );
+      if (activeRoomCode) {
+        renderAllLiveCards();
+      }
+    });
+  }
+
+  if (toggleProfanityFilter) {
+    toggleProfanityFilter.addEventListener('change', (e) => {
+      const isChecked = e.target.checked;
+      if (window.ContentFilter) {
+        window.ContentFilter.setProfanityFilterEnabled(isChecked);
+      }
+      showToast(
+        isChecked
+          ? '🤬 เปิดใช้งานระบบปิดคำหยาบแล้ว (กรองเป็น ****)'
+          : 'ℹ️ ปิดระบบปิดคำหยาบแล้ว (แสดงข้อความเดิมตามปกติ)'
+      );
+      if (activeRoomCode) {
+        renderAllLiveCards();
+      }
+    });
+  }
+
+  // Listen to filter changed event from anywhere in the app
+  window.addEventListener('livetype:filters-changed', () => {
+    if (activeRoomCode) {
+      renderAllLiveCards();
+    }
   });
 
   // --- Logout (Destroys Session and signs out of Google Drive) ---
@@ -4669,21 +4740,57 @@
     if (hasImage) {
       const imgWrap = document.createElement('div');
       imgWrap.className = 'live-card-image-wrap';
-      if (String(safeImage).startsWith('data:video/')) {
-        const vidEl = document.createElement('video');
-        vidEl.src = safeImage;
-        vidEl.className = 'live-card-video';
-        vidEl.autoplay = true;
-        vidEl.loop = true;
-        vidEl.muted = true;
-        vidEl.playsInline = true;
-        imgWrap.appendChild(vidEl);
+      const isVideo = String(safeImage).startsWith('data:video/');
+
+      // ตรวจสอบระบบซ่อนเนื้อหาสำหรับผู้ใหญ่ (Adult Content / NSFW Filter)
+      if (window.ContentFilter && window.ContentFilter.isAdultFilterEnabled()) {
+        // ตรวจสอบแนวโน้มภาพลามกอนาจาร / 18+
+        window.ContentFilter.checkAdultContent(safeImage, (isAdult) => {
+          if (!bodyEl.contains(imgWrap)) return;
+          imgWrap.innerHTML = '';
+
+          if (isAdult) {
+            // ระบบจะกรองภาพที่มีแนวโน้มออกแล้วใส่ภาพที่บ่งบอกว่าเนื้อหานี้ไม่เหมาะสมเซ็นเซอร์ภาพเอาไว้
+            const censoredBox = window.ContentFilter.createCensoredMediaContainer(safeImage, isVideo);
+            imgWrap.appendChild(censoredBox);
+          } else {
+            // ภาพปลอดภัย แสดงผลตามปกติ
+            if (isVideo) {
+              const vidEl = document.createElement('video');
+              vidEl.src = safeImage;
+              vidEl.className = 'live-card-video';
+              vidEl.autoplay = true;
+              vidEl.loop = true;
+              vidEl.muted = true;
+              vidEl.playsInline = true;
+              imgWrap.appendChild(vidEl);
+            } else {
+              const imgEl = document.createElement('img');
+              imgEl.src = safeImage;
+              imgEl.alt = 'Live image';
+              imgEl.className = 'live-card-img';
+              imgWrap.appendChild(imgEl);
+            }
+          }
+        });
       } else {
-        const imgEl = document.createElement('img');
-        imgEl.src = safeImage;
-        imgEl.alt = 'Live image';
-        imgEl.className = 'live-card-img';
-        imgWrap.appendChild(imgEl);
+        // หากปิดระบบซ่อนเนื้อหาสำหรับผู้ใหญ่ จะไม่มีการกรองรูปภาพลามกหรือเนื้อหาสำหรับผู้ใหญ่ ปล่อยไว้เหมือนเดิม
+        if (isVideo) {
+          const vidEl = document.createElement('video');
+          vidEl.src = safeImage;
+          vidEl.className = 'live-card-video';
+          vidEl.autoplay = true;
+          vidEl.loop = true;
+          vidEl.muted = true;
+          vidEl.playsInline = true;
+          imgWrap.appendChild(vidEl);
+        } else {
+          const imgEl = document.createElement('img');
+          imgEl.src = safeImage;
+          imgEl.alt = 'Live image';
+          imgEl.className = 'live-card-img';
+          imgWrap.appendChild(imgEl);
+        }
       }
       bodyEl.appendChild(imgWrap);
     }
@@ -4694,7 +4801,9 @@
       textWrap.className = 'live-card-text-wrap';
       const textSpan = document.createElement('span');
       textSpan.className = 'live-card-text';
-      textSpan.textContent = text;
+      // ระบบปิดคำหยาบ จะกรองข้อความที่รวมแล้วมีแนวโน้มที่จะเป็นคำหยาบจะกลายเป็น **** ไว้ (เปิด/ปิด ได้ที่โปรไฟล์)
+      const safeDisplayText = window.ContentFilter ? window.ContentFilter.filterProfanity(text) : text;
+      textSpan.textContent = safeDisplayText;
       const cursorSpan = document.createElement('span');
       cursorSpan.className = 'live-cursor';
       textWrap.appendChild(textSpan);
