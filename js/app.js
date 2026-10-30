@@ -250,6 +250,7 @@
     createSvgAvatar('🤖', '#3b82f6', '#2563eb'),
     createSvgAvatar('👾', '#a855f7', '#9333ea')
   ];
+  const PRESET_AVATARS_SET = new Set(PRESET_AVATARS);
 
   function createSvgAvatar(emoji, color1, color2) {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
@@ -263,6 +264,207 @@
       <text x="50%" y="54%" dominant-baseline="central" text-anchor="middle" font-size="62">${emoji}</text>
     </svg>`;
     return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  }
+
+  // =========================================================================
+  // --- Security & Anti-Injection Defense Engine (XSS, Polyglot, Magic Bytes) ---
+  // =========================================================================
+  const MAX_IMAGE_DIMENSION = 8192; // Guard against Image Decompression Bomb / Pixel Flood
+
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function sanitizeUid(input) {
+    if (!input || typeof input !== 'string') return '';
+    const cleaned = input.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 24);
+    if (cleaned === '__PROTO__' || cleaned === 'CONSTRUCTOR' || cleaned === 'PROTOTYPE') return '';
+    return cleaned;
+  }
+
+  function sanitizeRoomCode(input) {
+    if (!input || typeof input !== 'string') return '';
+    const cleaned = input.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 16);
+    if (cleaned === '__PROTO__' || cleaned === 'CONSTRUCTOR' || cleaned === 'PROTOTYPE') return '';
+    return cleaned;
+  }
+
+  function sanitizeUsername(input, fallback = 'User') {
+    if (!input || typeof input !== 'string') return fallback;
+    const cleaned = input
+      .replace(/[\x00-\x1F\x7F\u202A-\u202E\u2066-\u2069<>"'`/\\]/g, '')
+      .trim()
+      .slice(0, 24);
+    return cleaned || fallback;
+  }
+
+  function sanitizeTag(input) {
+    if (!input || typeof input !== 'string') return '';
+    return input
+      .replace(/[\x00-\x1F\x7F\u202A-\u202E\u2066-\u2069<>"'`\\]/g, '')
+      .trim()
+      .slice(0, 32);
+  }
+
+  function sanitizeAvatarUrl(url, fallback = PRESET_AVATARS[0]) {
+    const defaultAvatar = fallback || PRESET_AVATARS[0];
+    if (!url || typeof url !== 'string') return defaultAvatar;
+    const trimmed = url.trim();
+    // 1. Whitelisted built-in SVG emoji avatars
+    if (PRESET_AVATARS_SET.has(trimmed)) return trimmed;
+    // 2. Cap length at 550KB to prevent P2P memory/localStorage DoS
+    if (trimmed.length > 550000) return defaultAvatar;
+    // 3. Strict local preset asset path
+    if (/^\.\/assets\/avatars\/avatar-\d+\.svg$/i.test(trimmed)) return trimmed;
+    // 4. Strict Raster Base64 Data URI (JPEG, PNG, WEBP, GIF only — blocks arbitrary SVG script injection)
+    if (/^data:image\/(jpeg|jpg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/i.test(trimmed)) {
+      return trimmed;
+    }
+    // 5. Strict HTTPS URL (e.g. Google profile picture) without quotes, angle brackets, or whitespace
+    if (/^https:\/\/[^\s"'<>\\`]+$/i.test(trimmed)) {
+      try {
+        const parsed = new URL(trimmed);
+        if (parsed.protocol === 'https:') return trimmed;
+      } catch (e) {
+        return defaultAvatar;
+      }
+    }
+    return defaultAvatar;
+  }
+
+  function sanitizeChatMediaUrl(url) {
+    if (!url || typeof url !== 'string') return null;
+    const trimmed = url.trim();
+    // Cap length at ~3.5MB base64 to prevent P2P memory DoS
+    if (trimmed.length > 3600000) return null;
+    // 1. Strict Raster Image Base64 Data URI (JPEG, PNG, WEBP, GIF — NO SVG allowed!)
+    if (/^data:image\/(jpeg|jpg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/i.test(trimmed)) {
+      return trimmed;
+    }
+    // 2. Strict Transcoded WebM Video Base64 Data URI (from animated GIF compressor)
+    if (/^data:video\/webm(?:;codecs=[a-z0-9,.]+)?;base64,[A-Za-z0-9+/=]+$/i.test(trimmed)) {
+      return trimmed;
+    }
+    // 3. Strict HTTPS external media URL (e.g. KLIPY GIFs/Stickers)
+    if (/^https:\/\/[^\s"'<>\\`]+$/i.test(trimmed)) {
+      try {
+        const parsed = new URL(trimmed);
+        if (parsed.protocol === 'https:') return trimmed;
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  async function validateImageMagicBytes(file) {
+    if (!file || typeof file.slice !== 'function' || file.size < 12) {
+      return { valid: false, detectedType: null };
+    }
+    try {
+      const headerBuf = await file.slice(0, 12).arrayBuffer();
+      const b = new Uint8Array(headerBuf);
+
+      // JPEG: FF D8 FF
+      if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) {
+        return { valid: true, detectedType: 'image/jpeg' };
+      }
+      // PNG: 89 50 4E 47 0D 0A 1A 0A
+      if (
+        b[0] === 0x89 &&
+        b[1] === 0x50 &&
+        b[2] === 0x4e &&
+        b[3] === 0x47 &&
+        b[4] === 0x0d &&
+        b[5] === 0x0a &&
+        b[6] === 0x1a &&
+        b[7] === 0x0a
+      ) {
+        return { valid: true, detectedType: 'image/png' };
+      }
+      // GIF: GIF87a or GIF89a (47 49 46 38 37/39 61)
+      if (
+        b[0] === 0x47 &&
+        b[1] === 0x49 &&
+        b[2] === 0x46 &&
+        b[3] === 0x38 &&
+        (b[4] === 0x37 || b[4] === 0x39) &&
+        b[5] === 0x61
+      ) {
+        return { valid: true, detectedType: 'image/gif' };
+      }
+      // WebP: RIFF....WEBP
+      if (
+        b[0] === 0x52 &&
+        b[1] === 0x49 &&
+        b[2] === 0x46 &&
+        b[3] === 0x46 &&
+        b[8] === 0x57 &&
+        b[9] === 0x45 &&
+        b[10] === 0x42 &&
+        b[11] === 0x50
+      ) {
+        return { valid: true, detectedType: 'image/webp' };
+      }
+    } catch (e) {
+      return { valid: false, detectedType: null };
+    }
+    return { valid: false, detectedType: null };
+  }
+
+  async function scanFileForEmbeddedPayload(file) {
+    try {
+      // Scan head (512KB) and tail (128KB) for embedded HTML/JS/PHP/SVG polyglot payloads
+      const MAX_SCAN = 512 * 1024;
+      const headBuf = await file.slice(0, Math.min(file.size, MAX_SCAN)).arrayBuffer();
+      const decoder = new TextDecoder('latin1');
+      let sample = decoder.decode(new Uint8Array(headBuf));
+      if (file.size > MAX_SCAN) {
+        const tailBuf = await file.slice(Math.max(0, file.size - 131072), file.size).arrayBuffer();
+        sample += '\n' + decoder.decode(new Uint8Array(tailBuf));
+      }
+      const dangerousPatterns =
+        /<\s*script\b|javascript\s*:|vbscript\s*:|on(load|error|mouseover|click|focus)\s*=|<\s*iframe\b|<\s*object\b|<\s*embed\b|<\s*svg\b|<\?php\b|eval\s*\(|document\.cookie/i;
+      return !dangerousPatterns.test(sample);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function validateImageFileSecurity(file, { maxBytes = 25 * 1024 * 1024, allowGif = true } = {}) {
+    if (!file || file.size <= 0) {
+      return { ok: false, reason: '⚠️ ไม่พบข้อมูลในไฟล์รูปภาพ' };
+    }
+    if (file.size > maxBytes) {
+      return { ok: false, reason: '⚠️ ไฟล์รูปภาพมีขนาดใหญ่เกินกำหนด (สูงสุด 25MB)' };
+    }
+    const magic = await validateImageMagicBytes(file);
+    if (!magic.valid || !magic.detectedType) {
+      return {
+        ok: false,
+        reason: '🛡️ ระบบความปลอดภัยบล็อกไฟล์นี้: อนุญาตเฉพาะไฟล์ภาพจริง (JPG, PNG, WEBP, GIF) เท่านั้น'
+      };
+    }
+    if (!allowGif && magic.detectedType === 'image/gif') {
+      return {
+        ok: false,
+        reason: '⚠️ กรุณาเลือกไฟล์ภาพนิ่ง (JPG, PNG, WEBP) สำหรับส่วนนี้'
+      };
+    }
+    const isClean = await scanFileForEmbeddedPayload(file);
+    if (!isClean) {
+      return {
+        ok: false,
+        reason: '🛡️ ตรวจพบโค้ดหรือสคริปต์แปลกปลอมแฝงอยู่ในไฟล์รูปภาพ (Picture Injection Blocked!)'
+      };
+    }
+    return { ok: true, detectedType: magic.detectedType };
   }
 
   function generateNewUid() {
@@ -562,10 +764,10 @@
   const btnCancelAvatarCrop = document.getElementById('btnCancelAvatarCrop');
   const btnApplyAvatarCrop = document.getElementById('btnApplyAvatarCrop');
 
-  // --- Topic Builders ---
-  const topicInbox = (uid) => `${TOPIC_PREFIX}/inbox/${uid}`;
-  const topicPresence = (uid) => `${TOPIC_PREFIX}/presence/${uid}`;
-  const topicRoom = (code) => `${TOPIC_PREFIX}/room/${code}`;
+  // --- Topic Builders (Protected against MQTT wildcard / path injection) ---
+  const topicInbox = (uid) => `${TOPIC_PREFIX}/inbox/${sanitizeUid(uid)}`;
+  const topicPresence = (uid) => `${TOPIC_PREFIX}/presence/${sanitizeUid(uid)}`;
+  const topicRoom = (code) => `${TOPIC_PREFIX}/room/${sanitizeRoomCode(code)}`;
   const topicDirectory = () => `${TOPIC_PREFIX}/directory`;
 
   // --- LocalStorage Helpers ---
@@ -575,12 +777,14 @@
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       if (parsed && parsed.uid && parsed.username) {
-        // Automatically upgrade legacy 8-character UID to modern 10-character UID format
         const cleanRawUid = String(parsed.uid).replace(/[^A-Za-z0-9]/g, '');
-        if (cleanRawUid.length < 10) {
-          parsed.uid = generateNewUid();
-          saveUserSession(parsed);
+        parsed.uid = cleanRawUid.length < 10 ? generateNewUid() : sanitizeUid(parsed.uid) || generateNewUid();
+        parsed.username = sanitizeUsername(parsed.username);
+        parsed.avatar = sanitizeAvatarUrl(parsed.avatar, PRESET_AVATARS[0]);
+        if (Array.isArray(parsed.tags)) {
+          parsed.tags = parsed.tags.slice(0, 8).map(sanitizeTag).filter(Boolean);
         }
+        saveUserSession(parsed);
         return parsed;
       }
     } catch (e) {
@@ -606,11 +810,12 @@
         const arr = JSON.parse(raw);
         if (Array.isArray(arr)) {
           arr.forEach((f) => {
-            if (f && f.uid) {
-              map.set(f.uid, {
-                uid: f.uid,
-                username: f.username || f.uid,
-                avatar: f.avatar || PRESET_AVATARS[0],
+            const cleanUid = f && f.uid ? sanitizeUid(f.uid) : '';
+            if (cleanUid) {
+              map.set(cleanUid, {
+                uid: cleanUid,
+                username: sanitizeUsername(f.username || cleanUid, cleanUid),
+                avatar: sanitizeAvatarUrl(f.avatar, PRESET_AVATARS[0]),
                 online: false,
                 inRoom: false,
                 roomCode: null,
@@ -638,8 +843,7 @@
           email: currentUser.email,
           friends: Array.from(friendsMap.values()).map((f) => ({
             uid: f.uid,
-            username: f.username,
-            avatar: f.avatar
+            username: f.username
           })),
           updatedAt: Date.now()
         });
@@ -750,13 +954,14 @@
     });
 
     mqttClient.on('message', (topic, messageBuffer) => {
+      if (!messageBuffer || messageBuffer.length > 4 * 1024 * 1024) return; // Guard against oversized payload DoS
       let data;
       try {
         data = JSON.parse(messageBuffer.toString());
       } catch (e) {
         return;
       }
-      if (!data) return;
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return;
 
       if (currentUser && topic === topicInbox(currentUser.uid)) {
         handleInboxMessage(data);
@@ -889,7 +1094,8 @@
 
     // 1. Someone is scanning for active rooms -> if we are in a public room, announce our room & tags!
     if (data.type === 'room_query') {
-      if (activeRoomCode && isRoomPublic && currentUser && data.fromUid !== currentUser.uid) {
+      const fromUid = sanitizeUid(data.fromUid);
+      if (activeRoomCode && isRoomPublic && currentUser && fromUid !== currentUser.uid) {
         broadcastActiveRoomToDirectory();
       }
       return;
@@ -897,13 +1103,15 @@
 
     // 2. Received an active room announcement
     if (data.type === 'room_announce' && data.roomCode) {
-      discoveredRooms.set(data.roomCode, {
-        roomCode: data.roomCode,
-        hostUid: data.hostUid,
-        hostName: data.hostName || 'ไม่ระบุชื่อ',
-        hostAvatar: data.hostAvatar || PRESET_AVATARS[0],
-        memberCount: data.memberCount || 1,
-        tags: Array.isArray(data.tags) ? data.tags : [],
+      const cleanCode = sanitizeRoomCode(data.roomCode);
+      if (!cleanCode) return;
+      discoveredRooms.set(cleanCode, {
+        roomCode: cleanCode,
+        hostUid: sanitizeUid(data.hostUid),
+        hostName: sanitizeUsername(data.hostName || 'ไม่ระบุชื่อ', 'ไม่ระบุชื่อ'),
+        hostAvatar: sanitizeAvatarUrl(data.hostAvatar, PRESET_AVATARS[0]),
+        memberCount: Math.max(1, Math.min(999, parseInt(data.memberCount, 10) || 1)),
+        tags: Array.isArray(data.tags) ? data.tags.slice(0, 8).map(sanitizeTag).filter(Boolean) : [],
         updatedAt: Date.now()
       });
       renderDiscoveredRooms();
@@ -912,8 +1120,9 @@
 
     // 3. Room closed or switched to private
     if (data.type === 'room_closed' && data.roomCode) {
-      if (discoveredRooms.has(data.roomCode)) {
-        discoveredRooms.delete(data.roomCode);
+      const cleanCode = sanitizeRoomCode(data.roomCode);
+      if (cleanCode && discoveredRooms.has(cleanCode)) {
+        discoveredRooms.delete(cleanCode);
         renderDiscoveredRooms();
       }
     }
@@ -979,7 +1188,7 @@
 
       const matchBadgeHtml =
         room.matchCount > 0
-          ? `<span class="match-score-pill">🎯 ตรงกับคุณ ${room.matchCount} Tag (${room.score}%)</span>`
+          ? `<span class="match-score-pill">🎯 ตรงกับคุณ ${Number(room.matchCount) || 0} Tag (${Number(room.score) || 0}%)</span>`
           : `<span class="typing-status-pill">ห้องทั่วไป</span>`;
 
       const tagsHtml =
@@ -992,13 +1201,17 @@
               .join('')
           : '<span class="tag-badge-mini">ไม่มี Tag</span>';
 
+      const safeHostAvatar = escapeHtml(sanitizeAvatarUrl(room.hostAvatar, PRESET_AVATARS[0]));
+      const safeRoomCode = escapeHtml(sanitizeRoomCode(room.roomCode));
+      const safeMemberCount = Math.max(1, parseInt(room.memberCount, 10) || 1);
+
       card.innerHTML = `
         <div class="discover-room-info">
           <div class="discover-room-top">
-            <img src="${room.hostAvatar || PRESET_AVATARS[0]}" alt="Host" class="avatar-xs" />
+            <img src="${safeHostAvatar}" alt="Host" class="avatar-xs" />
             <span class="discover-room-title">ห้องของ <span class="host-name-text"></span></span>
-            <span class="mono" style="font-size:0.75rem; color:#a5b4fc;">#${room.roomCode}</span>
-            <span class="member-count-badge" style="font-size:0.7rem; padding:2px 8px;">👥 ${room.memberCount} คน</span>
+            <span class="mono" style="font-size:0.75rem; color:#a5b4fc;">#${safeRoomCode}</span>
+            <span class="member-count-badge" style="font-size:0.7rem; padding:2px 8px;">👥 ${safeMemberCount} คน</span>
             ${matchBadgeHtml}
           </div>
           <div class="discover-room-tags">${tagsHtml}</div>
@@ -1040,13 +1253,18 @@
       const isCurrent = activeRoomCode && room.roomCode === activeRoomCode;
       const item = document.createElement('div');
       item.className = 'friend-item';
+      const safeHostAvatar = escapeHtml(sanitizeAvatarUrl(room.hostAvatar, PRESET_AVATARS[0]));
+      const safeRoomCode = escapeHtml(sanitizeRoomCode(room.roomCode));
+      const safeMemberCount = Math.max(1, parseInt(room.memberCount, 10) || 1);
+      const safeMatchCount = Number(room.matchCount) || 0;
+
       item.innerHTML = `
         <div class="friend-left">
-          <img src="${room.hostAvatar || PRESET_AVATARS[0]}" alt="Host" class="avatar-sm" />
+          <img src="${safeHostAvatar}" alt="Host" class="avatar-sm" />
           <div class="friend-info">
             <div class="friend-name"></div>
-            <div class="friend-meta mono">#${room.roomCode} • 👥 ${room.memberCount} คน ${
-        room.matchCount > 0 ? `• 🎯 ตรง ${room.matchCount} Tag` : ''
+            <div class="friend-meta mono">#${safeRoomCode} • 👥 ${safeMemberCount} คน ${
+        safeMatchCount > 0 ? `• 🎯 ตรง ${safeMatchCount} Tag` : ''
       }</div>
           </div>
         </div>
@@ -1067,16 +1285,6 @@
       }
       sidebarRoomsList.appendChild(item);
     });
-  }
-
-  function escapeHtml(str) {
-    if (str === null || str === undefined) return '';
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
   }
 
   function pingFriend(friendUid) {
@@ -1103,24 +1311,28 @@
   function handleInboxMessage(data) {
     if (!currentUser) return;
 
+    const senderUid = data.from && data.from.uid ? sanitizeUid(data.from.uid) : '';
+    const senderName = data.from && data.from.username ? sanitizeUsername(data.from.username, senderUid || 'User') : senderUid || 'User';
+    const senderAvatar = data.from && data.from.avatar ? sanitizeAvatarUrl(data.from.avatar, PRESET_AVATARS[0]) : PRESET_AVATARS[0];
+
     // Send ACK back if packet requested reliable delivery
-    if (data.ackId && data.from && data.from.uid) {
-      publishJson(topicInbox(data.from.uid), {
+    if (data.ackId && senderUid) {
+      publishJson(topicInbox(senderUid), {
         type: 'ack',
-        ackId: data.ackId
+        ackId: String(data.ackId).slice(0, 64)
       });
     }
 
     if (data.type === 'ack' && data.ackId) {
-      markAckReceived(data.ackId);
+      markAckReceived(String(data.ackId).slice(0, 64));
       return;
     }
 
     // 1. Someone pinged us to check if we are online -> reply directly to their inbox & presence
-    if (data.type === 'ping_status' && data.from && data.from.uid) {
-      if (!friendsMap.has(data.from.uid)) {
+    if (data.type === 'ping_status' && senderUid) {
+      if (!friendsMap.has(senderUid)) {
         // Ping sender is not in our friends list -> notify them to mutual unfriend
-        publishJson(topicInbox(data.from.uid), {
+        publishJson(topicInbox(senderUid), {
           type: 'friend_removed',
           from: {
             uid: currentUser.uid,
@@ -1129,7 +1341,7 @@
         });
         return;
       }
-      publishJson(topicInbox(data.from.uid), {
+      publishJson(topicInbox(senderUid), {
         type: 'pong_status',
         from: {
           uid: currentUser.uid,
@@ -1144,23 +1356,23 @@
     }
 
     // 2. Direct status response from a friend we pinged or added
-    if (data.type === 'pong_status' && data.from && data.from.uid) {
-      updateFriendRecord(data.from.uid, {
-        username: data.from.username,
-        avatar: data.from.avatar,
+    if (data.type === 'pong_status' && senderUid) {
+      updateFriendRecord(senderUid, {
+        username: senderName,
+        avatar: senderAvatar,
         online: true,
         inRoom: Boolean(data.from.inRoom),
-        roomCode: data.from.roomCode || null,
+        roomCode: sanitizeRoomCode(data.from.roomCode) || null,
         lastSeen: Date.now()
       });
       return;
     }
 
     // 3. Incoming Friend Request (Must accept before becoming friends!)
-    if (data.type === 'friend_request' && data.from && data.from.uid) {
-      if (friendsMap.has(data.from.uid)) {
+    if (data.type === 'friend_request' && senderUid) {
+      if (friendsMap.has(senderUid)) {
         // Already friends -> auto-confirm back
-        publishJson(topicInbox(data.from.uid), {
+        publishJson(topicInbox(senderUid), {
           type: 'friend_accepted',
           from: {
             uid: currentUser.uid,
@@ -1172,70 +1384,71 @@
         });
         return;
       }
-      incomingFriendRequests.set(data.from.uid, {
-        uid: data.from.uid,
-        username: data.from.username || data.from.uid,
-        avatar: data.from.avatar || PRESET_AVATARS[0],
+      incomingFriendRequests.set(senderUid, {
+        uid: senderUid,
+        username: senderName,
+        avatar: senderAvatar,
         ts: Date.now()
       });
       renderFriendRequestsUI();
-      showToast(`👋 ${data.from.username} ส่งคำขอเป็นเพื่อนถึงคุณ! (กดดูที่เมนู Friend)`);
+      showToast(`👋 ${senderName} ส่งคำขอเป็นเพื่อนถึงคุณ! (กดดูที่เมนู Friend)`);
       return;
     }
 
     // 4. Friend Request Accepted by the other person
-    if (data.type === 'friend_accepted' && data.from && data.from.uid) {
-      sentFriendRequests.delete(data.from.uid);
-      incomingFriendRequests.delete(data.from.uid);
-      friendsMap.set(data.from.uid, {
-        uid: data.from.uid,
-        username: data.from.username || data.from.uid,
-        avatar: data.from.avatar || PRESET_AVATARS[0],
+    if (data.type === 'friend_accepted' && senderUid) {
+      sentFriendRequests.delete(senderUid);
+      incomingFriendRequests.delete(senderUid);
+      friendsMap.set(senderUid, {
+        uid: senderUid,
+        username: senderName,
+        avatar: senderAvatar,
         online: true,
         inRoom: Boolean(data.from.inRoom),
-        roomCode: data.from.roomCode || null,
+        roomCode: sanitizeRoomCode(data.from.roomCode) || null,
         lastSeen: Date.now()
       });
       if (mqttClient && mqttClient.connected) {
-        mqttClient.subscribe(topicPresence(data.from.uid), { qos: 0 });
+        mqttClient.subscribe(topicPresence(senderUid), { qos: 0 });
       }
       saveFriendsList();
       renderFriendRequestsUI();
       renderFriendsList();
       if (activeRoomCode) renderAllLiveCards();
-      showToast(`🎉 ${data.from.username} ตอบรับคำขอเป็นเพื่อนของคุณแล้ว!`);
+      showToast(`🎉 ${senderName} ตอบรับคำขอเป็นเพื่อนของคุณแล้ว!`);
       return;
     }
 
     // 4.1 Friend Removed by the other person -> Mutual unfriend on both sides
-    if (data.type === 'friend_removed' && data.from && data.from.uid) {
-      const removedUid = data.from.uid;
-      const otherUsername = data.from.username || removedUid;
-      if (friendsMap.has(removedUid)) {
-        removeFriend(removedUid, false);
-        showToast(`ℹ️ ${otherUsername} ได้ยกเลิกความเป็นเพื่อนกับคุณ`);
+    if (data.type === 'friend_removed' && senderUid) {
+      if (friendsMap.has(senderUid)) {
+        removeFriend(senderUid, false);
+        showToast(`ℹ️ ${senderName} ได้ยกเลิกความเป็นเพื่อนกับคุณ`);
       } else {
-        sentFriendRequests.delete(removedUid);
-        incomingFriendRequests.delete(removedUid);
+        sentFriendRequests.delete(senderUid);
+        incomingFriendRequests.delete(senderUid);
         renderFriendRequestsUI();
       }
       return;
     }
 
     // 5. Incoming 1-on-1 or Group Room Invitation
-    if (data.type === 'room_invite' && data.from && data.roomCode) {
-      pendingInviteRoomCode = data.roomCode;
-      inviteAvatar.src = data.from.avatar || PRESET_AVATARS[0];
-      inviteUsername.textContent = data.from.username || data.from.uid;
-      inviteUid.textContent = `UID: ${data.from.uid}`;
-      inviteRoomCode.textContent = data.roomCode;
+    if (data.type === 'room_invite' && senderUid && data.roomCode) {
+      const cleanInviteCode = sanitizeRoomCode(data.roomCode);
+      if (!cleanInviteCode) return;
+      pendingInviteRoomCode = cleanInviteCode;
+      inviteAvatar.src = senderAvatar;
+      inviteUsername.textContent = senderName;
+      inviteUid.textContent = `UID: ${senderUid}`;
+      inviteRoomCode.textContent = cleanInviteCode;
       inviteModal.classList.remove('hidden');
       return;
     }
 
     // 6. WebRTC Live Screen Stream Signaling
     if (data.type === 'stream_watch_request' && data.fromUid) {
-      handleViewerWatchRequest(data);
+      data.fromUid = sanitizeUid(data.fromUid);
+      if (data.fromUid) handleViewerWatchRequest(data);
       return;
     }
     if (data.type === 'stream_signal_offer' && data.sdp) {
@@ -1251,35 +1464,39 @@
       return;
     }
     if (data.type === 'stream_quality_change' && data.fromUid) {
-      handleQualityChangeRequest(data);
+      data.fromUid = sanitizeUid(data.fromUid);
+      if (data.fromUid) handleQualityChangeRequest(data);
       return;
     }
     if (data.type === 'stream_stop_watch' && data.fromUid) {
-      handleViewerStopWatch(data);
+      data.fromUid = sanitizeUid(data.fromUid);
+      if (data.fromUid) handleViewerStopWatch(data);
       return;
     }
   }
 
   function handlePresenceMessage(data) {
-    if (!data || !data.uid || !friendsMap.has(data.uid)) return;
-    updateFriendRecord(data.uid, {
-      username: data.username,
-      avatar: data.avatar,
+    const cleanUid = data && data.uid ? sanitizeUid(data.uid) : '';
+    if (!cleanUid || !friendsMap.has(cleanUid)) return;
+    updateFriendRecord(cleanUid, {
+      username: data.username ? sanitizeUsername(data.username, cleanUid) : undefined,
+      avatar: data.avatar ? sanitizeAvatarUrl(data.avatar, PRESET_AVATARS[0]) : undefined,
       online: Boolean(data.online),
       inRoom: Boolean(data.inRoom),
-      roomCode: data.roomCode || null,
+      roomCode: sanitizeRoomCode(data.roomCode) || null,
       lastSeen: Date.now()
     });
   }
 
   function updateFriendRecord(uid, fields) {
-    const f = friendsMap.get(uid);
+    const cleanUid = sanitizeUid(uid);
+    const f = friendsMap.get(cleanUid);
     if (!f) return;
-    if (fields.username) f.username = fields.username;
-    if (fields.avatar) f.avatar = fields.avatar;
-    f.online = fields.online;
-    f.inRoom = fields.inRoom;
-    f.roomCode = fields.roomCode;
+    if (fields.username) f.username = sanitizeUsername(fields.username, cleanUid);
+    if (fields.avatar) f.avatar = sanitizeAvatarUrl(fields.avatar, PRESET_AVATARS[0]);
+    f.online = Boolean(fields.online);
+    f.inRoom = Boolean(fields.inRoom);
+    f.roomCode = sanitizeRoomCode(fields.roomCode) || null;
     f.lastSeen = fields.lastSeen || Date.now();
     saveFriendsList();
     renderFriendsList();
@@ -1287,31 +1504,37 @@
 
   function handleRoomMessage(data) {
     if (!currentUser || !activeRoomCode) return;
-    if (!data || !data.uid) return;
+    if (!data) return;
+    const cleanSenderUid = data.uid ? sanitizeUid(data.uid) : '';
 
     // Direct room-level friend request/accepted sync (instant fallback in case inbox packet drops)
     if (data.type === 'room_friend_request' && data.targetUid === currentUser.uid && data.from) {
-      if (!friendsMap.has(data.from.uid) && !incomingFriendRequests.has(data.from.uid)) {
-        incomingFriendRequests.set(data.from.uid, {
-          uid: data.from.uid,
-          username: data.from.username || data.from.uid,
-          avatar: data.from.avatar || PRESET_AVATARS[0],
+      const fromUid = sanitizeUid(data.from.uid);
+      if (fromUid && !friendsMap.has(fromUid) && !incomingFriendRequests.has(fromUid)) {
+        const fromName = sanitizeUsername(data.from.username || fromUid, fromUid);
+        incomingFriendRequests.set(fromUid, {
+          uid: fromUid,
+          username: fromName,
+          avatar: sanitizeAvatarUrl(data.from.avatar, PRESET_AVATARS[0]),
           ts: Date.now()
         });
         renderFriendRequestsUI();
         renderAllLiveCards();
-        showToast(`👋 ${data.from.username} ส่งคำขอเป็นเพื่อนถึงคุณ! (กดดูที่เมนู Friend หรือปุ่มบนการ์ด)`);
+        showToast(`👋 ${fromName} ส่งคำขอเป็นเพื่อนถึงคุณ! (กดดูที่เมนู Friend หรือปุ่มบนการ์ด)`);
       }
       return;
     }
 
     if (data.type === 'room_friend_accepted' && data.targetUid === currentUser.uid && data.from) {
-      sentFriendRequests.delete(data.from.uid);
-      incomingFriendRequests.delete(data.from.uid);
-      friendsMap.set(data.from.uid, {
-        uid: data.from.uid,
-        username: data.from.username || data.from.uid,
-        avatar: data.from.avatar || PRESET_AVATARS[0],
+      const fromUid = sanitizeUid(data.from.uid);
+      if (!fromUid) return;
+      const fromName = sanitizeUsername(data.from.username || fromUid, fromUid);
+      sentFriendRequests.delete(fromUid);
+      incomingFriendRequests.delete(fromUid);
+      friendsMap.set(fromUid, {
+        uid: fromUid,
+        username: fromName,
+        avatar: sanitizeAvatarUrl(data.from.avatar, PRESET_AVATARS[0]),
         online: true,
         inRoom: Boolean(activeRoomCode),
         roomCode: activeRoomCode,
@@ -1321,14 +1544,15 @@
       renderFriendRequestsUI();
       renderFriendsList();
       renderAllLiveCards();
-      showToast(`🎉 ${data.from.username} ตอบรับคำขอเป็นเพื่อนของคุณแล้ว!`);
+      showToast(`🎉 ${fromName} ตอบรับคำขอเป็นเพื่อนของคุณแล้ว!`);
       return;
     }
 
     // Direct room-level friend removal sync (instant fallback in room)
     if (data.type === 'room_friend_removed' && data.targetUid === currentUser.uid && data.from) {
-      const removedUid = data.from.uid;
-      const otherUsername = data.from.username || removedUid;
+      const removedUid = sanitizeUid(data.from.uid);
+      if (!removedUid) return;
+      const otherUsername = sanitizeUsername(data.from.username || removedUid, removedUid);
       if (friendsMap.has(removedUid)) {
         removeFriend(removedUid, false);
         showToast(`ℹ️ ${otherUsername} ได้ยกเลิกความเป็นเพื่อนกับคุณ`);
@@ -1342,9 +1566,10 @@
 
     // Live Screen Streaming Room Broadcasts
     if (data.type === 'stream_started' || data.type === 'stream_announce') {
-      if (currentUser && data.streamerUid !== currentUser.uid) {
-        activeStreamerUid = data.streamerUid;
-        activeStreamerUsername = data.streamerUsername || 'เพื่อน';
+      const cleanStreamerUid = sanitizeUid(data.streamerUid);
+      if (currentUser && cleanStreamerUid && cleanStreamerUid !== currentUser.uid) {
+        activeStreamerUid = cleanStreamerUid;
+        activeStreamerUsername = sanitizeUsername(data.streamerUsername || 'เพื่อน', 'เพื่อน');
 
         if (streamerNameBadge) streamerNameBadge.textContent = `${activeStreamerUsername} (กำลังแชร์หน้าจอ)`;
         if (floatingStreamerTitle) floatingStreamerTitle.textContent = `${activeStreamerUsername} (กำลังไลฟ์สด)`;
@@ -1370,7 +1595,8 @@
     }
 
     if (data.type === 'stream_stopped') {
-      if (data.streamerUid === activeStreamerUid) {
+      const cleanStreamerUid = sanitizeUid(data.streamerUid);
+      if (cleanStreamerUid && cleanStreamerUid === activeStreamerUid) {
         if (isWatching) {
           stopWatchingStream();
         }
@@ -1386,27 +1612,33 @@
       return;
     }
 
+    if (!cleanSenderUid) return;
     // Ignore our own echo for typing/clear since we already update locally immediately
-    if (data.uid === currentUser.uid) return;
+    if (cleanSenderUid === currentUser.uid) return;
 
     if (data.type === 'member_join') {
-      const isNew = !roomMembers.has(data.uid);
-      roomMembers.set(data.uid, {
-        uid: data.uid,
-        username: data.username || data.uid,
-        avatar: data.avatar || PRESET_AVATARS[0],
-        tags: Array.isArray(data.tags) ? data.tags : [],
-        currentText: data.currentText || '',
+      const isNew = !roomMembers.has(cleanSenderUid);
+      const cleanName = sanitizeUsername(data.username || cleanSenderUid, cleanSenderUid);
+      const cleanAvatar = sanitizeAvatarUrl(data.avatar, PRESET_AVATARS[0]);
+      const cleanTags = Array.isArray(data.tags) ? data.tags.slice(0, 8).map(sanitizeTag).filter(Boolean) : [];
+      const safeText = String(data.currentText || '').slice(0, 250);
+
+      roomMembers.set(cleanSenderUid, {
+        uid: cleanSenderUid,
+        username: cleanName,
+        avatar: cleanAvatar,
+        tags: cleanTags,
+        currentText: safeText,
         image: null,
         updatedAt: Date.now(),
-        lastActiveAt: data.currentText ? Date.now() : 0,
+        lastActiveAt: safeText ? Date.now() : 0,
         lastTypingAt: 0,
         lastEmoteAt: 0,
         lastEmote: null
       });
       renderAllLiveCards();
       if (isNew) {
-        showToast(`👋 ${data.username} เข้ามาในห้อง`);
+        showToast(`👋 ${cleanName} เข้ามาในห้อง`);
       }
 
       // Reply with our own member state + current live text so the newcomer sees everyone immediately!
@@ -1437,16 +1669,22 @@
     }
 
     if (data.type === 'member_sync') {
-      const existed = roomMembers.has(data.uid);
-      const prev = roomMembers.get(data.uid);
-      const hasContent = Boolean((data.currentText && data.currentText.length > 0) || data.image);
-      roomMembers.set(data.uid, {
-        uid: data.uid,
-        username: data.username || data.uid,
-        avatar: data.avatar || PRESET_AVATARS[0],
-        tags: Array.isArray(data.tags) ? data.tags : [],
-        currentText: data.currentText || '',
-        image: data.image || null,
+      const existed = roomMembers.has(cleanSenderUid);
+      const prev = roomMembers.get(cleanSenderUid);
+      const cleanName = sanitizeUsername(data.username || cleanSenderUid, cleanSenderUid);
+      const cleanAvatar = sanitizeAvatarUrl(data.avatar, PRESET_AVATARS[0]);
+      const cleanTags = Array.isArray(data.tags) ? data.tags.slice(0, 8).map(sanitizeTag).filter(Boolean) : [];
+      const safeText = String(data.currentText || '').slice(0, 250);
+      const safeImage = data.image ? sanitizeChatMediaUrl(data.image) : null;
+      const hasContent = Boolean(safeText.length > 0 || safeImage);
+
+      roomMembers.set(cleanSenderUid, {
+        uid: cleanSenderUid,
+        username: cleanName,
+        avatar: cleanAvatar,
+        tags: cleanTags,
+        currentText: safeText,
+        image: safeImage,
         updatedAt: Date.now(),
         lastActiveAt: hasContent ? Date.now() : (prev ? prev.lastActiveAt : 0),
         lastTypingAt: prev ? prev.lastTypingAt : 0,
@@ -1457,20 +1695,20 @@
         renderAllLiveCards();
         broadcastActiveRoomToDirectory();
       } else {
-        updateSingleCardContent(data.uid, data.currentText || '', data.image || null);
+        updateSingleCardContent(cleanSenderUid, safeText, safeImage);
         reorderLiveCards();
       }
       return;
     }
 
     if (data.type === 'member_leave') {
-      if (roomMembers.has(data.uid)) {
-        const leftUser = roomMembers.get(data.uid);
-        roomMembers.delete(data.uid);
+      if (roomMembers.has(cleanSenderUid)) {
+        const leftUser = roomMembers.get(cleanSenderUid);
+        roomMembers.delete(cleanSenderUid);
         renderAllLiveCards();
         showToast(`🚪 ${leftUser.username} ออกจากห้อง`);
       }
-      if (data.uid === activeStreamerUid) {
+      if (cleanSenderUid === activeStreamerUid) {
         if (isWatching) stopWatchingStream();
         activeStreamerUid = null;
         activeStreamerUsername = null;
@@ -1484,15 +1722,16 @@
 
     if (data.type === 'typing_update') {
       const safeText = String(data.text || '').slice(0, 250);
-      const hasContent = Boolean(safeText.trim().length > 0 || data.image);
-      if (!roomMembers.has(data.uid)) {
+      const safeImage = data.image !== undefined ? (data.image ? sanitizeChatMediaUrl(data.image) : null) : undefined;
+      if (!roomMembers.has(cleanSenderUid)) {
+        const hasContent = Boolean(safeText.trim().length > 0 || safeImage);
         // Auto-register member if they typed before join packet arrived
-        roomMembers.set(data.uid, {
-          uid: data.uid,
-          username: data.username || data.uid,
-          avatar: data.avatar || PRESET_AVATARS[0],
+        roomMembers.set(cleanSenderUid, {
+          uid: cleanSenderUid,
+          username: sanitizeUsername(data.username || cleanSenderUid, cleanSenderUid),
+          avatar: sanitizeAvatarUrl(data.avatar, PRESET_AVATARS[0]),
           currentText: safeText,
-          image: data.image || null,
+          image: safeImage || null,
           updatedAt: Date.now(),
           lastActiveAt: hasContent ? Date.now() : 0,
           lastTypingAt: hasContent ? Date.now() : 0,
@@ -1501,9 +1740,12 @@
         });
         renderAllLiveCards();
       } else {
-        const m = roomMembers.get(data.uid);
+        const m = roomMembers.get(cleanSenderUid);
         m.currentText = safeText;
-        m.image = data.image !== undefined ? data.image : m.image;
+        if (safeImage !== undefined) {
+          m.image = safeImage;
+        }
+        const hasContent = Boolean(safeText.trim().length > 0 || m.image);
         m.updatedAt = Date.now();
         if (hasContent) {
           m.lastActiveAt = Date.now();
@@ -1511,35 +1753,37 @@
         } else {
           m.lastActiveAt = 0;
         }
-        updateSingleCardContent(data.uid, m.currentText, m.image);
+        updateSingleCardContent(cleanSenderUid, m.currentText, m.image);
         reorderLiveCards();
       }
       return;
     }
 
     if (data.type === 'typing_clear') {
-      if (roomMembers.has(data.uid)) {
-        const m = roomMembers.get(data.uid);
+      if (roomMembers.has(cleanSenderUid)) {
+        const m = roomMembers.get(cleanSenderUid);
         m.currentText = '';
         m.image = null;
         m.lastActiveAt = 0;
         m.lastEmoteAt = 0;
         m.updatedAt = Date.now();
-        updateSingleCardContent(data.uid, '', null);
-        flashClearCard(data.uid);
+        updateSingleCardContent(cleanSenderUid, '', null);
+        flashClearCard(cleanSenderUid);
         reorderLiveCards();
       }
       return;
     }
 
     if (data.type === 'emote_bubble' && data.emote) {
-      if (roomMembers.has(data.uid)) {
-        const m = roomMembers.get(data.uid);
+      const safeEmote = String(data.emote).replace(/[\x00-\x1F\x7F<>"'`]/g, '').trim().slice(0, 16);
+      if (!safeEmote) return;
+      if (roomMembers.has(cleanSenderUid)) {
+        const m = roomMembers.get(cleanSenderUid);
         m.lastEmoteAt = Date.now();
-        m.lastEmote = data.emote;
+        m.lastEmote = safeEmote;
         m.lastActiveAt = Date.now();
       }
-      spawnEmoteBubbleOnCard(data.uid, data.emote);
+      spawnEmoteBubbleOnCard(cleanSenderUid, safeEmote);
       reorderLiveCards();
       setTimeout(() => reorderLiveCards(), 20500);
       return;
@@ -1579,14 +1823,34 @@
   let avatarStartBox = { x: 0, y: 0, w: 0, h: 0 };
 
   if (inputCustomAvatar) {
-    inputCustomAvatar.addEventListener('change', (e) => {
+    inputCustomAvatar.addEventListener('change', async (e) => {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
+      const check = await validateImageFileSecurity(file, { allowGif: true });
+      if (!check.ok) {
+        showToast(check.reason);
+        inputCustomAvatar.value = '';
+        return;
+      }
       const reader = new FileReader();
       reader.onload = (ev) => {
         const img = new Image();
         img.onload = () => {
+          if (
+            img.naturalWidth <= 0 ||
+            img.naturalHeight <= 0 ||
+            img.naturalWidth > MAX_IMAGE_DIMENSION ||
+            img.naturalHeight > MAX_IMAGE_DIMENSION
+          ) {
+            showToast('🛡️ ขนาดพิกเซลของรูปภาพไม่ถูกต้องหรือใหญ่เกินกำหนด (สูงสุด 8192x8192 px)');
+            inputCustomAvatar.value = '';
+            return;
+          }
           initAvatarCropper(img);
+        };
+        img.onerror = () => {
+          showToast('⚠️ ไม่สามารถอ่านไฟล์รูปภาพนี้ได้');
+          inputCustomAvatar.value = '';
         };
         img.src = ev.target.result;
       };
@@ -1926,7 +2190,7 @@
 
   if (btnAddCustomTag && inputCustomTag) {
     btnAddCustomTag.addEventListener('click', () => {
-      const val = inputCustomTag.value.trim();
+      const val = sanitizeTag(inputCustomTag.value);
       if (!val) return;
       if (selectedTags.size >= 8) {
         showToast('เลือก Tag ความสนใจได้สูงสุด 8 รายการครับ');
@@ -2039,16 +2303,18 @@
   // --- Setup Form Submit ---
   formSetup.addEventListener('submit', (e) => {
     e.preventDefault();
-    const name = inputUsername.value.trim();
+    const name = sanitizeUsername(inputUsername.value, '');
     if (!name) return;
 
+    const safeAvatar = sanitizeAvatarUrl(selectedAvatar);
+    const safeTags = Array.from(selectedTags).map(sanitizeTag).filter(Boolean).slice(0, 8);
     const isOldUid = currentUser && currentUser.uid && String(currentUser.uid).replace(/[^A-Za-z0-9]/g, '').length < 10;
-    const uid = currentUser && currentUser.uid && !isOldUid ? currentUser.uid : generateNewUid();
+    const uid = currentUser && currentUser.uid && !isOldUid ? sanitizeUid(currentUser.uid) || generateNewUid() : generateNewUid();
     currentUser = {
       uid,
       username: name,
-      avatar: selectedAvatar,
-      tags: Array.from(selectedTags),
+      avatar: safeAvatar,
+      tags: safeTags,
       authProvider: currentUser ? currentUser.authProvider : null,
       email: currentUser ? currentUser.email : null
     };
@@ -2059,8 +2325,8 @@
     if (activeRoomCode && roomMembers.has(uid)) {
       const m = roomMembers.get(uid);
       m.username = name;
-      m.avatar = selectedAvatar;
-      m.tags = Array.from(selectedTags);
+      m.avatar = safeAvatar;
+      m.tags = safeTags;
       renderAllLiveCards();
       broadcastActiveRoomToDirectory();
     }
@@ -2145,22 +2411,27 @@
 
       if (backupData) {
         const isOldUid = currentUser && currentUser.uid && String(currentUser.uid).replace(/[^A-Za-z0-9]/g, '').length < 10;
+        const restoredTags = Array.isArray(backupData.tags)
+          ? backupData.tags.map(sanitizeTag).filter(Boolean).slice(0, 8)
+          : [];
         currentUser = {
-          uid: currentUser && currentUser.uid && !isOldUid ? currentUser.uid : generateNewUid(),
-          username: backupData.username || sanitizedName,
-          avatar: backupData.avatar || sanitizedAvatar,
-          tags: Array.isArray(backupData.tags) && backupData.tags.length > 0 ? backupData.tags : Array.from(selectedTags),
+          uid: currentUser && currentUser.uid && !isOldUid ? sanitizeUid(currentUser.uid) || generateNewUid() : generateNewUid(),
+          username: sanitizeUsername(backupData.username || sanitizedName),
+          avatar: sanitizeAvatarUrl(backupData.avatar || sanitizedAvatar),
+          tags: restoredTags.length > 0 ? restoredTags : Array.from(selectedTags),
           email: userInfo.email,
           authProvider: 'google'
         };
 
         if (Array.isArray(backupData.friends)) {
           backupData.friends.forEach((f) => {
-            if (f && f.uid) {
-              friendsMap.set(f.uid, {
-                uid: f.uid,
-                username: f.username || f.uid,
-                avatar: f.avatar || PRESET_AVATARS[0],
+            const fUid = f && sanitizeUid(f.uid);
+            if (fUid) {
+              const existing = friendsMap.get(fUid);
+              friendsMap.set(fUid, {
+                uid: fUid,
+                username: sanitizeUsername(f.username, fUid),
+                avatar: sanitizeAvatarUrl((existing && existing.avatar) || f.avatar),
                 tags: [],
                 online: false,
                 inRoom: false,
@@ -2190,8 +2461,7 @@
           email: currentUser.email,
           friends: Array.from(friendsMap.values()).map(f => ({
             uid: f.uid,
-            username: f.username,
-            avatar: f.avatar
+            username: f.username
           })),
           updatedAt: Date.now()
         });
@@ -2328,8 +2598,7 @@
         email: currentUser.email,
         friends: Array.from(friendsMap.values()).map(f => ({
           uid: f.uid,
-          username: f.username,
-          avatar: f.avatar
+          username: f.username
         })),
         updatedAt: Date.now()
       });
@@ -2360,20 +2629,24 @@
       }
       const data = await window.LiveTypeDrive.downloadAppData(token, fileId);
       if (data) {
-        if (data.username) currentUser.username = data.username;
-        if (data.avatar) currentUser.avatar = data.avatar;
+        if (data.username) currentUser.username = sanitizeUsername(data.username);
+        if (data.avatar) currentUser.avatar = sanitizeAvatarUrl(data.avatar);
         if (Array.isArray(data.tags)) {
-          currentUser.tags = data.tags;
-          selectedTags = new Set(data.tags);
+          const cleanTags = data.tags.map(sanitizeTag).filter(Boolean).slice(0, 8);
+          currentUser.tags = cleanTags;
+          selectedTags = new Set(cleanTags);
         }
         if (Array.isArray(data.friends)) {
+          const oldFriends = new Map(friendsMap);
           friendsMap.clear();
           data.friends.forEach((f) => {
-            if (f && f.uid) {
-              friendsMap.set(f.uid, {
-                uid: f.uid,
-                username: f.username || f.uid,
-                avatar: f.avatar || PRESET_AVATARS[0],
+            const fUid = f && sanitizeUid(f.uid);
+            if (fUid) {
+              const existing = oldFriends.get(fUid);
+              friendsMap.set(fUid, {
+                uid: fUid,
+                username: sanitizeUsername(f.username, fUid),
+                avatar: sanitizeAvatarUrl((existing && existing.avatar) || f.avatar),
                 tags: [],
                 online: false,
                 inRoom: false,
@@ -2464,8 +2737,11 @@
   // --- Friend Request & Acceptance System ---
   function sendFriendRequestToUid(targetUid, targetUsername) {
     if (!currentUser) return;
-    const cleanUid = String(targetUid || '').trim().toUpperCase();
-    if (!cleanUid) return;
+    const cleanUid = sanitizeUid(targetUid);
+    if (!cleanUid) {
+      showToast('รูปแบบ UID ไม่ถูกต้อง');
+      return;
+    }
     if (cleanUid === currentUser.uid) {
       showToast('ไม่สามารถแอด UID ของตัวเองได้');
       return;
@@ -2624,14 +2900,16 @@
     friendRequestsList.innerHTML = '';
 
     incomingFriendRequests.forEach((req) => {
+      const safeAvatar = escapeHtml(sanitizeAvatarUrl(req.avatar));
+      const safeUid = escapeHtml(sanitizeUid(req.uid));
       const row = document.createElement('div');
       row.className = 'friend-item';
       row.innerHTML = `
         <div class="friend-left">
-          <img src="${req.avatar || PRESET_AVATARS[0]}" alt="Avatar" class="avatar-sm" />
+          <img src="${safeAvatar}" alt="Avatar" class="avatar-sm" />
           <div class="friend-info">
             <div class="friend-name"></div>
-            <div class="friend-meta mono">${req.uid}</div>
+            <div class="friend-meta mono">${safeUid}</div>
           </div>
         </div>
         <div class="friend-actions">
@@ -2665,21 +2943,25 @@
       const item = document.createElement('div');
       item.className = 'friend-item';
 
+      const safeRoomCode = escapeHtml(sanitizeRoomCode(friend.roomCode));
+      const safeAvatar = escapeHtml(sanitizeAvatarUrl(friend.avatar));
+      const safeUid = escapeHtml(sanitizeUid(friend.uid));
+
       const statusText = friend.online
-        ? friend.inRoom
-          ? `🟢 กำลังอยู่ในห้อง (${friend.roomCode})`
+        ? friend.inRoom && safeRoomCode
+          ? `🟢 กำลังอยู่ในห้อง (${safeRoomCode})`
           : '🟢 ออนไลน์'
         : '⚪ ออฟไลน์';
 
       item.innerHTML = `
         <div class="friend-left">
           <div class="friend-avatar-wrap">
-            <img src="${friend.avatar || PRESET_AVATARS[0]}" alt="Avatar" class="avatar-sm" />
+            <img src="${safeAvatar}" alt="Avatar" class="avatar-sm" />
             <span class="status-dot ${friend.online ? 'online' : ''}"></span>
           </div>
           <div class="friend-info">
             <div class="friend-name"></div>
-            <div class="friend-meta mono">${friend.uid} • ${statusText}</div>
+            <div class="friend-meta mono">${safeUid} • ${statusText}</div>
           </div>
         </div>
         <div class="friend-actions">
@@ -2774,8 +3056,11 @@
 
   function joinRoomByCode(code) {
     if (!currentUser) return;
-    const clean = String(code || '').trim().toUpperCase();
-    if (!clean) return;
+    const clean = sanitizeRoomCode(code);
+    if (!clean) {
+      showToast('รหัสห้องไม่ถูกต้อง (ใช้ตัวอักษร A-Z หรือตัวเลข 3-12 หลัก)');
+      return;
+    }
 
     if (activeRoomCode && activeRoomCode !== clean) {
       leaveCurrentRoomSilent();
@@ -3099,6 +3384,14 @@
     inputQrFile.addEventListener('change', async (e) => {
       const file = e.target.files && e.target.files[0];
       if (!file || !window.Html5Qrcode) return;
+
+      const secCheck = await validateImageFileSecurity(file, { allowGif: true });
+      if (!secCheck.ok) {
+        showToast(secCheck.reason);
+        inputQrFile.value = '';
+        return;
+      }
+
       await stopQrCameraScanner();
       const fileScanner = new window.Html5Qrcode('qrReaderBox');
       try {
@@ -3263,15 +3556,18 @@
         }
       }
 
+      const safeMemberUid = escapeHtml(sanitizeUid(member.uid));
+      const safeMemberAvatar = escapeHtml(sanitizeAvatarUrl(member.avatar));
+
       let statusPillHtml = '';
       if (info.isStreamer) {
-        statusPillHtml = `<span class="typing-status-pill streamer-badge" id="status-pill-${member.uid}"><span class="pulse-dot red"></span> 🔴 กำลังไลฟ์สด</span>`;
+        statusPillHtml = `<span class="typing-status-pill streamer-badge" id="status-pill-${safeMemberUid}"><span class="pulse-dot red"></span> 🔴 กำลังไลฟ์สด</span>`;
       } else if (hasContent) {
-        statusPillHtml = `<span class="typing-status-pill active" id="status-pill-${member.uid}"><span class="pulse-dot"></span> ${member.image && !member.currentText ? '🖼️ ส่งรูป/GIF สด' : '⚡ กำลังส่งสด...'}</span>`;
+        statusPillHtml = `<span class="typing-status-pill active" id="status-pill-${safeMemberUid}"><span class="pulse-dot"></span> ${member.image && !member.currentText ? '🖼️ ส่งรูป/GIF สด' : '⚡ กำลังส่งสด...'}</span>`;
       } else if (info.hasRecentEmote) {
-        statusPillHtml = `<span class="typing-status-pill active emote-active" id="status-pill-${member.uid}">🫧 ส่งอีโมจิ ${escapeHtml(member.lastEmote || '')}</span>`;
+        statusPillHtml = `<span class="typing-status-pill active emote-active" id="status-pill-${safeMemberUid}">🫧 ส่งอีโมจิ ${escapeHtml(member.lastEmote || '')}</span>`;
       } else {
-        statusPillHtml = `<span class="typing-status-pill idle" id="status-pill-${member.uid}">💤 Non-Active</span>`;
+        statusPillHtml = `<span class="typing-status-pill idle" id="status-pill-${safeMemberUid}">💤 Non-Active</span>`;
       }
 
       // Stream Icon Badge next to profile if member is streaming
@@ -3287,7 +3583,7 @@
       }
 
       const card = document.createElement('div');
-      card.id = `live-card-${member.uid}`;
+      card.id = `live-card-${safeMemberUid}`;
       card.style.order = index;
       card.className = `live-card ${isSelf ? 'is-self' : ''} ${info.isStreamer ? 'is-streamer' : ''} ${hasContent ? 'actively-typing' : ''} ${info.tier === 2 ? 'is-active-engagement' : ''} ${info.tier === 3 ? 'is-idle' : ''}`;
 
@@ -3296,14 +3592,14 @@
         <div class="live-card-profile-col">
           <div class="live-card-user-row">
             <div class="live-card-avatar-wrap">
-              <img src="${member.avatar || PRESET_AVATARS[0]}" alt="Avatar" class="avatar-md" />
+              <img src="${safeMemberAvatar}" alt="Avatar" class="avatar-md" />
             </div>
             <div class="live-card-meta">
               <div class="live-card-username">
                 <span class="name-text"></span>
                 ${isSelf ? '<span class="self-tag">คุณ</span>' : ''}
               </div>
-              <div class="live-card-uid mono">${member.uid}</div>
+              <div class="live-card-uid mono">${safeMemberUid}</div>
             </div>
           </div>
           <div class="live-card-status-row">
@@ -3315,7 +3611,7 @@
         </div>
 
         <!-- Right Side: Realtime Live Message / Media in the Same Row (Expands downward) -->
-        <div class="live-card-body" id="card-body-${member.uid}"></div>
+        <div class="live-card-body" id="card-body-${safeMemberUid}"></div>
       `;
 
       card.querySelector('.name-text').textContent = member.username;
@@ -3366,9 +3662,10 @@
     const pillEl = document.getElementById(`status-pill-${uid}`);
     if (!bodyEl || !cardEl || !pillEl) return;
 
+    const safeImage = sanitizeChatMediaUrl(image);
     bodyEl.innerHTML = '';
     const hasText = Boolean(text && text.length > 0);
-    const hasImage = Boolean(image);
+    const hasImage = Boolean(safeImage);
     const hasContent = hasText || hasImage;
 
     bodyEl.classList.toggle('has-image', hasImage);
@@ -3376,7 +3673,7 @@
     bodyEl.classList.toggle('has-image-and-text', hasImage && hasText);
 
     const member = roomMembers.get(uid);
-    const info = getMemberEngagementInfo(member || { uid, currentText: text, image });
+    const info = getMemberEngagementInfo(member || { uid, currentText: text, image: safeImage });
 
     cardEl.classList.toggle('is-streamer', info.isStreamer);
     cardEl.classList.toggle('actively-typing', hasContent);
@@ -3387,9 +3684,9 @@
       if (hasImage) {
         const imgWrap = document.createElement('div');
         imgWrap.className = 'live-card-image-wrap';
-        if (String(image).startsWith('data:video/')) {
+        if (String(safeImage).startsWith('data:video/')) {
           const vidEl = document.createElement('video');
-          vidEl.src = image;
+          vidEl.src = safeImage;
           vidEl.className = 'live-card-video';
           vidEl.autoplay = true;
           vidEl.loop = true;
@@ -3398,7 +3695,7 @@
           imgWrap.appendChild(vidEl);
         } else {
           const imgEl = document.createElement('img');
-          imgEl.src = image;
+          imgEl.src = safeImage;
           imgEl.alt = 'Live image';
           imgEl.className = 'live-card-img';
           imgWrap.appendChild(imgEl);
@@ -3693,6 +3990,41 @@
     });
   }
 
+  // Re-encodes static images <= 2MB through HTML5 Canvas to strip EXIF/GPS metadata,
+  // steganography, and any appended polyglot payloads while keeping high visual quality.
+  function sanitizeStaticImageViaCanvas(img, detectedMime) {
+    const maxDim = 1920;
+    let width = img.naturalWidth || img.width;
+    let height = img.naturalHeight || img.height;
+    if (width > maxDim || height > maxDim) {
+      if (width > height) {
+        height = Math.max(1, Math.round((height * maxDim) / width));
+        width = maxDim;
+      } else {
+        width = Math.max(1, Math.round((width * maxDim) / height));
+        height = maxDim;
+      }
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+
+    if (detectedMime === 'image/png') {
+      const pngUrl = canvas.toDataURL('image/png');
+      if (pngUrl.length <= 2.4 * 1024 * 1024) {
+        return pngUrl;
+      }
+    }
+    let outUrl = canvas.toDataURL('image/webp', 0.92);
+    if (!outUrl.startsWith('data:image/webp')) {
+      outUrl = canvas.toDataURL('image/jpeg', 0.92);
+    }
+    return outUrl;
+  }
+
   async function processImageFile(file) {
     if (!file) return;
     if (!activeRoomCode) {
@@ -3701,25 +4033,48 @@
       return;
     }
 
-    const TWO_MB_BYTES = 2 * 1024 * 1024; // 2MB threshold
-
-    // 1. If any image or GIF is <= 2MB, send original 100% quality without downscaling!
-    if (file.size <= TWO_MB_BYTES) {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        setAndBroadcastLiveMedia(
-          ev.target.result,
-          file.type === 'image/gif'
-            ? '👾 ส่งไฟล์ GIF ความชัดต้นฉบับ 100% แล้ว! (กด Enter เพื่อล้าง)'
-            : '📷 ส่งรูปภาพความชัดต้นฉบับ 100% แล้ว! (กด Enter เพื่อล้าง)'
-        );
-      };
-      reader.readAsDataURL(file);
+    // 1. Validate Magic Bytes + Scan for Polyglot/Embedded Script Payloads
+    const secCheck = await validateImageFileSecurity(file, { allowGif: true });
+    if (!secCheck.ok) {
+      showToast(secCheck.reason);
+      inputLiveImage.value = '';
       return;
     }
 
-    // 2. If file > 2MB and is GIF -> compress animated GIF
-    if (file.type === 'image/gif') {
+    const isGif = secCheck.detectedType === 'image/gif';
+    const TWO_MB_BYTES = 2 * 1024 * 1024; // 2MB threshold
+
+    // 2. If GIF is <= 2MB: verify dimensions against Decompression Bomb, then send
+    if (isGif && file.size <= TWO_MB_BYTES) {
+      const objUrl = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(objUrl);
+        if (img.naturalWidth > MAX_IMAGE_DIMENSION || img.naturalHeight > MAX_IMAGE_DIMENSION) {
+          showToast('🚫 ความละเอียดไฟล์ GIF สูงเกินพิกัดความปลอดภัย');
+          inputLiveImage.value = '';
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          setAndBroadcastLiveMedia(
+            ev.target.result,
+            '👾 ส่งไฟล์ GIF ความชัดต้นฉบับ 100% (ผ่านการตรวจความปลอดภัย) แล้ว! (กด Enter เพื่อล้าง)'
+          );
+        };
+        reader.readAsDataURL(file);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objUrl);
+        showToast('🚫 ไม่สามารถถอดรหัสไฟล์ GIF นี้ได้');
+        inputLiveImage.value = '';
+      };
+      img.src = objUrl;
+      return;
+    }
+
+    // 3. If file > 2MB and is GIF -> compress animated GIF via WebCodecs + Canvas
+    if (isGif) {
       showToast('⏳ ไฟล์ GIF ใหญ่เกิน 2MB ระบบกำลังย่อขนาดและความชัดลงอัตโนมัติ...');
       try {
         const compressedMedia = await compressLargeAnimatedGif(file);
@@ -3733,18 +4088,38 @@
       return;
     }
 
-    // 3. If file > 2MB and is static picture -> downscale resolution & quality
-    showToast('⏳ รูปภาพมีขนาดเกิน 2MB กำลังย่อความละเอียดลงอัตโนมัติ...');
+    // 4. Static picture (JPEG / PNG / WebP): Always decode and re-encode via HTML5 Canvas!
+    // This strips 100% of EXIF/GPS metadata, steganography, and appended polyglot bytes.
+    if (file.size > TWO_MB_BYTES) {
+      showToast('⏳ รูปภาพมีขนาดเกิน 2MB กำลังย่อความละเอียดลงอัตโนมัติ...');
+    }
     const objUrl = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       URL.revokeObjectURL(objUrl);
-      const compressedDataUrl = compressStaticImageToDataUrl(img, 350000);
-      setAndBroadcastLiveMedia(compressedDataUrl, '📷 ย่อขนาดรูปภาพ (>2MB) และส่งสดให้ทุกคนในห้องแล้ว (กด Enter เพื่อล้าง)');
+      if (img.naturalWidth > MAX_IMAGE_DIMENSION || img.naturalHeight > MAX_IMAGE_DIMENSION) {
+        showToast('🚫 ความละเอียดรูปภาพสูงเกินพิกัดความปลอดภัย (สูงสุด 8192x8192 px)');
+        inputLiveImage.value = '';
+        return;
+      }
+      if (file.size <= TWO_MB_BYTES) {
+        const sanitizedDataUrl = sanitizeStaticImageViaCanvas(img, secCheck.detectedType);
+        setAndBroadcastLiveMedia(
+          sanitizedDataUrl,
+          '📷 ส่งรูปภาพความชัดสูง (ล้าง Metadata/โค้ดแฝงแล้ว) เรียบร้อย! (กด Enter เพื่อล้าง)'
+        );
+      } else {
+        const compressedDataUrl = compressStaticImageToDataUrl(img, 350000);
+        setAndBroadcastLiveMedia(
+          compressedDataUrl,
+          '📷 ย่อขนาดรูปภาพ (>2MB) และส่งสดให้ทุกคนในห้องแล้ว (กด Enter เพื่อล้าง)'
+        );
+      }
     };
     img.onerror = () => {
       URL.revokeObjectURL(objUrl);
       showToast('ไม่สามารถอ่านไฟล์รูปภาพนี้ได้');
+      inputLiveImage.value = '';
     };
     img.src = objUrl;
   }
@@ -3782,7 +4157,21 @@
       const raw = localStorage.getItem(STORAGE_KEY_FAV_GIFS);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          return parsed
+            .map((g) => {
+              if (!g || typeof g !== 'object') return null;
+              const previewUrl = sanitizeChatMediaUrl(g.previewUrl);
+              const fullUrl = sanitizeChatMediaUrl(g.fullUrl);
+              if (!previewUrl || !fullUrl) return null;
+              return {
+                previewUrl,
+                fullUrl,
+                title: String(g.title || 'Favorite GIF').slice(0, 80)
+              };
+            })
+            .filter(Boolean);
+        }
       }
     } catch (e) {}
     return [];
@@ -3865,13 +4254,13 @@
 
     // Tile 2: "GIFs ที่ได้รับความนิยม" (Trending)
     const trendingPreview =
-      (categories[0] && categories[0].preview_url) ||
+      sanitizeChatMediaUrl(categories[0] && categories[0].preview_url) ||
       'https://static.klipy.com/ii/d7aec6f6f171607374b2065c836f92f4/ec/f3/OXB1QWhn.gif';
     const trendTile = document.createElement('button');
     trendTile.type = 'button';
     trendTile.className = 'discord-cat-tile';
     trendTile.innerHTML = `
-      <img src="${trendingPreview}" alt="Trending" loading="lazy" />
+      <img src="${escapeHtml(trendingPreview)}" alt="Trending" loading="lazy" />
       <span class="discord-cat-label">📈 ${activeKlipyType === 'stickers' ? 'สติกเกอร์' : 'GIFs'} ที่ได้รับความนิยม</span>
     `;
     trendTile.addEventListener('click', () => {
@@ -3881,12 +4270,13 @@
 
     // Remaining Category Tiles from KLIPY
     categories.forEach((cat) => {
-      if (!cat || !cat.preview_url) return;
+      const safePreview = cat && sanitizeChatMediaUrl(cat.preview_url);
+      if (!safePreview) return;
       const tile = document.createElement('button');
       tile.type = 'button';
       tile.className = 'discord-cat-tile';
       tile.innerHTML = `
-        <img src="${cat.preview_url}" alt="${escapeHtml(cat.category)}" loading="lazy" />
+        <img src="${escapeHtml(safePreview)}" alt="${escapeHtml(cat.category)}" loading="lazy" />
         <span class="discord-cat-label">${escapeHtml(cat.category)}</span>
       `;
       tile.addEventListener('click', () => {
@@ -3913,11 +4303,15 @@
   }
 
   function appendGifResultCard(previewUrl, fullUrl, title) {
+    const safePreview = sanitizeChatMediaUrl(previewUrl);
+    const safeFull = sanitizeChatMediaUrl(fullUrl);
+    if (!safePreview || !safeFull) return;
+
     const wrap = document.createElement('div');
     wrap.className = 'gif-item-btn';
 
     const img = document.createElement('img');
-    img.src = previewUrl;
+    img.src = safePreview;
     img.loading = 'lazy';
     img.alt = title || 'KLIPY Media';
     wrap.appendChild(img);
@@ -3925,20 +4319,20 @@
     // Favorite Star Button
     const starBtn = document.createElement('button');
     starBtn.type = 'button';
-    const isFav = isGifFavorited(fullUrl);
+    const isFav = isGifFavorited(safeFull);
     starBtn.className = `btn-fav-star ${isFav ? 'active' : ''}`;
     starBtn.textContent = '★';
     starBtn.title = 'บันทึกในสิ่งที่ชอบ';
     starBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const nowFav = toggleFavoriteGif({ previewUrl, fullUrl, title });
+      const nowFav = toggleFavoriteGif({ previewUrl: safePreview, fullUrl: safeFull, title });
       starBtn.classList.toggle('active', nowFav);
     });
     wrap.appendChild(starBtn);
 
     wrap.addEventListener('click', () => {
       setAndBroadcastLiveMedia(
-        fullUrl,
+        safeFull,
         `👾 ส่ง ${activeKlipyType === 'stickers' ? 'Sticker' : 'GIF'} จาก KLIPY สดแล้ว! (กด Enter เพื่อล้าง)`
       );
       gifPickerPopover.classList.add('hidden');
@@ -4292,12 +4686,17 @@
   }
 
   function setBgImageUI(dataUrl) {
+    if (!dataUrl || typeof dataUrl !== 'string' || !/^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/i.test(dataUrl.trim())) {
+      clearBgImageUI();
+      return;
+    }
+    const safeBg = dataUrl.trim();
     if (appCustomBg) {
-      appCustomBg.style.backgroundImage = `url("${dataUrl}")`;
+      appCustomBg.style.backgroundImage = `url("${safeBg}")`;
     }
     document.body.classList.add('has-custom-bg');
     if (customBgThumb) {
-      customBgThumb.style.backgroundImage = `url("${dataUrl}")`;
+      customBgThumb.style.backgroundImage = `url("${safeBg}")`;
       customBgThumb.classList.add('has-image');
     }
     if (customBgThumbText) customBgThumbText.classList.add('hidden');
@@ -4545,14 +4944,31 @@
   let cropperStartBox = { x: 0, y: 0, w: 0, h: 0 };
 
   if (inputCustomBg) {
-    inputCustomBg.addEventListener('change', (e) => {
+    inputCustomBg.addEventListener('change', async (e) => {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
+
+      const secCheck = await validateImageFileSecurity(file, { allowGif: true });
+      if (!secCheck.ok) {
+        showToast(secCheck.reason);
+        inputCustomBg.value = '';
+        return;
+      }
+
       const reader = new FileReader();
       reader.onload = (ev) => {
         const img = new Image();
         img.onload = () => {
+          if (img.naturalWidth > MAX_IMAGE_DIMENSION || img.naturalHeight > MAX_IMAGE_DIMENSION) {
+            showToast('🚫 ความละเอียดภาพพื้นหลังสูงเกินพิกัดความปลอดภัย (สูงสุด 8192x8192 px)');
+            inputCustomBg.value = '';
+            return;
+          }
           initBgCropper(img);
+        };
+        img.onerror = () => {
+          showToast('🚫 ไม่สามารถถอดรหัสไฟล์รูปภาพนี้ได้');
+          inputCustomBg.value = '';
         };
         img.src = ev.target.result;
       };
@@ -5599,12 +6015,16 @@
 
   // 7. Streamer handles incoming watch request from a viewer
   async function handleViewerWatchRequest(data) {
-    if (!isScreenSharing || !localScreenStream) return;
-    const viewerUid = data.fromUid;
+    if (!isScreenSharing || !localScreenStream || !data) return;
+    const viewerUid = sanitizeUid(data.fromUid);
+    if (!viewerUid) return;
 
     if (streamPeers.has(viewerUid)) {
       try { streamPeers.get(viewerUid).close(); } catch (e) {}
       streamPeers.delete(viewerUid);
+    } else if (streamPeers.size >= 25) {
+      // Cap maximum concurrent WebRTC peer connections to prevent DoS resource exhaustion
+      return;
     }
 
     const pc = new RTCPeerConnection(RTC_CONFIG);
@@ -5660,7 +6080,9 @@
 
   // 8. Viewer handles incoming SDP offer from streamer
   async function handleStreamerOffer(data) {
-    if (!isWatching || !viewerPeerConnection) return;
+    if (!isWatching || !viewerPeerConnection || !data || !data.sdp) return;
+    const streamerUid = sanitizeUid(data.fromUid);
+    if (!streamerUid || (activeStreamerUid && streamerUid !== activeStreamerUid)) return;
 
     try {
       await viewerPeerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
@@ -5678,7 +6100,7 @@
       );
       await viewerPeerConnection.setLocalDescription({ type: answer.type, sdp: modifiedAnswerSdp });
 
-      publishJson(topicInbox(data.fromUid), {
+      publishJson(topicInbox(streamerUid), {
         type: 'stream_signal_answer',
         fromUid: currentUser.uid,
         sdp: viewerPeerConnection.localDescription
@@ -5692,8 +6114,10 @@
 
   // 9. Streamer handles incoming SDP answer from viewer
   async function handleViewerAnswer(data) {
-    if (!isScreenSharing) return;
-    const pc = streamPeers.get(data.fromUid);
+    if (!isScreenSharing || !data || !data.sdp) return;
+    const viewerUid = sanitizeUid(data.fromUid);
+    if (!viewerUid) return;
+    const pc = streamPeers.get(viewerUid);
     if (!pc) return;
 
     try {
@@ -5705,15 +6129,19 @@
 
   // 10. Handle ICE candidate on either side
   async function handleRemoteCandidate(data) {
+    if (!data) return;
+    const senderUid = sanitizeUid(data.fromUid);
+    if (!senderUid) return;
     if (isScreenSharing) {
-      const pc = streamPeers.get(data.fromUid);
+      const pc = streamPeers.get(senderUid);
       if (pc && pc.remoteDescription && data.candidate) {
         pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(() => {});
       }
     } else if (isWatching && viewerPeerConnection) {
+      if (activeStreamerUid && senderUid !== activeStreamerUid) return;
       if (viewerPeerConnection.remoteDescription && data.candidate) {
         viewerPeerConnection.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(() => {});
-      } else if (data.candidate) {
+      } else if (data.candidate && pendingIceCandidates.length < 60) {
         pendingIceCandidates.push(data.candidate);
       }
     }
@@ -5721,8 +6149,10 @@
 
   // 11. Streamer updates quality constraints on viewer request
   async function handleQualityChangeRequest(data) {
-    if (!isScreenSharing) return;
-    const pc = streamPeers.get(data.fromUid);
+    if (!isScreenSharing || !data) return;
+    const viewerUid = sanitizeUid(data.fromUid);
+    if (!viewerUid) return;
+    const pc = streamPeers.get(viewerUid);
     if (pc) {
       await applyQualityConstraints(pc, data.resolution, data.fps, data.mode);
     }
@@ -5730,10 +6160,13 @@
 
   // 12. Streamer cleans up peer when viewer stops watching
   function handleViewerStopWatch(data) {
-    const pc = streamPeers.get(data.fromUid);
+    if (!data) return;
+    const viewerUid = sanitizeUid(data.fromUid);
+    if (!viewerUid) return;
+    const pc = streamPeers.get(viewerUid);
     if (pc) {
       try { pc.close(); } catch (e) {}
-      streamPeers.delete(data.fromUid);
+      streamPeers.delete(viewerUid);
     }
   }
 

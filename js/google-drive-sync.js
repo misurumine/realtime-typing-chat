@@ -19,19 +19,38 @@
   let currentAccessToken = sessionStorage.getItem(STORAGE_KEY_TOKEN) || null;
   let appDataFileId = localStorage.getItem(STORAGE_KEY_FILE_ID) || null;
 
-  // Sanitization helpers for XSS & injection prevention
+  // Sanitization helpers for XSS, Bidi-spoofing & Attribute Breakout prevention
   function sanitizeUsername(input) {
     if (!input || typeof input !== 'string') return 'User';
-    return input.replace(/[\x00-\x1F\x7F<>"/\\&]/g, '').trim().slice(0, 24) || 'User';
+    return (
+      input
+        .replace(/[\x00-\x1F\x7F\u202A-\u202E\u2066-\u2069<>"'`/\\&]/g, '')
+        .trim()
+        .slice(0, 24) || 'User'
+    );
   }
 
   function sanitizeAvatarUrl(url, fallback) {
     const defaultAvatar = fallback || './assets/avatars/avatar-1.svg';
     if (!url || typeof url !== 'string') return defaultAvatar;
     const trimmed = url.trim();
-    if (/^https?:\/\//i.test(trimmed)) return trimmed;
-    if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(trimmed)) return trimmed;
-    if (/^\.\/assets\/avatars\/avatar-\d+\.svg$/i.test(trimmed)) return trimmed;
+    if (trimmed.length > 550000) return defaultAvatar; // Prevent memory/storage DoS
+    // Strict HTTPS URL without quotes, angle brackets, or whitespace
+    if (/^https:\/\/[^\s"'<>\\`]+$/i.test(trimmed)) {
+      try {
+        const parsed = new URL(trimmed);
+        if (parsed.protocol === 'https:') return trimmed;
+      } catch (e) {
+        return defaultAvatar;
+      }
+    }
+    // Strict Raster Data URI (Base64 only — blocks arbitrary SVG script injection & attribute breakout)
+    if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/i.test(trimmed)) {
+      return trimmed;
+    }
+    if (/^\.\/assets\/avatars\/avatar-\d+\.svg$/i.test(trimmed)) {
+      return trimmed;
+    }
     return defaultAvatar;
   }
 
