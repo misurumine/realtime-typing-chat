@@ -566,6 +566,301 @@
     }
   }
 
+  // =========================================================================
+  // --- Anti-Steganography, Trailing Payload, & Polyglot Archive Inspector ---
+  // =========================================================================
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  async function scanFileForStegoAndAppendedPayload(file, detectedType) {
+    if (!file || typeof file.slice !== 'function' || file.size < 16) {
+      return { isClean: true };
+    }
+    try {
+      const MAX_PARSE_SIZE = 12 * 1024 * 1024;
+      let buf;
+      if (typeof file.arrayBuffer === 'function' && file.size <= MAX_PARSE_SIZE) {
+        buf = new Uint8Array(await file.arrayBuffer());
+      } else if (file.slice) {
+        buf = new Uint8Array(await file.slice(0, Math.min(file.size, MAX_PARSE_SIZE)).arrayBuffer());
+      } else {
+        return { isClean: true };
+      }
+
+      let validImageSize = null;
+
+      // 1. Check Trailing Bytes for PNG
+      if (detectedType === 'image/png' && buf.length >= 8) {
+        let offset = 8;
+        while (offset + 12 <= buf.length) {
+          const chunkLen =
+            ((buf[offset] << 24) >>> 0) +
+            (buf[offset + 1] << 16) +
+            (buf[offset + 2] << 8) +
+            buf[offset + 3];
+          const chunkType = String.fromCharCode(
+            buf[offset + 4],
+            buf[offset + 5],
+            buf[offset + 6],
+            buf[offset + 7]
+          );
+          if (chunkType === 'IEND') {
+            validImageSize = offset + 12; // IEND chunk length is 0 + 4(len) + 4(type) + 4(crc) = 12
+            break;
+          }
+          if (chunkLen < 0 || chunkLen > buf.length) break;
+          offset += 12 + chunkLen;
+        }
+      }
+
+      // 2. Check Trailing Bytes for JPEG
+      else if (detectedType === 'image/jpeg' && buf.length >= 4) {
+        let offset = 2; // skip FF D8
+        while (offset < buf.length - 1) {
+          if (buf[offset] !== 0xff) {
+            offset++;
+            continue;
+          }
+          while (offset < buf.length && buf[offset] === 0xff) {
+            offset++;
+          }
+          if (offset >= buf.length) break;
+          const marker = buf[offset];
+          offset++;
+
+          if (marker === 0xd9) {
+            // EOI (End of Image)
+            validImageSize = offset;
+            break;
+          } else if (marker === 0xda) {
+            // SOS (Start of Scan) - entropy data follows SOS header
+            if (offset + 2 > buf.length) break;
+            const sosLen = (buf[offset] << 8) | buf[offset + 1];
+            offset += sosLen;
+            while (offset < buf.length - 1) {
+              if (buf[offset] === 0xff) {
+                const nextB = buf[offset + 1];
+                if (nextB === 0x00 || (nextB >= 0xd0 && nextB <= 0xd7)) {
+                  offset += 2;
+                } else if (nextB === 0xd9) {
+                  validImageSize = offset + 2;
+                  offset += 2;
+                  break;
+                } else if (nextB !== 0xff) {
+                  offset++;
+                  break;
+                } else {
+                  offset++;
+                }
+              } else {
+                offset++;
+              }
+            }
+            if (validImageSize) break;
+          } else if (marker >= 0xd0 && marker <= 0xd7) {
+            continue;
+          } else if (marker === 0x01) {
+            continue;
+          } else {
+            if (offset + 2 > buf.length) break;
+            const segLen = (buf[offset] << 8) | buf[offset + 1];
+            if (segLen < 2) break;
+            offset += segLen;
+          }
+        }
+      }
+
+      // 3. Check Trailing Bytes for GIF
+      else if (detectedType === 'image/gif' && buf.length >= 10) {
+        let lastTrailerIdx = -1;
+        for (let i = buf.length - 1; i >= 6; i--) {
+          if (buf[i] === 0x3b) {
+            lastTrailerIdx = i;
+            break;
+          }
+        }
+        if (lastTrailerIdx !== -1) {
+          validImageSize = lastTrailerIdx + 1;
+        }
+      }
+
+      // 4. Check Trailing Bytes for WebP
+      else if (detectedType === 'image/webp' && buf.length >= 12) {
+        const riffPayload =
+          buf[4] | (buf[5] << 8) | (buf[6] << 16) | ((buf[7] << 24) >>> 0);
+        if (riffPayload > 0 && riffPayload + 8 <= file.size) {
+          validImageSize = riffPayload + 8;
+        }
+      }
+
+      // If trailing bytes exceed allowed padding threshold (32 bytes)
+      if (validImageSize !== null && validImageSize > 0) {
+        const trailingBytes = file.size - validImageSize;
+        if (trailingBytes > 32) {
+          const trailingSample = buf.slice(validImageSize, Math.min(buf.length, validImageSize + 64));
+          let hexPreview = '';
+          for (let i = 0; i < Math.min(trailingSample.length, 16); i++) {
+            hexPreview += trailingSample[i].toString(16).padStart(2, '0').toUpperCase() + ' ';
+          }
+          return {
+            isClean: false,
+            ruleId: 'stego_trailing_payload',
+            threatName: 'ตรวจพบข้อมูลแปลกปลอมต่อท้ายภาพ (Appended Payload / Steganography)',
+            severity: 'critical',
+            matchedSnippet: `พบข้อมูลส่วนเกิน ${formatBytes(trailingBytes)} ท้ายภาพ (Hex: ${hexPreview.trim()}...)`,
+            contextSnippet: `ขนาดไฟล์จริง: ${formatBytes(file.size)} | โครงสร้างภาพจริง: ${formatBytes(validImageSize)} | ข้อมูลต่อท้าย: ${formatBytes(trailingBytes)}`,
+            description: 'ตรวจพบข้อมูลไบนารีหรือไฟล์แปลกปลอมต่อท้ายจุดสิ้นสุดของภาพ (EOF) ซึ่งเป็นพฤติกรรมของ Polyglot File หรือการซ่อนข้อมูลลับ/มัลแวร์แฝง',
+            advice: 'คุณสามารถกดปุ่ม "ล้างโค้ดแฝงด้วย Canvas" เพื่อตัดข้อมูลส่วนเกินทิ้งทั้งหมด และดึงเฉพาะภาพบริสุทธิ์ 100% ออกมาใช้งานได้อย่างปลอดภัย',
+            validImageSize,
+            trailingBytes
+          };
+        }
+      }
+
+      // 5. Universal Embedded Archive & Executable Scanner (Stegware Signatures)
+      const scanLen = Math.min(buf.length, 8 * 1024 * 1024);
+      for (let i = 4; i < scanLen - 8; i++) {
+        // ZIP Local File Header (PK\x03\x04) or End of Central Directory (PK\x05\x06)
+        if (buf[i] === 0x50 && buf[i + 1] === 0x4b) {
+          if (buf[i + 2] === 0x03 && buf[i + 3] === 0x04) {
+            if (i + 30 <= buf.length) {
+              const fnLen = buf[i + 26] | (buf[i + 27] << 8);
+              if (fnLen > 0 && fnLen <= 256 && i + 30 + fnLen <= buf.length) {
+                let fnStr = '';
+                try {
+                  fnStr = new TextDecoder().decode(buf.slice(i + 30, i + 30 + Math.min(fnLen, 40)));
+                } catch (e) {}
+                return {
+                  isClean: false,
+                  ruleId: 'stego_embedded_archive',
+                  threatName: 'ตรวจพบไฟล์บีบอัด ZIP แฝงอยู่ในภาพ (Embedded ZIP / Polyglot)',
+                  severity: 'critical',
+                  matchedSnippet: `พบโครงสร้าง ZIP Archive ที่ offset ${i}${fnStr ? ` (ไฟล์ภายใน: "${fnStr}")` : ''}`,
+                  contextSnippet: `ตำแหน่งในไฟล์: Byte ${i} | ลายเซ็น: PK\\x03\\x04 | ไฟล์แฝง: ${fnStr || 'ไม่ระบุ'}`,
+                  description: 'ตรวจพบไฟล์ ZIP ถูกฝังหรือแนบแฝงมากับไฟล์รูปภาพ ซึ่งใช้ในเทคนิค Polyglot File หรือ Steganography ในการซ่อนไฟล์อันตราย',
+                  advice: 'คุณสามารถกดปุ่ม "ล้างโค้ดแฝงด้วย Canvas" เพื่อตัดไฟล์ ZIP แฝงออกทั้งหมด และสร้างไฟล์ภาพบริสุทธิ์ 100%',
+                  validImageSize
+                };
+              }
+            }
+          } else if (buf[i + 2] === 0x05 && buf[i + 3] === 0x06) {
+            return {
+              isClean: false,
+              ruleId: 'stego_embedded_archive',
+              threatName: 'ตรวจพบลายเซ็น ZIP Archive แฝงในภาพ (ZIP End of Central Directory)',
+              severity: 'critical',
+              matchedSnippet: `พบ ZIP Central Directory ที่ offset ${i}`,
+              contextSnippet: `ตำแหน่งในไฟล์: Byte ${i} | ลายเซ็น: PK\\x05\\x06`,
+              description: 'ตรวจพบลายเซ็นสารบัญไฟล์ของไฟล์บีบอัด ZIP แฝงอยู่ในภาพ',
+              advice: 'คุณสามารถกดปุ่ม "ล้างโค้ดแฝงด้วย Canvas" เพื่อตัดข้อมูลแฝงออกทั้งหมด',
+              validImageSize
+            };
+          }
+        }
+
+        // RAR Archive (Rar!\x1A\x07)
+        if (
+          buf[i] === 0x52 &&
+          buf[i + 1] === 0x61 &&
+          buf[i + 2] === 0x72 &&
+          buf[i + 3] === 0x21 &&
+          buf[i + 4] === 0x1a &&
+          buf[i + 5] === 0x07
+        ) {
+          return {
+            isClean: false,
+            ruleId: 'stego_embedded_archive',
+            threatName: 'ตรวจพบไฟล์บีบอัด RAR แฝงอยู่ในภาพ (Embedded RAR Archive)',
+            severity: 'critical',
+            matchedSnippet: `พบลายเซ็น RAR Archive (Rar!\\x1A\\x07) ที่ offset ${i}`,
+            contextSnippet: `ตำแหน่งในไฟล์: Byte ${i} | ลายเซ็น: Rar!`,
+            description: 'ตรวจพบไฟล์บีบอัด RAR แฝงอยู่ในโครงสร้างภาพ',
+            advice: 'คุณสามารถกดปุ่ม "ล้างโค้ดแฝงด้วย Canvas" เพื่อตัดไฟล์แฝงทิ้งทั้งหมด',
+            validImageSize
+          };
+        }
+
+        // 7-Zip Archive (7z\xBC\xAF\x27\x1C)
+        if (
+          buf[i] === 0x37 &&
+          buf[i + 1] === 0x7a &&
+          buf[i + 2] === 0xbc &&
+          buf[i + 3] === 0xaf &&
+          buf[i + 4] === 0x27 &&
+          buf[i + 5] === 0x1c
+        ) {
+          return {
+            isClean: false,
+            ruleId: 'stego_embedded_archive',
+            threatName: 'ตรวจพบไฟล์บีบอัด 7-Zip แฝงอยู่ในภาพ (Embedded 7-Zip Archive)',
+            severity: 'critical',
+            matchedSnippet: `พบลายเซ็น 7-Zip (7z\\xBC\\xAF) ที่ offset ${i}`,
+            contextSnippet: `ตำแหน่งในไฟล์: Byte ${i} | ลายเซ็น: 7z`,
+            description: 'ตรวจพบไฟล์บีบอัด 7-Zip แฝงอยู่ในโครงสร้างภาพ',
+            advice: 'คุณสามารถกดปุ่ม "ล้างโค้ดแฝงด้วย Canvas" เพื่อตัดไฟล์แฝงทิ้งทั้งหมด',
+            validImageSize
+          };
+        }
+
+        // Windows Executable Binary (MZ header + PE header check)
+        if (buf[i] === 0x4d && buf[i + 1] === 0x5a && i + 64 <= buf.length) {
+          const peOffset = buf[i + 0x3c] | (buf[i + 0x3d] << 8);
+          if (
+            peOffset > 0 &&
+            peOffset < 1024 &&
+            i + peOffset + 4 <= buf.length &&
+            buf[i + peOffset] === 0x50 &&
+            buf[i + peOffset + 1] === 0x45 &&
+            buf[i + peOffset + 2] === 0x00 &&
+            buf[i + peOffset + 3] === 0x00
+          ) {
+            return {
+              isClean: false,
+              ruleId: 'stego_embedded_pe',
+              threatName: 'ตรวจพบไฟล์โปรแกรม Windows Executable แฝงในภาพ (.exe / .dll)',
+              severity: 'critical',
+              matchedSnippet: `พบลายเซ็น Windows PE Binary ที่ offset ${i} (PE Offset: 0x${peOffset.toString(16)})`,
+              contextSnippet: `ตำแหน่งในไฟล์: Byte ${i} | ลายเซ็น: MZ/PE Executable`,
+              description: 'ตรวจพบไฟล์โปรแกรมปฏิบัติการ Windows (.exe / .dll) แฝงอยู่ในภาพ ซึ่งมีความเสี่ยงสูงที่จะเป็นโทรจันหรือมัลแวร์',
+              advice: 'ระบบระงับไฟล์นี้ทันที คุณสามารถกด "ล้างโค้ดแฝงด้วย Canvas" เพื่อล้างข้อมูลไบนารีอันตรายออกทั้งหมด',
+              validImageSize
+            };
+          }
+        }
+
+        // Linux ELF Executable (\x7FELF)
+        if (
+          buf[i] === 0x7f &&
+          buf[i + 1] === 0x45 &&
+          buf[i + 2] === 0x4c &&
+          buf[i + 3] === 0x46
+        ) {
+          return {
+            isClean: false,
+            ruleId: 'stego_embedded_elf',
+            threatName: 'ตรวจพบไฟล์ปฏิบัติการ Linux ELF แฝงในภาพ',
+            severity: 'critical',
+            matchedSnippet: `พบลายเซ็น Linux ELF Binary ที่ offset ${i}`,
+            contextSnippet: `ตำแหน่งในไฟล์: Byte ${i} | ลายเซ็น: \\x7FELF`,
+            description: 'ตรวจพบโปรแกรมไบนารี Linux แฝงอยู่ในภาพ',
+            advice: 'คุณสามารถกด "ล้างโค้ดแฝงด้วย Canvas" เพื่อตัดโค้ดไบนารีออกทั้งหมด',
+            validImageSize
+          };
+        }
+      }
+
+      return { isClean: true, validImageSize };
+    } catch (e) {
+      console.warn('LiveType Stego/Trailing Scanner notice:', e);
+      return { isClean: true };
+    }
+  }
+
   async function validateImageFileSecurity(file, { maxBytes = 25 * 1024 * 1024, allowGif = true } = {}) {
     if (!file || file.size <= 0) {
       return { ok: false, reason: '⚠️ ไม่พบข้อมูลในไฟล์รูปภาพ', threatDetails: null };
@@ -588,6 +883,7 @@
         threatDetails: null
       };
     }
+    // 1. Text & script polyglot pattern scan
     const scanResult = await scanFileForEmbeddedPayload(file);
     if (!scanResult.isClean) {
       const summaryMsg = `🛡️ บล็อกไฟล์รูปภาพ: ตรวจพบ [${scanResult.threatName}] โค้ดที่พบ: "${scanResult.matchedSnippet}"`;
@@ -598,7 +894,18 @@
         file
       };
     }
-    return { ok: true, detectedType: magic.detectedType };
+    // 2. Steganography, Trailing Payload, & Embedded Archive scan
+    const stegoResult = await scanFileForStegoAndAppendedPayload(file, magic.detectedType);
+    if (!stegoResult.isClean) {
+      const summaryMsg = `🛡️ บล็อกไฟล์รูปภาพ: ตรวจพบ [${stegoResult.threatName}] ${stegoResult.matchedSnippet}`;
+      return {
+        ok: false,
+        reason: summaryMsg,
+        threatDetails: stegoResult,
+        file
+      };
+    }
+    return { ok: true, detectedType: magic.detectedType, validImageSize: stegoResult.validImageSize };
   }
 
   function generateNewUid() {
@@ -630,6 +937,10 @@
   let incomingFriendRequests = new Map(); // Map<uid, { uid, username, avatar, ts }>
   let sentFriendRequests = new Set(); // Set<uid>
   let activeRoomCode = null;
+  let activeRoomHostUid = null;
+  let activeRoomSortMode = 'length_1s'; // 'length_1s' (1s length check with hysteresis), 'stable', or 'activity'
+  let previousMemberRanks = new Map(); // Map<uid, number> for hysteresis rank tracking
+  let roomSortIntervalTimer = null;
   let isRoomPublic = true; // Whether active room is discoverable via Tag Matchmaking
   let roomMembers = new Map(); // Map<uid, { uid, username, avatar, tags, currentText, image, updatedAt }>
   let discoveredRooms = new Map(); // Map<roomCode, { roomCode, hostName, hostAvatar, memberCount, tags, updatedAt }>
@@ -778,6 +1089,9 @@
   const activeRoomCodeEl = document.getElementById('activeRoomCode');
   const btnCopyRoomCode = document.getElementById('btnCopyRoomCode');
   const btnCopyRoomLink = document.getElementById('btnCopyRoomLink');
+  const roomSortWrap = document.getElementById('roomSortWrap');
+  const roomSortIcon = document.getElementById('roomSortIcon');
+  const selectRoomSortMode = document.getElementById('selectRoomSortMode');
   const btnToggleRoomLayout = document.getElementById('btnToggleRoomLayout');
   const roomLayoutIcon = document.getElementById('roomLayoutIcon');
   const roomLayoutLabel = document.getElementById('roomLayoutLabel');
@@ -1769,6 +2083,17 @@
       const cleanTags = Array.isArray(data.tags) ? data.tags.slice(0, 8).map(sanitizeTag).filter(Boolean) : [];
       const safeText = String(data.currentText || '').slice(0, 250);
 
+      if (data.hostUid) {
+        activeRoomHostUid = sanitizeUid(data.hostUid);
+      } else if (data.isHost) {
+        activeRoomHostUid = cleanSenderUid;
+      } else if (!activeRoomHostUid) {
+        activeRoomHostUid = cleanSenderUid;
+      }
+      if (data.sortMode && ['length_1s', 'stable', 'activity'].includes(data.sortMode)) {
+        activeRoomSortMode = data.sortMode;
+      }
+
       roomMembers.set(cleanSenderUid, {
         uid: cleanSenderUid,
         username: cleanName,
@@ -1796,7 +2121,10 @@
         avatar: currentUser.avatar,
         tags: Array.from(selectedTags),
         currentText: myMember ? myMember.currentText : liveTypingInput.value,
-        image: myMember ? myMember.image : currentImage
+        image: myMember ? myMember.image : currentImage,
+        isHost: Boolean(activeRoomHostUid === currentUser.uid),
+        hostUid: activeRoomHostUid,
+        sortMode: activeRoomSortMode || 'length_1s'
       });
 
       // If we are currently streaming screen, announce to newcomer immediately!
@@ -1824,6 +2152,15 @@
       const safeImage = data.image ? sanitizeChatMediaUrl(data.image) : null;
       const hasContent = Boolean(safeText.length > 0 || safeImage);
 
+      if (data.hostUid) {
+        activeRoomHostUid = sanitizeUid(data.hostUid);
+      } else if (data.isHost) {
+        activeRoomHostUid = cleanSenderUid;
+      }
+      if (data.sortMode && ['length_1s', 'stable', 'activity'].includes(data.sortMode)) {
+        activeRoomSortMode = data.sortMode;
+      }
+
       roomMembers.set(cleanSenderUid, {
         uid: cleanSenderUid,
         username: cleanName,
@@ -1842,7 +2179,21 @@
         broadcastActiveRoomToDirectory();
       } else {
         updateSingleCardContent(cleanSenderUid, safeText, safeImage);
+      }
+      return;
+    }
+
+    if (data.type === 'room_sort_mode') {
+      const newMode = data.sortMode;
+      if (['length_1s', 'stable', 'activity'].includes(newMode)) {
+        activeRoomSortMode = newMode;
+        if (data.hostUid) {
+          activeRoomHostUid = sanitizeUid(data.hostUid);
+        }
+        updateRoomHostUi();
+        previousMemberRanks.clear();
         reorderLiveCards();
+        showToast(`👑 หัวห้องกำหนดการจัดลำดับเป็น: ${getSortModeLabel(newMode)}`);
       }
       return;
     }
@@ -1851,6 +2202,14 @@
       if (roomMembers.has(cleanSenderUid)) {
         const leftUser = roomMembers.get(cleanSenderUid);
         roomMembers.delete(cleanSenderUid);
+        if (cleanSenderUid === activeRoomHostUid) {
+          const remainingUids = Array.from(roomMembers.keys());
+          activeRoomHostUid = remainingUids.length > 0 ? remainingUids[0] : null;
+          updateRoomHostUi();
+          if (currentUser && activeRoomHostUid === currentUser.uid) {
+            showToast('👑 คุณได้รับการแต่งตั้งเป็นหัวห้องคนใหม่');
+          }
+        }
         renderAllLiveCards();
         showToast(`🚪 ${leftUser.username} ออกจากห้อง`);
       }
@@ -1900,7 +2259,6 @@
           m.lastActiveAt = 0;
         }
         updateSingleCardContent(cleanSenderUid, m.currentText, m.image);
-        reorderLiveCards();
       }
       return;
     }
@@ -2350,7 +2708,7 @@
     }
 
     if (btnSanitizeAndProceed) {
-      if (onSanitizeClean && file && file.type !== 'image/gif') {
+      if (onSanitizeClean && file) {
         btnSanitizeAndProceed.style.display = 'inline-flex';
       } else {
         btnSanitizeAndProceed.style.display = 'none';
@@ -3314,6 +3672,7 @@
   function leaveCurrentRoomSilent() {
     if (!activeRoomCode || !currentUser) return;
     const oldCode = activeRoomCode;
+    stopRoomSortInterval();
     cleanupStreamState();
     publishJson(topicRoom(oldCode), {
       type: 'member_leave',
@@ -3327,10 +3686,12 @@
       mqttClient.unsubscribe(topicRoom(oldCode));
     }
     activeRoomCode = null;
+    activeRoomHostUid = null;
     roomMembers.clear();
+    updateRoomHostUi();
   }
 
-  function joinRoomByCode(code) {
+  function joinRoomByCode(code, isCreator = false) {
     if (!currentUser) return;
     const clean = sanitizeRoomCode(code);
     if (!clean) {
@@ -3343,6 +3704,10 @@
     }
 
     activeRoomCode = clean;
+    if (isCreator) {
+      activeRoomHostUid = currentUser.uid;
+      activeRoomSortMode = 'length_1s';
+    }
     roomMembers.clear();
     currentImage = null;
     hideInputImagePreview();
@@ -3371,6 +3736,7 @@
       });
     }
 
+    startRoomSortInterval();
     broadcastMyPresence(true);
     renderAllLiveCards();
     updateRoomViewUI();
@@ -3381,7 +3747,9 @@
   }
 
   function createNewRoom() {
-    joinRoomByCode(generateRoomCode());
+    activeRoomHostUid = currentUser ? currentUser.uid : null;
+    activeRoomSortMode = 'length_1s';
+    joinRoomByCode(generateRoomCode(), true);
   }
 
   btnCreateRoom.addEventListener('click', createNewRoom);
@@ -3512,6 +3880,31 @@
         localStorage.setItem('livetype_room_layout', nextIsSingle ? 'single' : 'double');
       } catch (e) {}
       showToast(nextIsSingle ? 'สลับเป็นมุมมอง 1 คอลัมน์เดี่ยวแล้ว' : 'สลับเป็นมุมมอง 2 คอลัมน์คู่แล้ว');
+    });
+  }
+
+  if (selectRoomSortMode) {
+    selectRoomSortMode.addEventListener('change', () => {
+      const isHost = Boolean(currentUser && activeRoomHostUid && activeRoomHostUid === currentUser.uid);
+      if (!isHost) {
+        showToast('เฉพาะหัวห้องเท่านั้นที่สามารถเปลี่ยนการจัดลำดับได้');
+        selectRoomSortMode.value = activeRoomSortMode || 'length_1s';
+        return;
+      }
+      const newMode = selectRoomSortMode.value;
+      activeRoomSortMode = newMode;
+      showToast(`👑 หัวห้องเปลี่ยนการจัดลำดับเป็น: ${getSortModeLabel(newMode)}`);
+      previousMemberRanks.clear();
+      reorderLiveCards();
+
+      // Broadcast to room
+      if (activeRoomCode) {
+        publishJson(topicRoom(activeRoomCode), {
+          type: 'room_sort_mode',
+          sortMode: newMode,
+          hostUid: currentUser.uid
+        });
+      }
     });
   }
 
@@ -3744,43 +4137,165 @@
     };
   }
 
+  function getSortModeLabel(mode) {
+    if (mode === 'length_1s') return '📏 เรียงตามความยาว (1 วิ)';
+    if (mode === 'stable') return '📌 ตำแหน่งคงที่ (ไม่แย่งที่)';
+    if (mode === 'activity') return '⚡ ตามกิจกรรมล่าสุด';
+    return mode || '📏 เรียงตามความยาว (1 วิ)';
+  }
+
+  function startRoomSortInterval() {
+    if (roomSortIntervalTimer) clearInterval(roomSortIntervalTimer);
+    roomSortIntervalTimer = setInterval(() => {
+      if (!activeRoomCode) return;
+      reorderLiveCards();
+    }, 1000); // 1-second batch reordering
+  }
+
+  function stopRoomSortInterval() {
+    if (roomSortIntervalTimer) {
+      clearInterval(roomSortIntervalTimer);
+      roomSortIntervalTimer = null;
+    }
+    previousMemberRanks.clear();
+  }
+
+  function updateRoomHostUi() {
+    const isHost = Boolean(currentUser && activeRoomHostUid && activeRoomHostUid === currentUser.uid);
+    if (roomSortWrap) {
+      roomSortWrap.classList.toggle('is-host', isHost);
+    }
+    if (selectRoomSortMode) {
+      selectRoomSortMode.value = activeRoomSortMode || 'length_1s';
+      selectRoomSortMode.disabled = !isHost;
+      selectRoomSortMode.title = isHost
+        ? '👑 คุณคือหัวห้อง: สามารถเลือกรูปแบบการจัดลำดับสมาชิกในห้องได้'
+        : '👑 เฉพาะหัวห้องเท่านั้นที่สามารถเปลี่ยนรูปแบบการจัดลำดับได้';
+    }
+  }
+
   function sortRoomMembers(members) {
+    const mode = activeRoomSortMode || 'length_1s';
+
     return members.slice().sort((a, b) => {
       const infoA = getMemberEngagementInfo(a);
       const infoB = getMemberEngagementInfo(b);
 
-      // 1. Tier 1 (Streamer) > Tier 2 (Active) > Tier 3 (Non-Active)
+      // 1. Tier 1: Streamer always top priority
       if (infoA.tier !== infoB.tier) {
         return infoA.tier - infoB.tier;
       }
+      if (infoA.isStreamer && !infoB.isStreamer) return -1;
+      if (!infoA.isStreamer && infoB.isStreamer) return 1;
 
-      // 2. Within Tier 2 (Active Engagement): most recent activity first
-      if (infoA.tier === 2) {
+      // MODE A: 'stable' (Fixed, predictable positions)
+      if (mode === 'stable') {
+        const isHostA = Boolean(activeRoomHostUid && a.uid === activeRoomHostUid);
+        const isHostB = Boolean(activeRoomHostUid && b.uid === activeRoomHostUid);
+        if (isHostA && !isHostB) return -1;
+        if (!isHostA && isHostB) return 1;
+
+        const isSelfA = currentUser && a.uid === currentUser.uid;
+        const isSelfB = currentUser && b.uid === currentUser.uid;
+        if (isSelfA && !isSelfB) return -1;
+        if (!isSelfA && isSelfB) return 1;
+
+        return (a.username || '').localeCompare(b.username || '');
+      }
+
+      // MODE B: 'activity' (Most recent activity timestamp)
+      if (mode === 'activity') {
+        if (infoA.tier === 2) {
+          if (infoB.lastActive !== infoA.lastActive) {
+            return infoB.lastActive - infoA.lastActive;
+          }
+        }
         if (infoB.lastActive !== infoA.lastActive) {
           return infoB.lastActive - infoA.lastActive;
         }
+        const isHostA = Boolean(activeRoomHostUid && a.uid === activeRoomHostUid);
+        const isHostB = Boolean(activeRoomHostUid && b.uid === activeRoomHostUid);
+        if (isHostA && !isHostB) return -1;
+        if (!isHostA && isHostB) return 1;
+        const isSelfA = currentUser && a.uid === currentUser.uid;
+        const isSelfB = currentUser && b.uid === currentUser.uid;
+        if (isSelfA && !isSelfB) return -1;
+        if (!isSelfA && isSelfB) return 1;
+        return (a.username || '').localeCompare(b.username || '');
       }
 
-      // 3. Within Tier 3 (Non-Active): prioritize current user, then alphabetical
+      // MODE C: 'length_1s' (Default - Longest text first with 8-character hysteresis buffer + Idle decay)
+      if (infoA.tier === 2 && infoB.tier === 2) {
+        const rawA = (a.currentText || '').trim();
+        const rawB = (b.currentText || '').trim();
+        let lenA = rawA.length;
+        let lenB = rawB.length;
+        if (a.image && !rawA) lenA = 25; // Image has weight of ~25 characters
+        if (b.image && !rawB) lenB = 25;
+
+        const prevA = previousMemberRanks.has(a.uid) ? previousMemberRanks.get(a.uid) : 999;
+        const prevB = previousMemberRanks.has(b.uid) ? previousMemberRanks.get(b.uid) : 999;
+        const HYSTERESIS_BUFFER = 8; // Must have at least 8 more characters to swap places
+
+        if (prevA < prevB) {
+          // A was ahead of B. B must have (lenA + HYSTERESIS_BUFFER) to overtake
+          if (lenB >= lenA + HYSTERESIS_BUFFER) {
+            return 1; // B overtakes A
+          }
+          return -1; // A retains higher spot
+        } else if (prevB < prevA) {
+          // B was ahead of A. A must have (lenB + HYSTERESIS_BUFFER) to overtake
+          if (lenA >= lenB + HYSTERESIS_BUFFER) {
+            return -1; // A overtakes B
+          }
+          return 1; // B retains higher spot
+        } else {
+          // No previous rank: order by length descending
+          if (lenA !== lenB) {
+            return lenB - lenA;
+          }
+        }
+      }
+
+      // Tier 3: Non-Active members (Idle decay: recent active first, then host, self, alphabetical)
+      if (infoB.lastActive !== infoA.lastActive) {
+        return infoB.lastActive - infoA.lastActive;
+      }
+
+      const isHostA = Boolean(activeRoomHostUid && a.uid === activeRoomHostUid);
+      const isHostB = Boolean(activeRoomHostUid && b.uid === activeRoomHostUid);
+      if (isHostA && !isHostB) return -1;
+      if (!isHostA && isHostB) return 1;
+
       const isSelfA = currentUser && a.uid === currentUser.uid;
       const isSelfB = currentUser && b.uid === currentUser.uid;
       if (isSelfA && !isSelfB) return -1;
       if (!isSelfA && isSelfB) return 1;
-
-      if (infoB.lastActive !== infoA.lastActive) {
-        return infoB.lastActive - infoA.lastActive;
-      }
 
       return (a.username || '').localeCompare(b.username || '');
     });
   }
 
   function reorderLiveCards() {
-    if (!liveCardsGrid) return;
+    if (!liveCardsGrid || !activeRoomCode) return;
     const members = Array.from(roomMembers.values());
+    if (members.length === 0) return;
+
+    // FLIP Animation: Measure initial positions (First)
+    const firstRects = new Map();
+    members.forEach((m) => {
+      const el = document.getElementById(`live-card-${m.uid}`);
+      if (el) {
+        firstRects.set(m.uid, el.getBoundingClientRect());
+      }
+    });
+
     const sorted = sortRoomMembers(members);
 
     sorted.forEach((member, index) => {
+      // Record rank for hysteresis comparison
+      previousMemberRanks.set(member.uid, index);
+
       const cardEl = document.getElementById(`live-card-${member.uid}`);
       if (!cardEl) return;
 
@@ -3809,6 +4324,28 @@
         }
       }
     });
+
+    // FLIP Animation: Invert & Play (Smooth sliding cards!)
+    requestAnimationFrame(() => {
+      sorted.forEach((member) => {
+        const el = document.getElementById(`live-card-${member.uid}`);
+        if (!el) return;
+        const first = firstRects.get(member.uid);
+        if (!first) return;
+        const last = el.getBoundingClientRect();
+        const deltaX = first.left - last.left;
+        const deltaY = first.top - last.top;
+
+        if (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1) {
+          el.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+          el.style.transition = 'transform 0s';
+          requestAnimationFrame(() => {
+            el.style.transition = 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)';
+            el.style.transform = '';
+          });
+        }
+      });
+    });
   }
 
   function renderAllLiveCards() {
@@ -3821,6 +4358,7 @@
 
     sortedMembers.forEach((member, index) => {
       const isSelf = currentUser && member.uid === currentUser.uid;
+      const isHost = Boolean(activeRoomHostUid && member.uid === activeRoomHostUid);
       const isAlreadyFriend = friendsMap.has(member.uid);
       const isPendingSent = sentFriendRequests.has(member.uid);
       const hasIncomingReq = incomingFriendRequests.has(member.uid);
@@ -3889,6 +4427,7 @@
             <div class="live-card-meta">
               <div class="live-card-username">
                 <span class="name-text"></span>
+                ${isHost ? '<span class="host-badge-pill" title="หัวห้อง">👑 หัวห้อง</span>' : ''}
                 ${isSelf ? '<span class="self-tag">คุณ</span>' : ''}
               </div>
               <div class="live-card-uid mono">${safeMemberUid}</div>
@@ -3946,6 +4485,7 @@
       liveCardsGrid.appendChild(card);
       updateSingleCardContent(member.uid, member.currentText, member.image);
     });
+    updateRoomHostUi();
   }
 
   function updateSingleCardContent(uid, text, image) {
@@ -4347,7 +4887,7 @@
     const isGif = secCheck.detectedType === 'image/gif';
     const TWO_MB_BYTES = 2 * 1024 * 1024; // 2MB threshold
 
-    // 2. If GIF is <= 2MB: verify dimensions against Decompression Bomb, then send
+    // 2. If GIF is <= 2MB: verify dimensions against Decompression Bomb, strip trailing bytes, then send
     if (isGif && file.size <= TWO_MB_BYTES) {
       const objUrl = URL.createObjectURL(file);
       const img = new Image();
@@ -4358,14 +4898,18 @@
           inputLiveImage.value = '';
           return;
         }
+        // If validImageSize was determined and is smaller than file.size, slice to exact trailer byte 0x3B
+        const safeFile = (secCheck.validImageSize && secCheck.validImageSize < file.size)
+          ? file.slice(0, secCheck.validImageSize, 'image/gif')
+          : file;
         const reader = new FileReader();
         reader.onload = (ev) => {
           setAndBroadcastLiveMedia(
             ev.target.result,
-            '👾 ส่งไฟล์ GIF ความชัดต้นฉบับ 100% (ผ่านการตรวจความปลอดภัย) แล้ว! (กด Enter เพื่อล้าง)'
+            '👾 ส่งไฟล์ GIF ความชัดต้นฉบับ 100% (ผ่านการตรวจความปลอดภัยและตัดข้อมูลส่วนเกินแล้ว) แล้ว! (กด Enter เพื่อล้าง)'
           );
         };
-        reader.readAsDataURL(file);
+        reader.readAsDataURL(safeFile);
       };
       img.onerror = () => {
         URL.revokeObjectURL(objUrl);
@@ -4835,7 +5379,7 @@
         myMem.lastActiveAt = 0;
       }
       updateSingleCardContent(currentUser.uid, currentText, myMem.image);
-      reorderLiveCards();
+      // Note: reorderLiveCards() is decoupled from keystrokes and handled smoothly on 1s interval!
     }
 
     publishJson(topicRoom(activeRoomCode), {
@@ -6035,24 +6579,34 @@
     }
 
     try {
-      localScreenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          cursor: 'always',
-          displaySurface: 'monitor',
-          frameRate: { ideal: 60, min: 30, max: 60 },
-          width: { ideal: 1920, max: 3840 },
-          height: { ideal: 1080, max: 2160 }
-        },
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 2
-        },
-        systemAudio: 'include',
-        surfaceSwitching: 'include',
-        selfBrowserSurface: 'exclude'
-      });
+      try {
+        localScreenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            cursor: 'always',
+            frameRate: { ideal: 60, max: 60 },
+            width: { ideal: 1920, max: 3840 },
+            height: { ideal: 1080, max: 2160 }
+          },
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 2
+          },
+          systemAudio: 'include',
+          surfaceSwitching: 'include',
+          selfBrowserSurface: 'exclude'
+        });
+      } catch (optErr) {
+        // Fallback for browsers rejecting modern options or strict constraints
+        localScreenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            cursor: 'always',
+            frameRate: 60
+          },
+          audio: true
+        });
+      }
     } catch (err) {
       if (err.name !== 'NotAllowedError') {
         showToast('ไม่สามารถเริ่มแชร์หน้าจอได้: ' + (err.message || 'เกิดข้อผิดพลาด'));

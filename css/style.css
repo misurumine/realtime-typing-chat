@@ -1243,6 +1243,69 @@ body.has-custom-bg .app-custom-bg {
   border-radius: 999px;
 }
 
+.room-sort-select-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  transition: all 0.2s ease;
+}
+
+.room-sort-select-wrap:hover {
+  border-color: rgba(234, 179, 8, 0.45);
+}
+
+.room-sort-select-wrap.is-host {
+  border-color: rgba(234, 179, 8, 0.55);
+  background: linear-gradient(135deg, rgba(234, 179, 8, 0.12), var(--surface-subtle));
+  box-shadow: 0 0 10px rgba(234, 179, 8, 0.15);
+}
+
+.room-sort-icon {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.select-room-sort-mode {
+  background: transparent;
+  color: var(--text-main);
+  border: none;
+  outline: none;
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 2px 0;
+  font-family: inherit;
+}
+
+.select-room-sort-mode:disabled {
+  opacity: 0.85;
+  cursor: default;
+}
+
+.select-room-sort-mode option {
+  background: #181b22;
+  color: #f1f5f9;
+}
+
+.host-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: linear-gradient(135deg, rgba(234, 179, 8, 0.25), rgba(202, 138, 4, 0.15));
+  border: 1px solid rgba(234, 179, 8, 0.5);
+  color: #fde047;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  text-shadow: 0 0 8px rgba(234, 179, 8, 0.35);
+  line-height: 1.4;
+}
+
 /* ========================================================
    Floating, Draggable, Resizable Live Stream Window (PiP)
    Top-level overlay over all UI layers (z-index: 10000)

@@ -330,6 +330,15 @@
               </div>
 
               <div class="room-header-right">
+                <!-- Host Sorting Mode Selector -->
+                <div class="room-sort-select-wrap" id="roomSortWrap" title="รูปแบบการจัดลำดับสมาชิกในห้อง (หัวห้องเป็นผู้กำหนด)">
+                  <span class="room-sort-icon" id="roomSortIcon">👑</span>
+                  <select id="selectRoomSortMode" class="select-room-sort-mode" aria-label="รูปแบบการจัดลำดับสมาชิกในห้อง">
+                    <option value="length_1s">📏 เรียงตามความยาว (1 วิ)</option>
+                    <option value="stable">📌 ตำแหน่งคงที่ (ไม่แย่งที่)</option>
+                    <option value="activity">⚡ ตามกิจกรรมล่าสุด</option>
+                  </select>
+                </div>
                 <button id="btnToggleRoomLayout" type="button" class="btn btn-secondary btn-sm" title="สลับมุมมอง (2 คอลัมน์ / 1 คอลัมน์)">
                   <span id="roomLayoutIcon">⊞</span>
                   <span id="roomLayoutLabel">2 คอลัมน์</span>
