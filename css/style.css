@@ -3767,6 +3767,20 @@ kbd {
   font-size: 0.88rem;
   font-weight: 600;
   color: var(--text-main);
+  flex-wrap: wrap;
+}
+
+.ai-filter-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  border-radius: 999px;
+  background: rgba(168, 85, 247, 0.2);
+  border: 1px solid rgba(168, 85, 247, 0.5);
+  color: #d8b4fe;
+  letter-spacing: 0.5px;
 }
 
 .safety-icon {
@@ -3965,6 +3979,60 @@ kbd {
     max-width: 150px;
   }
   .censored-artwork-wrap {
+    height: 120px;
+  }
+}
+
+/* ==========================================================================
+   Camera Loading Placeholder (White background placeholder while AI verifies)
+   ========================================================================== */
+
+.camera-loading-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-width: 280px;
+  height: 175px;
+  background: #ffffff;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  position: relative;
+  cursor: wait;
+  user-select: none;
+  animation: fadeInCamera 0.2s ease-out;
+}
+
+@keyframes fadeInCamera {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.camera-loading-placeholder .camera-loading-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.camera-loading-placeholder .camera-icon-group {
+  animation: cameraPulseBob 1.8s infinite ease-in-out;
+  transform-origin: 160px 86px;
+}
+
+@keyframes cameraPulseBob {
+  0%, 100% {
+    transform: translate(160px, 86px) scale(1);
+  }
+  50% {
+    transform: translate(160px, 86px) scale(1.05);
+  }
+}
+
+@media (max-width: 580px) {
+  .camera-loading-placeholder {
+    max-width: 150px;
     height: 120px;
   }
 }

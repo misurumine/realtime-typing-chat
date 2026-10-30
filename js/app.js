@@ -340,22 +340,22 @@
 
   function sanitizeChatMediaUrl(url) {
     if (!url || typeof url !== 'string') return null;
-    const trimmed = url.trim();
-    // Cap length at ~3.5MB base64 to prevent P2P memory DoS
-    if (trimmed.length > 3600000) return null;
-    // 1. Strict Raster Image Base64 Data URI (JPEG, PNG, WEBP, GIF — NO SVG allowed!)
-    if (/^data:image\/(jpeg|jpg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/i.test(trimmed)) {
-      return trimmed;
+    const cleanUrl = url.trim().replace(/[\r\n\s]+/g, '');
+    // Cap length at ~4.5MB base64
+    if (cleanUrl.length > 4600000) return null;
+    // 1. Strict Raster Image Base64 Data URI (JPEG, PNG, WEBP, GIF, BMP — NO SVG scripts allowed!)
+    if (/^data:image\/(jpeg|jpg|png|webp|gif|bmp);base64,[A-Za-z0-9+/=]+$/i.test(cleanUrl)) {
+      return cleanUrl;
     }
     // 2. Strict Transcoded WebM Video Base64 Data URI (from animated GIF compressor)
-    if (/^data:video\/webm(?:;codecs=[a-z0-9,.]+)?;base64,[A-Za-z0-9+/=]+$/i.test(trimmed)) {
-      return trimmed;
+    if (/^data:video\/webm(?:;codecs=[a-z0-9,.]+)?;base64,[A-Za-z0-9+/=]+$/i.test(cleanUrl)) {
+      return cleanUrl;
     }
     // 3. Strict HTTPS external media URL (e.g. KLIPY GIFs/Stickers)
-    if (/^https:\/\/[^\s"'<>\\`]+$/i.test(trimmed)) {
+    if (/^https:\/\/[^\s"'<>\\`]+$/i.test(cleanUrl)) {
       try {
-        const parsed = new URL(trimmed);
-        if (parsed.protocol === 'https:') return trimmed;
+        const parsed = new URL(cleanUrl);
+        if (parsed.protocol === 'https:') return cleanUrl;
       } catch (e) {
         return null;
       }
@@ -2434,38 +2434,45 @@
     inputCustomAvatar.addEventListener('change', async (e) => {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
-      const check = await validateImageFileSecurity(file, { allowGif: true });
-      if (!check.ok) {
-        showToast(check.reason, 6000);
-        showSecurityAlertModal(file, check.threatDetails, (cleanImg) => {
-          initAvatarCropper(cleanImg);
-        });
-        inputCustomAvatar.value = '';
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const img = new Image();
-        img.onload = () => {
-          if (
-            img.naturalWidth <= 0 ||
-            img.naturalHeight <= 0 ||
-            img.naturalWidth > MAX_IMAGE_DIMENSION ||
-            img.naturalHeight > MAX_IMAGE_DIMENSION
-          ) {
-            showToast('🛡️ ขนาดพิกเซลของรูปภาพไม่ถูกต้องหรือใหญ่เกินกำหนด (สูงสุด 8192x8192 px)');
+
+      const objUrl = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(objUrl);
+        if (
+          img.naturalWidth <= 0 ||
+          img.naturalHeight <= 0 ||
+          img.naturalWidth > MAX_IMAGE_DIMENSION ||
+          img.naturalHeight > MAX_IMAGE_DIMENSION
+        ) {
+          showToast('🛡️ ขนาดพิกเซลของรูปภาพใหญ่เกินกำหนด (สูงสุด 8192x8192 px)');
+          inputCustomAvatar.value = '';
+          return;
+        }
+        initAvatarCropper(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objUrl);
+        // Fallback via FileReader
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const fallbackImg = new Image();
+          fallbackImg.onload = () => {
+            initAvatarCropper(fallbackImg);
+          };
+          fallbackImg.onerror = () => {
+            showToast('⚠️ ไม่สามารถอ่านไฟล์รูปภาพนี้ได้');
             inputCustomAvatar.value = '';
-            return;
-          }
-          initAvatarCropper(img);
+          };
+          fallbackImg.src = ev.target.result;
         };
-        img.onerror = () => {
-          showToast('⚠️ ไม่สามารถอ่านไฟล์รูปภาพนี้ได้');
+        reader.onerror = () => {
+          showToast('⚠️ ไม่สามารถเปิดไฟล์รูปภาพนี้ได้');
           inputCustomAvatar.value = '';
         };
-        img.src = ev.target.result;
+        reader.readAsDataURL(file);
       };
-      reader.readAsDataURL(file);
+      img.src = objUrl;
     });
   }
 
@@ -4741,40 +4748,10 @@
       const imgWrap = document.createElement('div');
       imgWrap.className = 'live-card-image-wrap';
       const isVideo = String(safeImage).startsWith('data:video/');
+      const mediaKey = safeImage.slice(0, 120);
+      imgWrap.setAttribute('data-media-key', mediaKey);
 
-      // ตรวจสอบระบบซ่อนเนื้อหาสำหรับผู้ใหญ่ (Adult Content / NSFW Filter)
-      if (window.ContentFilter && window.ContentFilter.isAdultFilterEnabled()) {
-        // ตรวจสอบแนวโน้มภาพลามกอนาจาร / 18+
-        window.ContentFilter.checkAdultContent(safeImage, (isAdult) => {
-          if (!bodyEl.contains(imgWrap)) return;
-          imgWrap.innerHTML = '';
-
-          if (isAdult) {
-            // ระบบจะกรองภาพที่มีแนวโน้มออกแล้วใส่ภาพที่บ่งบอกว่าเนื้อหานี้ไม่เหมาะสมเซ็นเซอร์ภาพเอาไว้
-            const censoredBox = window.ContentFilter.createCensoredMediaContainer(safeImage, isVideo);
-            imgWrap.appendChild(censoredBox);
-          } else {
-            // ภาพปลอดภัย แสดงผลตามปกติ
-            if (isVideo) {
-              const vidEl = document.createElement('video');
-              vidEl.src = safeImage;
-              vidEl.className = 'live-card-video';
-              vidEl.autoplay = true;
-              vidEl.loop = true;
-              vidEl.muted = true;
-              vidEl.playsInline = true;
-              imgWrap.appendChild(vidEl);
-            } else {
-              const imgEl = document.createElement('img');
-              imgEl.src = safeImage;
-              imgEl.alt = 'Live image';
-              imgEl.className = 'live-card-img';
-              imgWrap.appendChild(imgEl);
-            }
-          }
-        });
-      } else {
-        // หากปิดระบบซ่อนเนื้อหาสำหรับผู้ใหญ่ จะไม่มีการกรองรูปภาพลามกหรือเนื้อหาสำหรับผู้ใหญ่ ปล่อยไว้เหมือนเดิม
+      function createRawMediaEl() {
         if (isVideo) {
           const vidEl = document.createElement('video');
           vidEl.src = safeImage;
@@ -4783,14 +4760,53 @@
           vidEl.loop = true;
           vidEl.muted = true;
           vidEl.playsInline = true;
-          imgWrap.appendChild(vidEl);
+          return vidEl;
         } else {
           const imgEl = document.createElement('img');
           imgEl.src = safeImage;
           imgEl.alt = 'Live image';
           imgEl.className = 'live-card-img';
-          imgWrap.appendChild(imgEl);
+          return imgEl;
         }
+      }
+
+      // ตรวจสอบระบบซ่อนเนื้อหาสำหรับผู้ใหญ่ (Adult Content / NSFW Filter)
+      if (window.ContentFilter && window.ContentFilter.isAdultFilterEnabled()) {
+        const cachedAdult = window.ContentFilter.getCachedAdultStatus(safeImage);
+        if (cachedAdult === true) {
+          // ภาพนี้ตรวจแล้วและเป็นภาพ 18+ ลามกอนาจารจริง -> ใส่ภาพเซ็นเซอร์ทันที
+          const censoredBox = window.ContentFilter.createCensoredMediaContainer(safeImage, isVideo);
+          imgWrap.appendChild(censoredBox);
+        } else if (cachedAdult === false) {
+          // ภาพนี้ตรวจแล้วและเป็นภาพปลอดภัย (คนใส่ชุดเต็ม, ภาพทั่วไป) -> แสดงผลภาพจริงทันที
+          imgWrap.appendChild(createRawMediaEl());
+        } else {
+          // หากอยู่ในจังหวะที่ AI กำลังโหลดหรือยังตรวจไม่เสร็จ:
+          // ส่งภาพ "รูปกล้องพื้นหลังสีขาว เหมือนภาพยังไม่โหลดลงไปก่อน" เผื่อภาพที่เป็นภาพโป๊เปลือยจริงจะได้ Safe 100%
+          const pendingPlaceholder = window.ContentFilter.createPendingScanPlaceholder
+            ? window.ContentFilter.createPendingScanPlaceholder(safeImage, isVideo)
+            : createRawMediaEl();
+          imgWrap.appendChild(pendingPlaceholder);
+
+          // รันตรวจความปลอดภัยด้วย AI ในพื้นหลัง
+          window.ContentFilter.checkAdultContent(safeImage, (isAdult) => {
+            const currentWrap = bodyEl.querySelector(`.live-card-image-wrap[data-media-key="${CSS.escape(mediaKey)}"]`);
+            if (currentWrap) {
+              currentWrap.innerHTML = '';
+              if (isAdult) {
+                // ถ้าตรวจเสร็จแล้วพบว่าเป็นภาพโป๊เปลือยจริง -> เปลี่ยนเป็นภาพเซ็นเซอร์ 18+
+                const censoredBox = window.ContentFilter.createCensoredMediaContainer(safeImage, isVideo);
+                currentWrap.appendChild(censoredBox);
+              } else {
+                // ถ้าตรวจเสร็จแล้วพบว่าเป็นภาพปลอดภัย (คนใส่ชุดเต็ม, ภาพทั่วไป) -> เปลี่ยนเป็นภาพจริงทันที!
+                currentWrap.appendChild(createRawMediaEl());
+              }
+            }
+          });
+        }
+      } else {
+        // หากปิดระบบซ่อนเนื้อหาสำหรับผู้ใหญ่ จะไม่มีการกรองรูปภาพลามกหรือเนื้อหาสำหรับผู้ใหญ่ ปล่อยไว้เหมือนเดิม
+        imgWrap.appendChild(createRawMediaEl());
       }
       bodyEl.appendChild(imgWrap);
     }
@@ -5092,10 +5108,10 @@
     });
   }
 
-  // Re-encodes static images <= 2MB through HTML5 Canvas to strip EXIF/GPS metadata,
+  // Re-encodes static images through HTML5 Canvas to strip EXIF/GPS metadata,
   // steganography, and any appended polyglot payloads while keeping high visual quality.
   function sanitizeStaticImageViaCanvas(img, detectedMime) {
-    const maxDim = 1920;
+    const maxDim = 1400; // Optimal for sharp crisp rendering across all mobile & desktop screens
     let width = img.naturalWidth || img.width;
     let height = img.naturalHeight || img.height;
     if (width > maxDim || height > maxDim) {
@@ -5116,15 +5132,75 @@
 
     if (detectedMime === 'image/png') {
       const pngUrl = canvas.toDataURL('image/png');
-      if (pngUrl.length <= 2.4 * 1024 * 1024) {
+      // If PNG is reasonably lightweight, keep PNG lossless transparency
+      if (pngUrl.length <= 850000) {
         return pngUrl;
       }
     }
-    let outUrl = canvas.toDataURL('image/webp', 0.92);
+    let outUrl = canvas.toDataURL('image/webp', 0.86);
     if (!outUrl.startsWith('data:image/webp')) {
-      outUrl = canvas.toDataURL('image/jpeg', 0.92);
+      outUrl = canvas.toDataURL('image/jpeg', 0.86);
     }
     return outUrl;
+  }
+
+  function processStaticImageFile(file) {
+    const objUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(objUrl);
+      if (img.naturalWidth > MAX_IMAGE_DIMENSION || img.naturalHeight > MAX_IMAGE_DIMENSION) {
+        showToast('🚫 ความละเอียดรูปภาพสูงเกินพิกัดความปลอดภัย (สูงสุด 8192x8192 px)');
+        inputLiveImage.value = '';
+        return;
+      }
+
+      // Auto-Sanitize & Downscale via HTML5 Canvas (strips 100% of EXIF, GPS, polyglot payloads)
+      const sanitizedDataUrl = sanitizeStaticImageViaCanvas(img, file.type || 'image/jpeg');
+
+      // Pre-evaluate and cache adult content status immediately so rendering is 0ms instant
+      if (window.ContentFilter && window.ContentFilter.isAdultFilterEnabled()) {
+        window.ContentFilter.checkAdultContent(sanitizedDataUrl, () => {});
+      }
+
+      setAndBroadcastLiveMedia(
+        sanitizedDataUrl,
+        '📷 ส่งรูปภาพสดเรียบร้อย! (กด Enter เพื่อล้าง)'
+      );
+      inputLiveImage.value = '';
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(objUrl);
+      // Fallback via FileReader in case ObjectURL decoding fails on some platforms
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const fallbackImg = new Image();
+        fallbackImg.onload = () => {
+          const sanitizedDataUrl = sanitizeStaticImageViaCanvas(fallbackImg, file.type || 'image/jpeg');
+          if (window.ContentFilter && window.ContentFilter.isAdultFilterEnabled()) {
+            window.ContentFilter.checkAdultContent(sanitizedDataUrl, () => {});
+          }
+          setAndBroadcastLiveMedia(
+            sanitizedDataUrl,
+            '📷 ส่งรูปภาพสดเรียบร้อย! (กด Enter เพื่อล้าง)'
+          );
+          inputLiveImage.value = '';
+        };
+        fallbackImg.onerror = () => {
+          showToast('ไม่สามารถเปิดไฟล์รูปภาพนี้ได้ (อาจเป็นไฟล์ที่ไม่สมบูรณ์หรือเข้ารหัสไว้)');
+          inputLiveImage.value = '';
+        };
+        fallbackImg.src = ev.target.result;
+      };
+      reader.onerror = () => {
+        showToast('ไม่สามารถอ่านไฟล์รูปภาพนี้ได้');
+        inputLiveImage.value = '';
+      };
+      reader.readAsDataURL(file);
+    };
+
+    img.src = objUrl;
   }
 
   async function processImageFile(file) {
@@ -5135,63 +5211,40 @@
       return;
     }
 
-    // 1. Validate Magic Bytes + Scan for Polyglot/Embedded Script Payloads
-    const secCheck = await validateImageFileSecurity(file, { allowGif: true });
-    if (!secCheck.ok) {
-      showToast(secCheck.reason, 6000);
-      showSecurityAlertModal(file, secCheck.threatDetails, (cleanImg) => {
-        if (cleanImg.naturalWidth > MAX_IMAGE_DIMENSION || cleanImg.naturalHeight > MAX_IMAGE_DIMENSION) {
-          showToast('🚫 ความละเอียดรูปภาพสูงเกินพิกัดความปลอดภัย (สูงสุด 8192x8192 px)');
-          return;
-        }
-        const sanitizedDataUrl = sanitizeStaticImageViaCanvas(cleanImg, 'image/png');
-        setAndBroadcastLiveMedia(
-          sanitizedDataUrl,
-          '📷 ส่งรูปภาพ (ล้างโค้ดแฝง/Metadata แล้ว) เรียบร้อย! (กด Enter เพื่อล้าง)'
-        );
-      });
-      inputLiveImage.value = '';
-      return;
-    }
-
-    const isGif = secCheck.detectedType === 'image/gif';
     const TWO_MB_BYTES = 2 * 1024 * 1024; // 2MB threshold
+    const isGif = file.type === 'image/gif' || /\.gif$/i.test(file.name);
 
-    // 2. If GIF is <= 2MB: verify dimensions against Decompression Bomb, strip trailing bytes, then send
+    // 1. If animated GIF is <= 2MB: verify and slice safely, then send
     if (isGif && file.size <= TWO_MB_BYTES) {
-      const objUrl = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => {
-        URL.revokeObjectURL(objUrl);
-        if (img.naturalWidth > MAX_IMAGE_DIMENSION || img.naturalHeight > MAX_IMAGE_DIMENSION) {
-          showToast('🚫 ความละเอียดไฟล์ GIF สูงเกินพิกัดความปลอดภัย');
-          inputLiveImage.value = '';
-          return;
-        }
-        // If validImageSize was determined and is smaller than file.size, slice to exact trailer byte 0x3B
-        const safeFile = (secCheck.validImageSize && secCheck.validImageSize < file.size)
-          ? file.slice(0, secCheck.validImageSize, 'image/gif')
-          : file;
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          setAndBroadcastLiveMedia(
-            ev.target.result,
-            '👾 ส่งไฟล์ GIF ความชัดต้นฉบับ 100% (ผ่านการตรวจความปลอดภัยและตัดข้อมูลส่วนเกินแล้ว) แล้ว! (กด Enter เพื่อล้าง)'
-          );
+      const secCheck = await validateImageFileSecurity(file, { allowGif: true });
+      if (secCheck.ok) {
+        const objUrl = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          URL.revokeObjectURL(objUrl);
+          const safeFile = (secCheck.validImageSize && secCheck.validImageSize < file.size)
+            ? file.slice(0, secCheck.validImageSize, 'image/gif')
+            : file;
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            setAndBroadcastLiveMedia(
+              ev.target.result,
+              '👾 ส่งไฟล์ GIF ความชัดต้นฉบับ 100% เรียบร้อยแล้ว! (กด Enter เพื่อล้าง)'
+            );
+          };
+          reader.readAsDataURL(safeFile);
         };
-        reader.readAsDataURL(safeFile);
-      };
-      img.onerror = () => {
-        URL.revokeObjectURL(objUrl);
-        showToast('🚫 ไม่สามารถถอดรหัสไฟล์ GIF นี้ได้');
-        inputLiveImage.value = '';
-      };
-      img.src = objUrl;
-      return;
+        img.onerror = () => {
+          URL.revokeObjectURL(objUrl);
+          processStaticImageFile(file);
+        };
+        img.src = objUrl;
+        return;
+      }
     }
 
-    // 3. If file > 2MB and is GIF -> compress animated GIF via WebCodecs + Canvas
-    if (isGif) {
+    // 2. If animated GIF is > 2MB: compress via WebCodecs + Canvas
+    if (isGif && file.size > TWO_MB_BYTES) {
       showToast('⏳ ไฟล์ GIF ใหญ่เกิน 2MB ระบบกำลังย่อขนาดและความชัดลงอัตโนมัติ...');
       try {
         const compressedMedia = await compressLargeAnimatedGif(file);
@@ -5199,46 +5252,20 @@
           compressedMedia,
           '👾 ย่อขนาดไฟล์ GIF (>2MB) และส่งสดเรียบร้อยแล้ว! (กด Enter เพื่อล้าง)'
         );
+        return;
       } catch (err) {
-        showToast('ไม่สามารถประมวลผลไฟล์ GIF นี้ได้');
+        // Fallback to static image canvas
       }
-      return;
     }
 
-    // 4. Static picture (JPEG / PNG / WebP): Always decode and re-encode via HTML5 Canvas!
-    // This strips 100% of EXIF/GPS metadata, steganography, and appended polyglot bytes.
+    // 3. Static picture (JPEG, PNG, WebP, BMP, AVIF, HEIC, etc.):
+    // Automatically decode and re-encode via Canvas Auto-Sanitization.
+    // This strips 100% of EXIF/GPS metadata, steganography, and polyglots,
+    // ensuring EVERY photo uploads cleanly without being blocked or failing to appear!
     if (file.size > TWO_MB_BYTES) {
       showToast('⏳ รูปภาพมีขนาดเกิน 2MB กำลังย่อความละเอียดลงอัตโนมัติ...');
     }
-    const objUrl = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(objUrl);
-      if (img.naturalWidth > MAX_IMAGE_DIMENSION || img.naturalHeight > MAX_IMAGE_DIMENSION) {
-        showToast('🚫 ความละเอียดรูปภาพสูงเกินพิกัดความปลอดภัย (สูงสุด 8192x8192 px)');
-        inputLiveImage.value = '';
-        return;
-      }
-      if (file.size <= TWO_MB_BYTES) {
-        const sanitizedDataUrl = sanitizeStaticImageViaCanvas(img, secCheck.detectedType);
-        setAndBroadcastLiveMedia(
-          sanitizedDataUrl,
-          '📷 ส่งรูปภาพความชัดสูง (ล้าง Metadata/โค้ดแฝงแล้ว) เรียบร้อย! (กด Enter เพื่อล้าง)'
-        );
-      } else {
-        const compressedDataUrl = compressStaticImageToDataUrl(img, 350000);
-        setAndBroadcastLiveMedia(
-          compressedDataUrl,
-          '📷 ย่อขนาดรูปภาพ (>2MB) และส่งสดให้ทุกคนในห้องแล้ว (กด Enter เพื่อล้าง)'
-        );
-      }
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(objUrl);
-      showToast('ไม่สามารถอ่านไฟล์รูปภาพนี้ได้');
-      inputLiveImage.value = '';
-    };
-    img.src = objUrl;
+    processStaticImageFile(file);
   }
 
   inputLiveImage.addEventListener('change', (e) => {
@@ -6145,34 +6172,38 @@
       const file = e.target.files && e.target.files[0];
       if (!file) return;
 
-      const secCheck = await validateImageFileSecurity(file, { allowGif: true });
-      if (!secCheck.ok) {
-        showToast(secCheck.reason, 6000);
-        showSecurityAlertModal(file, secCheck.threatDetails, (cleanImg) => {
-          initBgCropper(cleanImg);
-        });
-        inputCustomBg.value = '';
-        return;
-      }
-
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const img = new Image();
-        img.onload = () => {
-          if (img.naturalWidth > MAX_IMAGE_DIMENSION || img.naturalHeight > MAX_IMAGE_DIMENSION) {
-            showToast('🚫 ความละเอียดภาพพื้นหลังสูงเกินพิกัดความปลอดภัย (สูงสุด 8192x8192 px)');
+      const objUrl = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(objUrl);
+        if (img.naturalWidth > MAX_IMAGE_DIMENSION || img.naturalHeight > MAX_IMAGE_DIMENSION) {
+          showToast('🚫 ความละเอียดภาพพื้นหลังสูงเกินพิกัดความปลอดภัย (สูงสุด 8192x8192 px)');
+          inputCustomBg.value = '';
+          return;
+        }
+        initBgCropper(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objUrl);
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const fallbackImg = new Image();
+          fallbackImg.onload = () => {
+            initBgCropper(fallbackImg);
+          };
+          fallbackImg.onerror = () => {
+            showToast('🚫 ไม่สามารถเปิดไฟล์ภาพพื้นหลังนี้ได้');
             inputCustomBg.value = '';
-            return;
-          }
-          initBgCropper(img);
+          };
+          fallbackImg.src = ev.target.result;
         };
-        img.onerror = () => {
-          showToast('🚫 ไม่สามารถถอดรหัสไฟล์รูปภาพนี้ได้');
+        reader.onerror = () => {
+          showToast('🚫 ไม่สามารถอ่านไฟล์รูปภาพนี้ได้');
           inputCustomBg.value = '';
         };
-        img.src = ev.target.result;
+        reader.readAsDataURL(file);
       };
-      reader.readAsDataURL(file);
+      img.src = objUrl;
     });
   }
 

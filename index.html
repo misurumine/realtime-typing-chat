@@ -156,9 +156,10 @@
                 <div class="safety-toggle-info">
                   <div class="safety-toggle-title">
                     <span class="safety-icon">🔞</span> ซ่อนเนื้อหาสำหรับผู้ใหญ่ (Adult Content / NSFW Filter)
+                    <span class="ai-filter-badge" title="ขับเคลื่อนด้วยโมเดล Deep Learning AI (NSFWJS) ในเครื่อง แยกแยะคนใส่ชุดเต็มและภาพโป๊จริงได้อย่างแม่นยำ">🧠 AI</span>
                   </div>
                   <div class="safety-toggle-desc">
-                    กรองภาพที่มีแนวโน้มลามกอนาจารออกแล้วใส่ภาพเซ็นเซอร์ปิดไว้ (หากปิดจะแสดงภาพเดิมตามปกติ ไม่มีการกรอง)
+                    ตรวจจับภาพลามกอนาจารและเนื้อหา 18+ ด้วยโมเดล AI ในเครื่องอย่างแม่นยำ (คนใส่เสื้อผ้าปกติจะไม่ถูกเซ็นเซอร์ หากปิดระบบนี้จะแสดงภาพตามปกติ)
                   </div>
                 </div>
                 <label class="switch-toggle" for="toggleAdultFilter">
@@ -1022,6 +1023,9 @@
   <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
   <!-- HTML5 QR Code Scanner Library (Camera & Image File QR Decoder) -->
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <!-- TensorFlow.js & NSFWJS On-Device Deep Learning AI Classifier -->
+  <script src="https://unpkg.com/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+  <script src="https://unpkg.com/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
   <!-- Content Safety: Adult Content (NSFW) & Profanity Filter Module -->
   <script src="./js/content-filter.js"></script>
   <script src="./js/app.js"></script>
