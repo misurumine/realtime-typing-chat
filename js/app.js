@@ -71,6 +71,68 @@
   const STORAGE_KEY_FRIENDS = 'livetype_friends_list_v1';
   const STORAGE_KEY_THEME = 'livetype_custom_theme_v1';
   const STORAGE_KEY_FAV_GIFS = 'livetype_favorite_gifs_v1';
+  const STORAGE_KEY_CUSTOM_BG = 'livetype_custom_bg_v1';
+
+  // IndexedDB Helper for Safe Storage of High-Resolution Background Wallpapers (Zero Quota Limits)
+  const ASSET_DB_NAME = 'LiveType_LocalData';
+  const ASSET_DB_STORE = 'app_assets';
+
+  function openAssetDb() {
+    return new Promise((resolve) => {
+      if (!window.indexedDB) return resolve(null);
+      try {
+        const req = indexedDB.open(ASSET_DB_NAME, 1);
+        req.onupgradeneeded = () => {
+          try { req.result.createObjectStore(ASSET_DB_STORE); } catch (e) {}
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  }
+
+  async function saveCustomBgAsset(dataUrl) {
+    try {
+      const db = await openAssetDb();
+      if (db) {
+        const tx = db.transaction(ASSET_DB_STORE, 'readwrite');
+        tx.objectStore(ASSET_DB_STORE).put(dataUrl, 'custom_bg');
+      }
+    } catch (e) {}
+    try {
+      localStorage.setItem(STORAGE_KEY_CUSTOM_BG, dataUrl);
+    } catch (e) {}
+  }
+
+  async function loadCustomBgAsset() {
+    try {
+      const db = await openAssetDb();
+      if (db) {
+        return new Promise((resolve) => {
+          const tx = db.transaction(ASSET_DB_STORE, 'readonly');
+          const req = tx.objectStore(ASSET_DB_STORE).get('custom_bg');
+          req.onsuccess = () => resolve(req.result || localStorage.getItem(STORAGE_KEY_CUSTOM_BG) || null);
+          req.onerror = () => resolve(localStorage.getItem(STORAGE_KEY_CUSTOM_BG) || null);
+        });
+      }
+    } catch (e) {}
+    return localStorage.getItem(STORAGE_KEY_CUSTOM_BG) || null;
+  }
+
+  async function deleteCustomBgAsset() {
+    try {
+      const db = await openAssetDb();
+      if (db) {
+        const tx = db.transaction(ASSET_DB_STORE, 'readwrite');
+        tx.objectStore(ASSET_DB_STORE).delete('custom_bg');
+      }
+    } catch (e) {}
+    try {
+      localStorage.removeItem(STORAGE_KEY_CUSTOM_BG);
+    } catch (e) {}
+  }
 
   // Preset Emotes for Floating Soap-Bubble Effect
   const BUBBLE_EMOTES = [
@@ -82,23 +144,68 @@
     '🎉', '✨', '💯', '⚡', '🌈', '🫧'
   ];
 
-  // Default Theme Palette
+  // Default Theme Palette (Full Website Customizer)
   const DEFAULT_THEME = {
     primary: '#6366f1',
     accent: '#ec4899',
     bg: '#070a12',
     card: '#111827',
+    chatCard: '#0f172a',
+    border: '#334155',
     text: '#f8fafc',
+    mutedText: '#94a3b8',
+    chatText: '#f8fafc',
+    selfChatText: '#f8fafc',
+    chatFontSize: 20,
     radius: 14,
-    brightness: 100
+    opacity: 88,
+    brightness: 100,
+    bgDim: 30,
+    bgBlur: 0,
+    hasCustomBg: false
   };
 
   const PRESET_THEMES = {
-    neon: { primary: '#6366f1', accent: '#ec4899', bg: '#070a12', card: '#111827', text: '#f8fafc', radius: 14, brightness: 100 },
-    minimal: { primary: '#4f46e5', accent: '#e11d48', bg: '#e8edf4', card: '#f8fafc', text: '#1e293b', radius: 14, brightness: 96 },
-    emerald: { primary: '#10b981', accent: '#14b8a6', bg: '#061611', card: '#0f291e', text: '#ecfdf5', radius: 12, brightness: 100 },
-    sunset: { primary: '#f43f5e', accent: '#f59e0b', bg: '#18070b', card: '#2b0e15', text: '#fff1f2', radius: 16, brightness: 100 },
-    amoled: { primary: '#38bdf8', accent: '#a855f7', bg: '#000000', card: '#0a0a0a', text: '#f0f9ff', radius: 8, brightness: 100 }
+    neon: {
+      primary: '#6366f1', accent: '#ec4899', bg: '#070a12', card: '#111827',
+      chatCard: '#0f172a', border: '#334155', text: '#f8fafc', mutedText: '#94a3b8',
+      chatText: '#f8fafc', selfChatText: '#e0e7ff', chatFontSize: 20, radius: 14, opacity: 88, brightness: 100
+    },
+    minimal: {
+      primary: '#4f46e5', accent: '#e11d48', bg: '#e8edf4', card: '#f8fafc',
+      chatCard: '#ffffff', border: '#cbd5e1', text: '#0f172a', mutedText: '#475569',
+      chatText: '#0f172a', selfChatText: '#312e81', chatFontSize: 20, radius: 14, opacity: 94, brightness: 98
+    },
+    emerald: {
+      primary: '#10b981', accent: '#14b8a6', bg: '#04120e', card: '#0b241b',
+      chatCard: '#091e16', border: '#1e4635', text: '#ecfdf5', mutedText: '#86efac',
+      chatText: '#ecfdf5', selfChatText: '#a7f3d0', chatFontSize: 20, radius: 12, opacity: 88, brightness: 100
+    },
+    sunset: {
+      primary: '#f43f5e', accent: '#f59e0b', bg: '#16070b', card: '#280d14',
+      chatCard: '#210a10', border: '#4c1d28', text: '#fff1f2', mutedText: '#fda4af',
+      chatText: '#fff1f2', selfChatText: '#fde68a', chatFontSize: 20, radius: 16, opacity: 88, brightness: 100
+    },
+    amoled: {
+      primary: '#38bdf8', accent: '#a855f7', bg: '#000000', card: '#0a0a0c',
+      chatCard: '#050507', border: '#27272a', text: '#f0f9ff', mutedText: '#71717a',
+      chatText: '#ffffff', selfChatText: '#7dd3fc', chatFontSize: 20, radius: 8, opacity: 96, brightness: 100
+    },
+    ocean: {
+      primary: '#0ea5e9', accent: '#06b6d4', bg: '#04101c', card: '#0a2136',
+      chatCard: '#07192b', border: '#1e3a5f', text: '#f0f9ff', mutedText: '#7dd3fc',
+      chatText: '#e0f2fe', selfChatText: '#67e8f9', chatFontSize: 20, radius: 14, opacity: 88, brightness: 100
+    },
+    sakura: {
+      primary: '#ec4899', accent: '#f472b6', bg: '#180814', card: '#2b1123',
+      chatCard: '#230d1c', border: '#522142', text: '#fdf2f8', mutedText: '#f9a8d4',
+      chatText: '#fce7f3', selfChatText: '#fbcfe8', chatFontSize: 20, radius: 18, opacity: 88, brightness: 100
+    },
+    gold: {
+      primary: '#eab308', accent: '#f97316', bg: '#0f0c05', card: '#1c1709',
+      chatCard: '#161207', border: '#423616', text: '#fefce8', mutedText: '#fde047',
+      chatText: '#fef9c3', selfChatText: '#fde047', chatFontSize: 20, radius: 10, opacity: 90, brightness: 100
+    }
   };
 
   // Topic prefix for public WebSocket relay (Ephemeral QoS 0, retain: false -> zero history stored)
@@ -167,7 +274,7 @@
       }
       return s;
     };
-    return `${part(4)}-${part(4)}`;
+    return `${part(5)}-${part(5)}`;
   }
 
   function generateRoomCode() {
@@ -402,15 +509,58 @@
   const colorPickerAccent = document.getElementById('colorPickerAccent');
   const colorPickerBg = document.getElementById('colorPickerBg');
   const colorPickerCard = document.getElementById('colorPickerCard');
+  const colorPickerChatCard = document.getElementById('colorPickerChatCard');
+  const colorPickerBorder = document.getElementById('colorPickerBorder');
   const colorPickerText = document.getElementById('colorPickerText');
+  const colorPickerMutedText = document.getElementById('colorPickerMutedText');
+  const colorPickerChatText = document.getElementById('colorPickerChatText');
+  const colorPickerSelfChatText = document.getElementById('colorPickerSelfChatText');
+  const rangeChatFontSize = document.getElementById('rangeChatFontSize');
+  const chatFontSizeValText = document.getElementById('chatFontSizeValText');
   const rangeRadius = document.getElementById('rangeRadius');
+  const radiusValText = document.getElementById('radiusValText');
+  const rangeOpacity = document.getElementById('rangeOpacity');
+  const opacityValText = document.getElementById('opacityValText');
   const rangeBrightness = document.getElementById('rangeBrightness');
   const brightnessValText = document.getElementById('brightnessValText');
   const hexPrimary = document.getElementById('hexPrimary');
   const hexAccent = document.getElementById('hexAccent');
   const hexBg = document.getElementById('hexBg');
   const hexCard = document.getElementById('hexCard');
+  const hexChatCard = document.getElementById('hexChatCard');
+  const hexBorder = document.getElementById('hexBorder');
   const hexText = document.getElementById('hexText');
+  const hexMutedText = document.getElementById('hexMutedText');
+  const hexChatText = document.getElementById('hexChatText');
+  const hexSelfChatText = document.getElementById('hexSelfChatText');
+
+  // Custom Background Wallpaper & Cropper Elements
+  const appCustomBg = document.getElementById('appCustomBg');
+  const inputCustomBg = document.getElementById('inputCustomBg');
+  const customBgThumb = document.getElementById('customBgThumb');
+  const customBgThumbText = document.getElementById('customBgThumbText');
+  const btnRemoveCustomBg = document.getElementById('btnRemoveCustomBg');
+  const customBgControls = document.getElementById('customBgControls');
+  const rangeBgDim = document.getElementById('rangeBgDim');
+  const bgDimValText = document.getElementById('bgDimValText');
+  const rangeBgBlur = document.getElementById('rangeBgBlur');
+  const bgBlurValText = document.getElementById('bgBlurValText');
+
+  const bgCropModal = document.getElementById('bgCropModal');
+  const cropCanvasViewport = document.getElementById('cropCanvasViewport');
+  const cropCanvas = document.getElementById('cropCanvas');
+  const cropSizeInfo = document.getElementById('cropSizeInfo');
+  const btnCancelCrop = document.getElementById('btnCancelCrop');
+  const btnApplyCrop = document.getElementById('btnApplyCrop');
+
+  // Avatar Profile Picture Cropper Elements
+  const avatarCropModal = document.getElementById('avatarCropModal');
+  const avatarCropCanvasViewport = document.getElementById('avatarCropCanvasViewport');
+  const avatarCropCanvas = document.getElementById('avatarCropCanvas');
+  const avatarCirclePreviewCanvas = document.getElementById('avatarCirclePreviewCanvas');
+  const avatarCropSizeInfo = document.getElementById('avatarCropSizeInfo');
+  const btnCancelAvatarCrop = document.getElementById('btnCancelAvatarCrop');
+  const btnApplyAvatarCrop = document.getElementById('btnApplyAvatarCrop');
 
   // --- Topic Builders ---
   const topicInbox = (uid) => `${TOPIC_PREFIX}/inbox/${uid}`;
@@ -425,6 +575,12 @@
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       if (parsed && parsed.uid && parsed.username) {
+        // Automatically upgrade legacy 8-character UID to modern 10-character UID format
+        const cleanRawUid = String(parsed.uid).replace(/[^A-Za-z0-9]/g, '');
+        if (cleanRawUid.length < 10) {
+          parsed.uid = generateNewUid();
+          saveUserSession(parsed);
+        }
         return parsed;
       }
     } catch (e) {
@@ -1412,31 +1568,331 @@
     setupAvatarPreview.src = selectedAvatar;
   }
 
-  // Resize uploaded image from user's device into a compact Data URL (110x110) so it transmits fast over P2P/MQTT
-  inputCustomAvatar.addEventListener('change', (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const size = 110;
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext('2d');
-        const minSide = Math.min(img.width, img.height);
-        const sx = (img.width - minSide) / 2;
-        const sy = (img.height - minSide) / 2;
-        ctx.drawImage(img, sx, sy, minSide, minSide, 0, 0, size, size);
-        selectedAvatar = canvas.toDataURL('image/jpeg', 0.78);
-        setupAvatarPreview.src = selectedAvatar;
-        document.querySelectorAll('.preset-avatar-btn').forEach((b) => b.classList.remove('selected'));
+  // =========================================================================
+  // --- Avatar Profile Picture Cropper Engine (Interactive 1:1 Aspect) ---
+  // =========================================================================
+  let avatarCropImg = null;
+  let avatarBox = { x: 0, y: 0, w: 100, h: 100 };
+  let avatarIsDragging = false;
+  let avatarActiveHandle = null;
+  let avatarDragStart = { x: 0, y: 0 };
+  let avatarStartBox = { x: 0, y: 0, w: 0, h: 0 };
+
+  if (inputCustomAvatar) {
+    inputCustomAvatar.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const img = new Image();
+        img.onload = () => {
+          initAvatarCropper(img);
+        };
+        img.src = ev.target.result;
       };
-      img.src = ev.target.result;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function initAvatarCropper(img) {
+    avatarCropImg = img;
+    if (avatarCropModal) avatarCropModal.classList.remove('hidden');
+
+    requestAnimationFrame(() => {
+      const viewport = avatarCropCanvasViewport;
+      const maxW = viewport ? Math.max(220, Math.min(440, (viewport.clientWidth || 400) - 16)) : 400;
+      const maxH = viewport ? Math.max(180, Math.min(300, (viewport.clientHeight || 280) - 16)) : 280;
+
+      const natW = img.naturalWidth || 600;
+      const natH = img.naturalHeight || 600;
+
+      const scale = Math.min(maxW / natW, maxH / natH, 1);
+      const cw = Math.max(140, Math.round(natW * scale));
+      const ch = Math.max(140, Math.round(natH * scale));
+
+      avatarCropCanvas.width = cw;
+      avatarCropCanvas.height = ch;
+      avatarCropCanvas.style.width = `${cw}px`;
+      avatarCropCanvas.style.height = `${ch}px`;
+
+      // 1:1 Square box centered
+      const side = Math.max(40, Math.round(Math.min(cw, ch) * 0.85));
+      avatarBox = {
+        x: Math.round((cw - side) / 2),
+        y: Math.round((ch - side) / 2),
+        w: side,
+        h: side
+      };
+
+      renderAvatarCropper();
+    });
+  }
+
+  function renderAvatarCropper() {
+    if (!avatarCropImg || !avatarCropCanvas) return;
+    const ctx = avatarCropCanvas.getContext('2d');
+    const cw = avatarCropCanvas.width;
+    const ch = avatarCropCanvas.height;
+    const b = avatarBox;
+
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.drawImage(avatarCropImg, 0, 0, cw, ch);
+
+    // Darkened overlay
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.64)';
+    ctx.fillRect(0, 0, cw, ch);
+
+    // Cutout preview
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(b.x, b.y, b.w, b.h);
+    ctx.clip();
+    ctx.drawImage(avatarCropImg, 0, 0, cw, ch);
+
+    // Rule-of-thirds grid
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(b.x + b.w / 3, b.y);
+    ctx.lineTo(b.x + b.w / 3, b.y + b.h);
+    ctx.moveTo(b.x + (2 * b.w) / 3, b.y);
+    ctx.lineTo(b.x + (2 * b.w) / 3, b.y + b.h);
+    ctx.moveTo(b.x, b.y + b.h / 3);
+    ctx.lineTo(b.x + b.w, b.y + b.h / 3);
+    ctx.moveTo(b.x, b.y + (2 * b.h) / 3);
+    ctx.lineTo(b.x + b.w, b.y + (2 * b.h) / 3);
+    ctx.stroke();
+
+    // Circular Avatar Mask Guide Ring
+    ctx.strokeStyle = 'rgba(99, 102, 241, 0.85)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.arc(b.x + b.w / 2, b.y + b.h / 2, b.w / 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // Solid border around box
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
+
+    // 4 Corner Handles
+    const drawDot = (hx, hy) => {
+      ctx.save();
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#6366f1';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(hx, hy, 6.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
     };
-    reader.readAsDataURL(file);
-  });
+
+    drawDot(b.x, b.y);
+    drawDot(b.x + b.w, b.y);
+    drawDot(b.x + b.w, b.y + b.h);
+    drawDot(b.x, b.y + b.h);
+
+    // Update dimensions display
+    if (avatarCropSizeInfo) {
+      const origSide = Math.round(b.w * (avatarCropImg.naturalWidth / cw));
+      avatarCropSizeInfo.textContent = `${origSide} × ${origSide} px (1:1)`;
+    }
+
+    // Render live circular preview on canvas
+    if (avatarCirclePreviewCanvas) {
+      const pctx = avatarCirclePreviewCanvas.getContext('2d');
+      const pw = avatarCirclePreviewCanvas.width;
+      const ph = avatarCirclePreviewCanvas.height;
+      pctx.clearRect(0, 0, pw, ph);
+
+      const scaleX = avatarCropImg.naturalWidth / cw;
+      const scaleY = avatarCropImg.naturalHeight / ch;
+
+      const sx = Math.max(0, Math.round(b.x * scaleX));
+      const sy = Math.max(0, Math.round(b.y * scaleY));
+      const sSide = Math.min(avatarCropImg.naturalWidth - sx, avatarCropImg.naturalHeight - sy, Math.round(b.w * scaleX));
+
+      if (sSide > 0) {
+        pctx.drawImage(avatarCropImg, sx, sy, sSide, sSide, 0, 0, pw, ph);
+      }
+    }
+  }
+
+  function getAvatarCanvasPos(e) {
+    const rect = avatarCropCanvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return {
+      x: (clientX - rect.left) * (avatarCropCanvas.width / rect.width),
+      y: (clientY - rect.top) * (avatarCropCanvas.height / rect.height)
+    };
+  }
+
+  function getAvatarHitHandle(mx, my) {
+    const R = 20;
+    const b = avatarBox;
+    if (Math.hypot(mx - b.x, my - b.y) <= R) return 'nw';
+    if (Math.hypot(mx - (b.x + b.w), my - b.y) <= R) return 'ne';
+    if (Math.hypot(mx - (b.x + b.w), my - (b.y + b.h)) <= R) return 'se';
+    if (Math.hypot(mx - b.x, my - (b.y + b.h)) <= R) return 'sw';
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) return 'move';
+    return null;
+  }
+
+  function onAvatarPointerDown(e) {
+    if (!avatarCropImg || !avatarCropModal || avatarCropModal.classList.contains('hidden')) return;
+    const pos = getAvatarCanvasPos(e);
+    const hit = getAvatarHitHandle(pos.x, pos.y);
+    if (!hit) return;
+    avatarIsDragging = true;
+    avatarActiveHandle = hit;
+    avatarDragStart = { x: pos.x, y: pos.y };
+    avatarStartBox = { ...avatarBox };
+    if (e.cancelable && e.type.startsWith('touch')) {
+      e.preventDefault();
+    }
+  }
+
+  function onAvatarPointerMove(e) {
+    if (!avatarCropImg || !avatarCropModal || avatarCropModal.classList.contains('hidden')) return;
+    const pos = getAvatarCanvasPos(e);
+
+    if (!avatarIsDragging) {
+      const hit = getAvatarHitHandle(pos.x, pos.y);
+      if (hit === 'nw' || hit === 'se') avatarCropCanvas.style.cursor = 'nwse-resize';
+      else if (hit === 'ne' || hit === 'sw') avatarCropCanvas.style.cursor = 'nesw-resize';
+      else if (hit === 'move') avatarCropCanvas.style.cursor = 'move';
+      else avatarCropCanvas.style.cursor = 'crosshair';
+      return;
+    }
+
+    if (e.cancelable && e.type.startsWith('touch')) {
+      e.preventDefault();
+    }
+
+    const dx = pos.x - avatarDragStart.x;
+    const dy = pos.y - avatarDragStart.y;
+    const cw = avatarCropCanvas.width;
+    const ch = avatarCropCanvas.height;
+    const sb = avatarStartBox;
+    const minS = 40;
+
+    if (avatarActiveHandle === 'move') {
+      const nx = Math.max(0, Math.min(cw - sb.w, sb.x + dx));
+      const ny = Math.max(0, Math.min(ch - sb.h, sb.y + dy));
+      avatarBox.x = nx;
+      avatarBox.y = ny;
+    } else {
+      let nx = sb.x;
+      let ny = sb.y;
+      let side = sb.w;
+
+      if (avatarActiveHandle === 'se') {
+        const delta = Math.max(dx, dy);
+        side = Math.max(minS, Math.min(cw - sb.x, ch - sb.y, sb.w + delta));
+      } else if (avatarActiveHandle === 'sw') {
+        const delta = Math.max(-dx, dy);
+        side = Math.max(minS, Math.min(sb.x + sb.w, ch - sb.y, sb.w + delta));
+        nx = sb.x + (sb.w - side);
+      } else if (avatarActiveHandle === 'ne') {
+        const delta = Math.max(dx, -dy);
+        side = Math.max(minS, Math.min(cw - sb.x, sb.y + sb.h, sb.w + delta));
+        ny = sb.y + (sb.h - side);
+      } else if (avatarActiveHandle === 'nw') {
+        const delta = Math.max(-dx, -dy);
+        side = Math.max(minS, Math.min(sb.x + sb.w, sb.y + sb.h, sb.w + delta));
+        nx = sb.x + (sb.w - side);
+        ny = sb.y + (sb.h - side);
+      }
+
+      avatarBox = {
+        x: Math.round(nx),
+        y: Math.round(ny),
+        w: Math.round(side),
+        h: Math.round(side)
+      };
+    }
+
+    renderAvatarCropper();
+  }
+
+  function onAvatarPointerUp() {
+    avatarIsDragging = false;
+    avatarActiveHandle = null;
+  }
+
+  if (avatarCropCanvas) {
+    avatarCropCanvas.addEventListener('mousedown', onAvatarPointerDown);
+    window.addEventListener('mousemove', onAvatarPointerMove);
+    window.addEventListener('mouseup', onAvatarPointerUp);
+
+    avatarCropCanvas.addEventListener('touchstart', onAvatarPointerDown, { passive: false });
+    window.addEventListener('touchmove', onAvatarPointerMove, { passive: false });
+    window.addEventListener('touchend', onAvatarPointerUp);
+    window.addEventListener('touchcancel', onAvatarPointerUp);
+  }
+
+  if (btnCancelAvatarCrop) {
+    btnCancelAvatarCrop.addEventListener('click', () => {
+      if (avatarCropModal) avatarCropModal.classList.add('hidden');
+      if (inputCustomAvatar) inputCustomAvatar.value = '';
+    });
+  }
+
+  if (btnApplyAvatarCrop) {
+    btnApplyAvatarCrop.addEventListener('click', () => {
+      if (!avatarCropImg || !avatarCropCanvas) return;
+      const cw = avatarCropCanvas.width;
+      const ch = avatarCropCanvas.height;
+      const scaleX = avatarCropImg.naturalWidth / cw;
+      const scaleY = avatarCropImg.naturalHeight / ch;
+
+      const sx = Math.max(0, Math.round(avatarBox.x * scaleX));
+      const sy = Math.max(0, Math.round(avatarBox.y * scaleY));
+      const sSide = Math.min(avatarCropImg.naturalWidth - sx, avatarCropImg.naturalHeight - sy, Math.round(avatarBox.w * scaleX));
+
+      if (sSide <= 0) return;
+
+      const exportCanvas = document.createElement('canvas');
+      const outSize = 160; // 160x160 perfect crisp size for mobile/retina and fast P2P/MQTT
+      exportCanvas.width = outSize;
+      exportCanvas.height = outSize;
+      const exportCtx = exportCanvas.getContext('2d');
+      exportCtx.drawImage(avatarCropImg, sx, sy, sSide, sSide, 0, 0, outSize, outSize);
+
+      const croppedAvatarUrl = exportCanvas.toDataURL('image/jpeg', 0.82);
+
+      selectedAvatar = croppedAvatarUrl;
+      if (setupAvatarPreview) setupAvatarPreview.src = selectedAvatar;
+      document.querySelectorAll('.preset-avatar-btn').forEach((b) => b.classList.remove('selected'));
+
+      // If user session exists, update user and sync across UI immediately
+      if (currentUser) {
+        currentUser.avatar = selectedAvatar;
+        saveUserSession(currentUser);
+        if (headerAvatar) headerAvatar.src = selectedAvatar;
+        if (modalGoogleAvatar) modalGoogleAvatar.src = selectedAvatar;
+        syncGoogleDriveIfAuthenticated();
+
+        if (activeRoomCode && roomMembers.has(currentUser.uid)) {
+          const m = roomMembers.get(currentUser.uid);
+          if (m) {
+            m.avatar = selectedAvatar;
+            renderLiveCards();
+          }
+        }
+        broadcastMyPresence(true);
+      }
+
+      if (avatarCropModal) avatarCropModal.classList.add('hidden');
+      if (inputCustomAvatar) inputCustomAvatar.value = '';
+      showToast('เปลี่ยนรูปโปรไฟล์เรียบร้อยแล้ว ✨');
+    });
+  }
 
   // --- Views Navigation & Interest Tags Picker ---
   function initInterestTagsPicker() {
@@ -1586,7 +2042,8 @@
     const name = inputUsername.value.trim();
     if (!name) return;
 
-    const uid = currentUser && currentUser.uid ? currentUser.uid : generateNewUid();
+    const isOldUid = currentUser && currentUser.uid && String(currentUser.uid).replace(/[^A-Za-z0-9]/g, '').length < 10;
+    const uid = currentUser && currentUser.uid && !isOldUid ? currentUser.uid : generateNewUid();
     currentUser = {
       uid,
       username: name,
@@ -1687,8 +2144,9 @@
       }
 
       if (backupData) {
+        const isOldUid = currentUser && currentUser.uid && String(currentUser.uid).replace(/[^A-Za-z0-9]/g, '').length < 10;
         currentUser = {
-          uid: currentUser ? currentUser.uid : generateNewUid(),
+          uid: currentUser && currentUser.uid && !isOldUid ? currentUser.uid : generateNewUid(),
           username: backupData.username || sanitizedName,
           avatar: backupData.avatar || sanitizedAvatar,
           tags: Array.isArray(backupData.tags) && backupData.tags.length > 0 ? backupData.tags : Array.from(selectedTags),
@@ -1714,8 +2172,9 @@
           saveFriendsList();
         }
       } else {
+        const isOldUid = currentUser && currentUser.uid && String(currentUser.uid).replace(/[^A-Za-z0-9]/g, '').length < 10;
         currentUser = {
-          uid: currentUser ? currentUser.uid : generateNewUid(),
+          uid: currentUser && currentUser.uid && !isOldUid ? currentUser.uid : generateNewUid(),
           username: currentUser ? currentUser.username : sanitizedName,
           avatar: currentUser ? currentUser.avatar : sanitizedAvatar,
           tags: Array.from(selectedTags),
@@ -3779,55 +4238,214 @@
   }
 
   // --- Theme Customizer Engine ---
+  let cachedBgDataUrl = null;
+
   function loadCustomTheme() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY_THEME);
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          ...DEFAULT_THEME,
+          ...parsed,
+          chatCard: parsed.chatCard || parsed.card || DEFAULT_THEME.chatCard,
+          chatText: parsed.chatText || parsed.text || DEFAULT_THEME.chatText,
+          selfChatText: parsed.selfChatText || parsed.chatText || parsed.text || DEFAULT_THEME.selfChatText,
+          bgDim: parsed.bgDim !== undefined ? parsed.bgDim : DEFAULT_THEME.bgDim,
+          bgBlur: parsed.bgBlur !== undefined ? parsed.bgBlur : DEFAULT_THEME.bgBlur,
+          hasCustomBg: !!parsed.hasCustomBg
+        };
+      }
     } catch (e) {}
     return { ...DEFAULT_THEME };
   }
 
-  function applyTheme(theme) {
+  function hexToRgbObj(hex) {
+    let c = (hex || '#000000').replace('#', '');
+    if (c.length === 3) c = c.split('').map(x => x + x).join('');
+    const num = parseInt(c, 16) || 0;
+    return {
+      r: (num >> 16) & 255,
+      g: (num >> 8) & 255,
+      b: num & 255
+    };
+  }
+
+  function hexToRgba(hex, alpha) {
+    const { r, g, b } = hexToRgbObj(hex);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  function mixHex(hex1, hex2, weight = 0.5) {
+    const c1 = hexToRgbObj(hex1);
+    const c2 = hexToRgbObj(hex2);
+    const r = Math.round(c1.r * (1 - weight) + c2.r * weight);
+    const g = Math.round(c1.g * (1 - weight) + c2.g * weight);
+    const b = Math.round(c1.b * (1 - weight) + c2.b * weight);
+    return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+  }
+
+  function isLightColor(hex) {
+    const { r, g, b } = hexToRgbObj(hex);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance > 0.6;
+  }
+
+  function setBgImageUI(dataUrl) {
+    if (appCustomBg) {
+      appCustomBg.style.backgroundImage = `url("${dataUrl}")`;
+    }
+    document.body.classList.add('has-custom-bg');
+    if (customBgThumb) {
+      customBgThumb.style.backgroundImage = `url("${dataUrl}")`;
+      customBgThumb.classList.add('has-image');
+    }
+    if (customBgThumbText) customBgThumbText.classList.add('hidden');
+    if (btnRemoveCustomBg) btnRemoveCustomBg.classList.remove('hidden');
+    if (customBgControls) customBgControls.classList.remove('hidden');
+  }
+
+  function clearBgImageUI() {
+    if (appCustomBg) {
+      appCustomBg.style.backgroundImage = '';
+    }
+    document.body.classList.remove('has-custom-bg');
+    if (customBgThumb) {
+      customBgThumb.style.backgroundImage = '';
+      customBgThumb.classList.remove('has-image');
+    }
+    if (customBgThumbText) customBgThumbText.classList.remove('hidden');
+    if (btnRemoveCustomBg) btnRemoveCustomBg.classList.add('hidden');
+    if (customBgControls) customBgControls.classList.add('hidden');
+  }
+
+  function applyTheme(rawTheme) {
+    const theme = { ...DEFAULT_THEME, ...rawTheme };
     const root = document.documentElement;
     const brightness = theme.brightness !== undefined ? theme.brightness : 100;
+    const opacity = theme.opacity !== undefined ? theme.opacity : 88;
+    const chatFontSize = theme.chatFontSize !== undefined ? theme.chatFontSize : 20;
+    const alphaRatio = Math.max(0, Math.min(100, opacity)) / 100;
+    const panelAlpha = alphaRatio;
+    const cardAlpha = alphaRatio;
+    const panelBlur = Math.round(16 * Math.min(1, alphaRatio * 1.5));
+    const isLight = isLightColor(theme.bg);
+
+    // Primary & Accent
+    const primaryHover = isLight ? mixHex(theme.primary, '#000000', 0.15) : mixHex(theme.primary, '#ffffff', 0.15);
+    const primaryText = isLight ? mixHex(theme.primary, '#000000', 0.2) : mixHex(theme.primary, '#ffffff', 0.38);
+
     root.style.setProperty('--primary', theme.primary);
-    root.style.setProperty('--primary-hover', theme.primary);
+    root.style.setProperty('--primary-hover', primaryHover);
+    root.style.setProperty('--primary-glow', hexToRgba(theme.primary, 0.35));
+    root.style.setProperty('--primary-soft', hexToRgba(theme.primary, 0.16));
+    root.style.setProperty('--primary-border', hexToRgba(theme.primary, 0.45));
+    root.style.setProperty('--primary-text', primaryText);
+
     root.style.setProperty('--accent', theme.accent);
+    root.style.setProperty('--accent-glow', hexToRgba(theme.accent, 0.35));
+    root.style.setProperty('--accent-soft', hexToRgba(theme.accent, 0.16));
+    root.style.setProperty('--accent-border', hexToRgba(theme.accent, 0.45));
+
+    // Backgrounds & Cards
     root.style.setProperty('--bg-dark', theme.bg);
-    root.style.setProperty('--bg-panel', hexToRgba(theme.card, 0.88));
-    root.style.setProperty('--bg-card', hexToRgba(theme.card, 0.78));
-    root.style.setProperty('--bg-card-self', hexToRgba(theme.primary, 0.14));
+    root.style.setProperty('--bg-topbar', hexToRgba(theme.card, panelAlpha));
+    root.style.setProperty('--bg-panel', hexToRgba(theme.card, panelAlpha));
+    root.style.setProperty('--bg-subpanel', hexToRgba(theme.chatCard, Math.max(0, cardAlpha * 0.75)));
+    root.style.setProperty('--bg-card', hexToRgba(theme.chatCard, cardAlpha));
+    root.style.setProperty('--bg-card-idle', hexToRgba(theme.chatCard, Math.max(0, cardAlpha * 0.5)));
+    root.style.setProperty('--bg-card-self', hexToRgba(theme.primary, Math.max(0, (isLight ? 0.12 : 0.16) * (alphaRatio > 0 ? Math.max(0.4, alphaRatio) : 0))));
+    root.style.setProperty('--bg-input', hexToRgba(theme.chatCard, cardAlpha));
+    root.style.setProperty('--panel-blur', `${panelBlur}px`);
+
+    // Subtle surfaces & borders
+    root.style.setProperty('--surface-subtle', isLight ? 'rgba(15, 23, 42, 0.06)' : 'rgba(255, 255, 255, 0.06)');
+    root.style.setProperty('--surface-hover', isLight ? 'rgba(15, 23, 42, 0.12)' : 'rgba(255, 255, 255, 0.12)');
+    root.style.setProperty('--border-subtle', hexToRgba(theme.border, 0.48));
+    root.style.setProperty('--border-active', hexToRgba(theme.primary, 0.6));
+
+    // Typography & Chat Colors
     root.style.setProperty('--text-main', theme.text);
+    root.style.setProperty('--text-muted', theme.mutedText);
+    root.style.setProperty('--chat-text', theme.chatText);
+    root.style.setProperty('--chat-text-self', theme.selfChatText);
+    root.style.setProperty('--chat-font-size', `${chatFontSize}px`);
+
+    // Corner Radius & Brightness
     root.style.setProperty('--radius-lg', `${theme.radius + 4}px`);
     root.style.setProperty('--radius-md', `${theme.radius}px`);
-    root.style.setProperty('--radius-sm', `${Math.max(4, theme.radius - 4)}px`);
+    root.style.setProperty('--radius-sm', `${Math.max(0, theme.radius - 4)}px`);
     root.style.setProperty('--ui-brightness', `${brightness}%`);
+
+    // Custom Background overlay controls
+    const bgDim = theme.bgDim !== undefined ? theme.bgDim : 30;
+    const bgBlur = theme.bgBlur !== undefined ? theme.bgBlur : 0;
+    root.style.setProperty('--bg-overlay-dim', (bgDim / 100).toString());
+    root.style.setProperty('--bg-overlay-blur', `${bgBlur}px`);
+
+    // Update browser theme-color meta tag
+    const metaThemeColor = document.querySelector('meta[name="theme-color"]');
+    if (metaThemeColor) {
+      metaThemeColor.setAttribute('content', theme.bg);
+    }
 
     // Sync input controls
     if (colorPickerPrimary) {
       colorPickerPrimary.value = theme.primary;
-      hexPrimary.textContent = theme.primary;
+      if (hexPrimary) hexPrimary.textContent = theme.primary;
       colorPickerAccent.value = theme.accent;
-      hexAccent.textContent = theme.accent;
+      if (hexAccent) hexAccent.textContent = theme.accent;
       colorPickerBg.value = theme.bg;
-      hexBg.textContent = theme.bg;
+      if (hexBg) hexBg.textContent = theme.bg;
       colorPickerCard.value = theme.card;
-      hexCard.textContent = theme.card;
+      if (hexCard) hexCard.textContent = theme.card;
+      if (colorPickerChatCard) colorPickerChatCard.value = theme.chatCard;
+      if (hexChatCard) hexChatCard.textContent = theme.chatCard;
+      if (colorPickerBorder) colorPickerBorder.value = theme.border;
+      if (hexBorder) hexBorder.textContent = theme.border;
       colorPickerText.value = theme.text;
-      hexText.textContent = theme.text;
+      if (hexText) hexText.textContent = theme.text;
+      if (colorPickerMutedText) colorPickerMutedText.value = theme.mutedText;
+      if (hexMutedText) hexMutedText.textContent = theme.mutedText;
+      if (colorPickerChatText) colorPickerChatText.value = theme.chatText;
+      if (hexChatText) hexChatText.textContent = theme.chatText;
+      if (colorPickerSelfChatText) colorPickerSelfChatText.value = theme.selfChatText;
+      if (hexSelfChatText) hexSelfChatText.textContent = theme.selfChatText;
+
+      if (rangeChatFontSize) rangeChatFontSize.value = chatFontSize;
+      if (chatFontSizeValText) chatFontSizeValText.textContent = `${chatFontSize}px`;
       rangeRadius.value = theme.radius;
+      if (radiusValText) radiusValText.textContent = `${theme.radius}px`;
+      if (rangeOpacity) rangeOpacity.value = opacity;
+      if (opacityValText) opacityValText.textContent = `${opacity}%`;
       if (rangeBrightness) rangeBrightness.value = brightness;
       if (brightnessValText) brightnessValText.textContent = `${brightness}%`;
+
+      if (rangeBgDim) rangeBgDim.value = bgDim;
+      if (bgDimValText) bgDimValText.textContent = `${bgDim}%`;
+      if (rangeBgBlur) rangeBgBlur.value = bgBlur;
+      if (bgBlurValText) bgBlurValText.textContent = `${bgBlur}px`;
     }
 
-    localStorage.setItem(STORAGE_KEY_THEME, JSON.stringify({ ...theme, brightness }));
-  }
+    // Apply or remove custom wallpaper
+    if (theme.hasCustomBg) {
+      if (cachedBgDataUrl) {
+        setBgImageUI(cachedBgDataUrl);
+      } else {
+        loadCustomBgAsset().then((dataUrl) => {
+          if (dataUrl && activeTheme.hasCustomBg) {
+            cachedBgDataUrl = dataUrl;
+            setBgImageUI(dataUrl);
+          } else {
+            clearBgImageUI();
+          }
+        });
+      }
+    } else {
+      clearBgImageUI();
+    }
 
-  function hexToRgba(hex, alpha) {
-    let c = hex.replace('#', '');
-    if (c.length === 3) c = c.split('').map(x => x + x).join('');
-    const num = parseInt(c, 16);
-    return `rgba(${(num >> 16) & 255}, ${(num >> 8) & 255}, ${num & 255}, ${alpha})`;
+    localStorage.setItem(STORAGE_KEY_THEME, JSON.stringify(theme));
   }
 
   let activeTheme = loadCustomTheme();
@@ -3843,40 +4461,53 @@
   });
 
   btnResetTheme.addEventListener('click', () => {
-    activeTheme = { ...DEFAULT_THEME };
+    const keepBg = activeTheme.hasCustomBg;
+    const keepDim = activeTheme.bgDim;
+    const keepBlur = activeTheme.bgBlur;
+    activeTheme = {
+      ...DEFAULT_THEME,
+      hasCustomBg: keepBg,
+      bgDim: keepDim !== undefined ? keepDim : DEFAULT_THEME.bgDim,
+      bgBlur: keepBlur !== undefined ? keepBlur : DEFAULT_THEME.bgBlur
+    };
+    document.querySelectorAll('.btn-preset-theme').forEach(b => b.classList.remove('active'));
     applyTheme(activeTheme);
     showToast('รีเซ็ตธีมกลับเป็นค่าเริ่มต้นแล้ว');
   });
 
-  // Color picker events
-  colorPickerPrimary.addEventListener('input', (e) => {
-    activeTheme.primary = e.target.value;
-    applyTheme(activeTheme);
-  });
-  colorPickerAccent.addEventListener('input', (e) => {
-    activeTheme.accent = e.target.value;
-    applyTheme(activeTheme);
-  });
-  colorPickerBg.addEventListener('input', (e) => {
-    activeTheme.bg = e.target.value;
-    applyTheme(activeTheme);
-  });
-  colorPickerCard.addEventListener('input', (e) => {
-    activeTheme.card = e.target.value;
-    applyTheme(activeTheme);
-  });
-  colorPickerText.addEventListener('input', (e) => {
-    activeTheme.text = e.target.value;
-    applyTheme(activeTheme);
-  });
-  rangeRadius.addEventListener('input', (e) => {
-    activeTheme.radius = parseInt(e.target.value, 10);
-    applyTheme(activeTheme);
-  });
-  if (rangeBrightness) {
-    rangeBrightness.addEventListener('input', (e) => {
-      activeTheme.brightness = parseInt(e.target.value, 10);
+  // Color picker & slider events
+  const bindThemeInput = (el, key, isInt = false) => {
+    if (!el) return;
+    el.addEventListener('input', (e) => {
+      activeTheme[key] = isInt ? parseInt(e.target.value, 10) : e.target.value;
       applyTheme(activeTheme);
+    });
+  };
+
+  bindThemeInput(colorPickerPrimary, 'primary');
+  bindThemeInput(colorPickerAccent, 'accent');
+  bindThemeInput(colorPickerBg, 'bg');
+  bindThemeInput(colorPickerCard, 'card');
+  bindThemeInput(colorPickerChatCard, 'chatCard');
+  bindThemeInput(colorPickerBorder, 'border');
+  bindThemeInput(colorPickerText, 'text');
+  bindThemeInput(colorPickerMutedText, 'mutedText');
+  bindThemeInput(colorPickerChatText, 'chatText');
+  bindThemeInput(colorPickerSelfChatText, 'selfChatText');
+  bindThemeInput(rangeChatFontSize, 'chatFontSize', true);
+  bindThemeInput(rangeRadius, 'radius', true);
+  bindThemeInput(rangeOpacity, 'opacity', true);
+  bindThemeInput(rangeBrightness, 'brightness', true);
+  bindThemeInput(rangeBgDim, 'bgDim', true);
+  bindThemeInput(rangeBgBlur, 'bgBlur', true);
+
+  if (btnRemoveCustomBg) {
+    btnRemoveCustomBg.addEventListener('click', async () => {
+      cachedBgDataUrl = null;
+      await deleteCustomBgAsset();
+      activeTheme.hasCustomBg = false;
+      applyTheme(activeTheme);
+      showToast('ลบภาพพื้นหลังแล้ว กลับไปใช้สีจากธีม');
     });
   }
 
@@ -3885,12 +4516,430 @@
     btn.addEventListener('click', () => {
       const themeKey = btn.getAttribute('data-theme');
       if (PRESET_THEMES[themeKey]) {
-        activeTheme = { ...PRESET_THEMES[themeKey] };
+        document.querySelectorAll('.btn-preset-theme').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const keepBg = activeTheme.hasCustomBg;
+        const keepDim = activeTheme.bgDim;
+        const keepBlur = activeTheme.bgBlur;
+        activeTheme = {
+          ...PRESET_THEMES[themeKey],
+          hasCustomBg: keepBg,
+          bgDim: keepDim !== undefined ? keepDim : 30,
+          bgBlur: keepBlur !== undefined ? keepBlur : 0
+        };
         applyTheme(activeTheme);
         showToast(`สลับไปใช้ธีม ${btn.textContent.trim()} แล้ว`);
       }
     });
   });
+
+  // =========================================================================
+  // --- Background Wallpaper Cropper Engine (Touch & Mouse Interactive) ---
+  // =========================================================================
+  let cropperImage = null;
+  let cropperBox = { x: 0, y: 0, w: 100, h: 100 };
+  let cropperAspect = 16 / 9; // default 16:9 aspect ratio
+  let cropperActiveHandle = null;
+  let cropperIsDragging = false;
+  let cropperDragStart = { x: 0, y: 0 };
+  let cropperStartBox = { x: 0, y: 0, w: 0, h: 0 };
+
+  if (inputCustomBg) {
+    inputCustomBg.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const img = new Image();
+        img.onload = () => {
+          initBgCropper(img);
+        };
+        img.src = ev.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function initBgCropper(img) {
+    cropperImage = img;
+    bgCropModal.classList.remove('hidden');
+
+    requestAnimationFrame(() => {
+      const viewport = cropCanvasViewport;
+      const maxW = viewport ? Math.max(260, Math.min(600, (viewport.clientWidth || 560) - 16)) : 540;
+      const maxH = viewport ? Math.max(200, Math.min(360, (viewport.clientHeight || 340) - 16)) : 340;
+
+      const natW = img.naturalWidth || 800;
+      const natH = img.naturalHeight || 600;
+
+      const scale = Math.min(maxW / natW, maxH / natH, 1);
+      const cw = Math.max(160, Math.round(natW * scale));
+      const ch = Math.max(120, Math.round(natH * scale));
+
+      cropCanvas.width = cw;
+      cropCanvas.height = ch;
+      cropCanvas.style.width = `${cw}px`;
+      cropCanvas.style.height = `${ch}px`;
+
+      cropperAspect = 16 / 9;
+      document.querySelectorAll('.btn-crop-aspect').forEach((b) => {
+        b.classList.toggle('active', b.getAttribute('data-aspect') === '16:9');
+      });
+
+      setAspectBox(cropperAspect);
+      renderCropper();
+    });
+  }
+
+  function setAspectBox(aspect) {
+    const cw = cropCanvas.width;
+    const ch = cropCanvas.height;
+    if (!aspect) {
+      cropperBox = {
+        x: Math.round(cw * 0.05),
+        y: Math.round(ch * 0.05),
+        w: Math.round(cw * 0.9),
+        h: Math.round(ch * 0.9)
+      };
+      return;
+    }
+    let w, h;
+    if (cw / ch > aspect) {
+      h = Math.round(ch * 0.88);
+      w = Math.round(h * aspect);
+    } else {
+      w = Math.round(cw * 0.88);
+      h = Math.round(w / aspect);
+    }
+    cropperBox = {
+      x: Math.round((cw - w) / 2),
+      y: Math.round((ch - h) / 2),
+      w: Math.max(30, Math.min(cw, w)),
+      h: Math.max(30, Math.min(ch, h))
+    };
+  }
+
+  function renderCropper() {
+    if (!cropperImage || !cropCanvas) return;
+    const ctx = cropCanvas.getContext('2d');
+    const cw = cropCanvas.width;
+    const ch = cropCanvas.height;
+    const b = cropperBox;
+
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.drawImage(cropperImage, 0, 0, cw, ch);
+
+    // Darkened overlay
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.62)';
+    ctx.fillRect(0, 0, cw, ch);
+
+    // Cutout preview
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(b.x, b.y, b.w, b.h);
+    ctx.clip();
+    ctx.drawImage(cropperImage, 0, 0, cw, ch);
+
+    // Rule-of-thirds grid
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(b.x + b.w / 3, b.y);
+    ctx.lineTo(b.x + b.w / 3, b.y + b.h);
+    ctx.moveTo(b.x + (2 * b.w) / 3, b.y);
+    ctx.lineTo(b.x + (2 * b.w) / 3, b.y + b.h);
+    ctx.moveTo(b.x, b.y + b.h / 3);
+    ctx.lineTo(b.x + b.w, b.y + b.h / 3);
+    ctx.moveTo(b.x, b.y + (2 * b.h) / 3);
+    ctx.lineTo(b.x + b.w, b.y + (2 * b.h) / 3);
+    ctx.stroke();
+    ctx.restore();
+
+    // Box outline
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
+
+    // Draw handles
+    const drawDot = (hx, hy) => {
+      ctx.save();
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#6366f1';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(hx, hy, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    // Corners
+    drawDot(b.x, b.y);
+    drawDot(b.x + b.w, b.y);
+    drawDot(b.x + b.w, b.y + b.h);
+    drawDot(b.x, b.y + b.h);
+
+    // Edges
+    drawDot(b.x + b.w / 2, b.y);
+    drawDot(b.x + b.w / 2, b.y + b.h);
+    drawDot(b.x, b.y + b.h / 2);
+    drawDot(b.x + b.w, b.y + b.h / 2);
+
+    // Update dimensions display
+    if (cropSizeInfo) {
+      const origW = Math.round(b.w * (cropperImage.naturalWidth / cw));
+      const origH = Math.round(b.h * (cropperImage.naturalHeight / ch));
+      cropSizeInfo.textContent = `ขนาด: ${origW} × ${origH} px`;
+    }
+  }
+
+  function getCanvasPos(e) {
+    const rect = cropCanvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return {
+      x: (clientX - rect.left) * (cropCanvas.width / rect.width),
+      y: (clientY - rect.top) * (cropCanvas.height / rect.height)
+    };
+  }
+
+  function getHitHandle(mx, my) {
+    const R = 18;
+    const b = cropperBox;
+    if (Math.hypot(mx - b.x, my - b.y) <= R) return 'nw';
+    if (Math.hypot(mx - (b.x + b.w), my - b.y) <= R) return 'ne';
+    if (Math.hypot(mx - (b.x + b.w), my - (b.y + b.h)) <= R) return 'se';
+    if (Math.hypot(mx - b.x, my - (b.y + b.h)) <= R) return 'sw';
+    if (Math.hypot(mx - (b.x + b.w / 2), my - b.y) <= R) return 'n';
+    if (Math.hypot(mx - (b.x + b.w / 2), my - (b.y + b.h)) <= R) return 's';
+    if (Math.hypot(mx - b.x, my - (b.y + b.h / 2)) <= R) return 'w';
+    if (Math.hypot(mx - (b.x + b.w), my - (b.y + b.h / 2)) <= R) return 'e';
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) return 'move';
+    return null;
+  }
+
+  function onCropPointerDown(e) {
+    if (!cropperImage || bgCropModal.classList.contains('hidden')) return;
+    const pos = getCanvasPos(e);
+    const hit = getHitHandle(pos.x, pos.y);
+    if (!hit) return;
+    cropperIsDragging = true;
+    cropperActiveHandle = hit;
+    cropperDragStart = { x: pos.x, y: pos.y };
+    cropperStartBox = { ...cropperBox };
+    if (e.cancelable && e.type.startsWith('touch')) {
+      e.preventDefault();
+    }
+  }
+
+  function onCropPointerMove(e) {
+    if (!cropperImage || bgCropModal.classList.contains('hidden')) return;
+    const pos = getCanvasPos(e);
+
+    if (!cropperIsDragging) {
+      const hit = getHitHandle(pos.x, pos.y);
+      if (hit === 'nw' || hit === 'se') cropCanvas.style.cursor = 'nwse-resize';
+      else if (hit === 'ne' || hit === 'sw') cropCanvas.style.cursor = 'nesw-resize';
+      else if (hit === 'n' || hit === 's') cropCanvas.style.cursor = 'ns-resize';
+      else if (hit === 'w' || hit === 'e') cropCanvas.style.cursor = 'ew-resize';
+      else if (hit === 'move') cropCanvas.style.cursor = 'move';
+      else cropCanvas.style.cursor = 'crosshair';
+      return;
+    }
+
+    if (e.cancelable && e.type.startsWith('touch')) {
+      e.preventDefault();
+    }
+
+    const dx = pos.x - cropperDragStart.x;
+    const dy = pos.y - cropperDragStart.y;
+    const cw = cropCanvas.width;
+    const ch = cropCanvas.height;
+    const sb = cropperStartBox;
+    const minS = 30;
+
+    if (cropperActiveHandle === 'move') {
+      const nx = Math.max(0, Math.min(cw - sb.w, sb.x + dx));
+      const ny = Math.max(0, Math.min(ch - sb.h, sb.y + dy));
+      cropperBox.x = nx;
+      cropperBox.y = ny;
+    } else {
+      let nx = sb.x;
+      let ny = sb.y;
+      let nw = sb.w;
+      let nh = sb.h;
+
+      if (cropperActiveHandle === 'se') {
+        nw = Math.max(minS, Math.min(cw - sb.x, sb.w + dx));
+        nh = cropperAspect ? nw / cropperAspect : Math.max(minS, Math.min(ch - sb.y, sb.h + dy));
+        if (cropperAspect && sb.y + nh > ch) {
+          nh = ch - sb.y;
+          nw = nh * cropperAspect;
+        }
+      } else if (cropperActiveHandle === 'sw') {
+        nw = Math.max(minS, sb.w - dx);
+        nh = cropperAspect ? nw / cropperAspect : Math.max(minS, Math.min(ch - sb.y, sb.h + dy));
+        if (cropperAspect && sb.y + nh > ch) {
+          nh = ch - sb.y;
+          nw = nh * cropperAspect;
+        }
+        nx = sb.x + (sb.w - nw);
+        if (nx < 0) {
+          nx = 0;
+          nw = sb.x + sb.w;
+          if (cropperAspect) nh = nw / cropperAspect;
+        }
+      } else if (cropperActiveHandle === 'ne') {
+        nw = Math.max(minS, Math.min(cw - sb.x, sb.w + dx));
+        nh = cropperAspect ? nw / cropperAspect : Math.max(minS, sb.h - dy);
+        ny = sb.y + (sb.h - nh);
+        if (ny < 0) {
+          ny = 0;
+          nh = sb.y + sb.h;
+          if (cropperAspect) nw = nh * cropperAspect;
+        }
+      } else if (cropperActiveHandle === 'nw') {
+        nw = Math.max(minS, sb.w - dx);
+        nh = cropperAspect ? nw / cropperAspect : Math.max(minS, sb.h - dy);
+        nx = sb.x + (sb.w - nw);
+        ny = sb.y + (sb.h - nh);
+        if (nx < 0) {
+          nx = 0;
+          nw = sb.x + sb.w;
+          if (cropperAspect) nh = nw / cropperAspect;
+          ny = sb.y + (sb.h - nh);
+        }
+        if (ny < 0) {
+          ny = 0;
+          nh = sb.y + sb.h;
+          if (cropperAspect) nw = nh * cropperAspect;
+          nx = sb.x + (sb.w - nw);
+        }
+      } else if (cropperActiveHandle === 'e') {
+        nw = Math.max(minS, Math.min(cw - sb.x, sb.w + dx));
+        if (cropperAspect) nh = nw / cropperAspect;
+      } else if (cropperActiveHandle === 'w') {
+        nw = Math.max(minS, sb.w - dx);
+        nx = sb.x + (sb.w - nw);
+        if (nx < 0) { nx = 0; nw = sb.x + sb.w; }
+        if (cropperAspect) nh = nw / cropperAspect;
+      } else if (cropperActiveHandle === 's') {
+        nh = Math.max(minS, Math.min(ch - sb.y, sb.h + dy));
+        if (cropperAspect) nw = nh * cropperAspect;
+      } else if (cropperActiveHandle === 'n') {
+        nh = Math.max(minS, sb.h - dy);
+        ny = sb.y + (sb.h - nh);
+        if (ny < 0) { ny = 0; nh = sb.y + sb.h; }
+        if (cropperAspect) nw = nh * cropperAspect;
+      }
+
+      cropperBox = {
+        x: Math.round(nx),
+        y: Math.round(ny),
+        w: Math.round(nw),
+        h: Math.round(nh)
+      };
+    }
+
+    renderCropper();
+  }
+
+  function onCropPointerUp() {
+    cropperIsDragging = false;
+    cropperActiveHandle = null;
+  }
+
+  if (cropCanvas) {
+    cropCanvas.addEventListener('mousedown', onCropPointerDown);
+    window.addEventListener('mousemove', onCropPointerMove);
+    window.addEventListener('mouseup', onCropPointerUp);
+
+    cropCanvas.addEventListener('touchstart', onCropPointerDown, { passive: false });
+    window.addEventListener('touchmove', onCropPointerMove, { passive: false });
+    window.addEventListener('touchend', onCropPointerUp);
+    window.addEventListener('touchcancel', onCropPointerUp);
+  }
+
+  // Aspect Ratio Preset buttons
+  document.querySelectorAll('.btn-crop-aspect').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.btn-crop-aspect').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      const asp = btn.getAttribute('data-aspect');
+      if (asp === '16:9') cropperAspect = 16 / 9;
+      else if (asp === '9:16') cropperAspect = 9 / 16;
+      else if (asp === '4:3') cropperAspect = 4 / 3;
+      else if (asp === '1:1') cropperAspect = 1;
+      else if (asp === 'free') cropperAspect = null;
+      else if (asp === 'full') {
+        cropperAspect = null;
+        cropperBox = { x: 0, y: 0, w: cropCanvas.width, h: cropCanvas.height };
+        renderCropper();
+        return;
+      }
+      setAspectBox(cropperAspect);
+      renderCropper();
+    });
+  });
+
+  if (btnCancelCrop) {
+    btnCancelCrop.addEventListener('click', () => {
+      bgCropModal.classList.add('hidden');
+      if (inputCustomBg) inputCustomBg.value = '';
+    });
+  }
+
+  if (btnApplyCrop) {
+    btnApplyCrop.addEventListener('click', async () => {
+      if (!cropperImage || !cropCanvas) return;
+      const cw = cropCanvas.width;
+      const ch = cropCanvas.height;
+      const natW = cropperImage.naturalWidth;
+      const natH = cropperImage.naturalHeight;
+
+      const scaleX = natW / cw;
+      const scaleY = natH / ch;
+
+      const sx = Math.max(0, Math.round(cropperBox.x * scaleX));
+      const sy = Math.max(0, Math.round(cropperBox.y * scaleY));
+      const sw = Math.min(natW - sx, Math.round(cropperBox.w * scaleX));
+      const sh = Math.min(natH - sy, Math.round(cropperBox.h * scaleY));
+
+      if (sw <= 0 || sh <= 0) return;
+
+      // Constrain max dimensions to 1920x1080 for crispness and performance
+      const maxDim = 1920;
+      let outW = sw;
+      let outH = sh;
+      if (outW > maxDim || outH > maxDim) {
+        if (outW > outH) {
+          outH = Math.round((outH * maxDim) / outW);
+          outW = maxDim;
+        } else {
+          outW = Math.round((outW * maxDim) / outH);
+          outH = maxDim;
+        }
+      }
+
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = outW;
+      exportCanvas.height = outH;
+      const exportCtx = exportCanvas.getContext('2d');
+      exportCtx.drawImage(cropperImage, sx, sy, sw, sh, 0, 0, outW, outH);
+
+      const croppedDataUrl = exportCanvas.toDataURL('image/jpeg', 0.85);
+
+      cachedBgDataUrl = croppedDataUrl;
+      await saveCustomBgAsset(croppedDataUrl);
+
+      activeTheme.hasCustomBg = true;
+      applyTheme(activeTheme);
+
+      bgCropModal.classList.add('hidden');
+      if (inputCustomBg) inputCustomBg.value = '';
+      showToast('เปลี่ยนภาพพื้นหลังเว็บไซต์เรียบร้อยแล้ว 🖼️');
+    });
+  }
 
   // =========================================================================
   // --- WebRTC Realtime Screen Live Streaming Engine ---

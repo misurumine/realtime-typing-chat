@@ -17,6 +17,11 @@
   <link rel="stylesheet" href="./css/style.css" />
 </head>
 <body>
+  <!-- Custom Background Wallpaper Layer -->
+  <div id="appCustomBg" class="app-custom-bg">
+    <div class="app-custom-bg-overlay"></div>
+  </div>
+
   <!-- Top Bar -->
   <header class="topbar">
     <div class="brand">
@@ -74,6 +79,10 @@
             </svg>
             <span>ลงชื่อเข้าใช้ด้วย Google (Google Sign-In)</span>
           </button>
+
+          <div class="auth-terms-notice">
+            การลงชื่อเข้าใช้ถือว่าคุณยอมรับ <a href="./terms.html" target="_blank" rel="noopener noreferrer">ข้อกำหนดการใช้งาน</a> และ <a href="./privacy.html" target="_blank" rel="noopener noreferrer">นโยบายความเป็นส่วนตัว</a>
+          </div>
 
           <div id="googleAuthSuccessBox" class="google-auth-success-box hidden">
             <div class="google-auth-info">
@@ -145,6 +154,12 @@
             🚀 เริ่มใช้งานทันที
           </button>
         </form>
+
+        <div class="setup-footer-links">
+          <a href="./terms.html" target="_blank" rel="noopener noreferrer">ข้อกำหนดการให้บริการ</a>
+          <span class="dot-separator">•</span>
+          <a href="./privacy.html" target="_blank" rel="noopener noreferrer">นโยบายความเป็นส่วนตัว</a>
+        </div>
       </div>
     </section>
 
@@ -229,8 +244,8 @@
                   type="text"
                   id="inputFriendUid"
                   class="input-field mono uppercase"
-                  placeholder="ใส่ UID เพื่อน (เช่น AB12-CD34)"
-                  maxlength="15"
+                  placeholder="ใส่ UID เพื่อน (เช่น AB12C-DE34F)"
+                  maxlength="20"
                   autocomplete="off"
                 />
                 <button type="submit" class="btn btn-primary">ส่งคำขอ</button>
@@ -563,7 +578,7 @@
         <div class="qr-display-wrap">
           <img id="roomQrImage" src="" alt="Room QR Code" class="qr-code-img" />
         </div>
-        <p style="margin-bottom:4px;">รหัสห้อง: <strong id="qrModalRoomCode" class="mono" style="color:#a5b4fc;font-size:1.1rem;"></strong></p>
+        <p style="margin-bottom:4px;">รหัสห้อง: <strong id="qrModalRoomCode" class="mono" style="color:var(--primary-text);font-size:1.1rem;"></strong></p>
         <small style="color:var(--text-muted);">ให้เพื่อนใช้กล้องมือถือสแกน หรือกดปุ่ม "📷 สแกน QR เข้าห้อง" ในแอปเพื่อเข้ามาคุยด้วยกันได้ทันที</small>
       </div>
       <div class="modal-actions">
@@ -600,16 +615,16 @@
   <div id="themeModal" class="modal-backdrop hidden">
     <div class="modal-card theme-modal-card glass-panel">
       <div class="modal-header">
-        <h3>🎨 ปรับแต่งโทนสี UI</h3>
+        <h3>🎨 ปรับแต่งโทนสี & ดีไซน์ทั้งเว็บไซต์</h3>
       </div>
       <div class="modal-body">
-        <label class="section-label">ธีมสำเร็จรูป:</label>
+        <label class="section-label">ธีมสำเร็จรูป (Presets):</label>
         <div class="theme-presets-row">
           <button type="button" class="btn-preset-theme" data-theme="neon">
             <span class="preset-dot" style="background:#6366f1;"></span> Cyber Neon
           </button>
           <button type="button" class="btn-preset-theme" data-theme="minimal">
-            <span class="preset-dot" style="background:#f1f5f9; border:1px solid #64748b;"></span> Minimal Soft White
+            <span class="preset-dot" style="background:#f1f5f9; border:1px solid #64748b;"></span> Minimal White
           </button>
           <button type="button" class="btn-preset-theme" data-theme="emerald">
             <span class="preset-dot" style="background:#10b981;"></span> Emerald Forest
@@ -620,19 +635,28 @@
           <button type="button" class="btn-preset-theme" data-theme="amoled">
             <span class="preset-dot" style="background:#38bdf8;"></span> Pure AMOLED
           </button>
+          <button type="button" class="btn-preset-theme" data-theme="ocean">
+            <span class="preset-dot" style="background:#0ea5e9;"></span> Deep Ocean
+          </button>
+          <button type="button" class="btn-preset-theme" data-theme="sakura">
+            <span class="preset-dot" style="background:#f472b6;"></span> Sakura Pastel
+          </button>
+          <button type="button" class="btn-preset-theme" data-theme="gold">
+            <span class="preset-dot" style="background:#eab308;"></span> Luxury Gold
+          </button>
         </div>
 
-        <label class="section-label">ปรับแต่งโทนสีและความสว่างเอง:</label>
+        <label class="section-label">ปรับแต่งโทนสีทุกส่วนของหน้าเว็บ:</label>
         <div class="theme-controls-grid">
           <div class="theme-control-item">
-            <label>สีหลัก (Primary)</label>
+            <label>สีหลัก / ปุ่ม (Primary)</label>
             <div class="color-input-wrap">
               <input type="color" id="colorPickerPrimary" class="color-picker" />
               <span id="hexPrimary" class="color-hex mono">#6366f1</span>
             </div>
           </div>
           <div class="theme-control-item">
-            <label>สีไฮไลท์ (Accent)</label>
+            <label>สีไฮไลท์ / Enter (Accent)</label>
             <div class="color-input-wrap">
               <input type="color" id="colorPickerAccent" class="color-picker" />
               <span id="hexAccent" class="color-hex mono">#ec4899</span>
@@ -646,29 +670,112 @@
             </div>
           </div>
           <div class="theme-control-item">
-            <label>สีกล่องหน้าต่าง (Panels)</label>
+            <label>สีหน้าต่าง & แถบเมนู (Panels)</label>
             <div class="color-input-wrap">
               <input type="color" id="colorPickerCard" class="color-picker" />
               <span id="hexCard" class="color-hex mono">#111827</span>
             </div>
           </div>
           <div class="theme-control-item">
-            <label>สีข้อความ (Text)</label>
+            <label>สีการ์ดแชท & ช่องพิมพ์ (Cards)</label>
+            <div class="color-input-wrap">
+              <input type="color" id="colorPickerChatCard" class="color-picker" />
+              <span id="hexChatCard" class="color-hex mono">#1e293b</span>
+            </div>
+          </div>
+          <div class="theme-control-item">
+            <label>สีเส้นขอบ (Borders)</label>
+            <div class="color-input-wrap">
+              <input type="color" id="colorPickerBorder" class="color-picker" />
+              <span id="hexBorder" class="color-hex mono">#334155</span>
+            </div>
+          </div>
+          <div class="theme-control-item">
+            <label>สีข้อความหน้าเว็บ (UI Text)</label>
             <div class="color-input-wrap">
               <input type="color" id="colorPickerText" class="color-picker" />
               <span id="hexText" class="color-hex mono">#f8fafc</span>
             </div>
           </div>
           <div class="theme-control-item">
-            <label>ความโค้งมนของขอบ</label>
+            <label>สีข้อความรอง (Muted Text)</label>
+            <div class="color-input-wrap">
+              <input type="color" id="colorPickerMutedText" class="color-picker" />
+              <span id="hexMutedText" class="color-hex mono">#94a3b8</span>
+            </div>
+          </div>
+          <div class="theme-control-item">
+            <label>💬 สีข้อความแชทคนอื่น (Chat Text)</label>
+            <div class="color-input-wrap">
+              <input type="color" id="colorPickerChatText" class="color-picker" />
+              <span id="hexChatText" class="color-hex mono">#f8fafc</span>
+            </div>
+          </div>
+          <div class="theme-control-item">
+            <label>✨ สีข้อความแชทของคุณ (My Chat)</label>
+            <div class="color-input-wrap">
+              <input type="color" id="colorPickerSelfChatText" class="color-picker" />
+              <span id="hexSelfChatText" class="color-hex mono">#ffffff</span>
+            </div>
+          </div>
+          <div class="theme-control-item">
+            <label>🔤 ขนาดตัวอักษรแชท (<span id="chatFontSizeValText" class="mono">20px</span>)</label>
+            <div class="color-input-wrap">
+              <input type="range" id="rangeChatFontSize" min="14" max="32" value="20" style="width: 100%; accent-color: var(--primary);" />
+            </div>
+          </div>
+          <div class="theme-control-item">
+            <label>📐 ความโค้งมนขอบ (<span id="radiusValText" class="mono">14px</span>)</label>
             <div class="color-input-wrap">
               <input type="range" id="rangeRadius" min="0" max="24" value="14" style="width: 100%; accent-color: var(--primary);" />
             </div>
           </div>
-          <div class="theme-control-item" style="grid-column: 1 / -1;">
-            <label>☀️ ปรับลด/เพิ่มความสว่างหน้าจอ (Brightness: <span id="brightnessValText" class="mono">100%</span>)</label>
+          <div class="theme-control-item">
+            <label>🪟 ความทึบหน้าต่าง (<span id="opacityValText" class="mono">85%</span>)</label>
             <div class="color-input-wrap">
-              <input type="range" id="rangeBrightness" min="55" max="110" value="100" style="width: 100%; accent-color: var(--primary);" />
+              <input type="range" id="rangeOpacity" min="0" max="100" value="85" style="width: 100%; accent-color: var(--primary);" />
+            </div>
+          </div>
+          <div class="theme-control-item">
+            <label>☀️ ความสว่างหน้าจอ (<span id="brightnessValText" class="mono">100%</span>)</label>
+            <div class="color-input-wrap">
+              <input type="range" id="rangeBrightness" min="55" max="115" value="100" style="width: 100%; accent-color: var(--primary);" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Custom Wallpaper Section -->
+        <div class="theme-bg-custom-section">
+          <label class="section-label">🖼️ ภาพพื้นหลังเว็บไซต์ (Custom Wallpaper):</label>
+          <div class="custom-bg-setting-box">
+            <div class="custom-bg-preview-wrap">
+              <div id="customBgThumb" class="custom-bg-thumb">
+                <span id="customBgThumbText" class="custom-bg-empty-text">ไม่มีภาพ<br>(ใช้สีจากธีม)</span>
+              </div>
+              <div class="custom-bg-actions">
+                <label for="inputCustomBg" class="btn btn-primary btn-sm upload-bg-btn" title="อัปโหลดและครอปภาพพื้นหลัง">
+                  📁 เลือกรูป & ครอปภาพ
+                </label>
+                <input type="file" id="inputCustomBg" accept="image/*" class="hidden" />
+                <button type="button" id="btnRemoveCustomBg" class="btn btn-secondary btn-sm hidden" title="ยกเลิกภาพพื้นหลัง กลับไปใช้สีจากธีม">
+                  🗑️ ลบภาพพื้นหลัง
+                </button>
+              </div>
+            </div>
+
+            <div id="customBgControls" class="custom-bg-sliders-row hidden">
+              <div class="theme-control-item">
+                <label>ความมืดของภาพ (<span id="bgDimValText" class="mono">30%</span>)</label>
+                <div class="color-input-wrap">
+                  <input type="range" id="rangeBgDim" min="0" max="85" value="30" style="width: 100%; accent-color: var(--primary);" />
+                </div>
+              </div>
+              <div class="theme-control-item">
+                <label>ความเบลอของภาพ (<span id="bgBlurValText" class="mono">0px</span>)</label>
+                <div class="color-input-wrap">
+                  <input type="range" id="rangeBgBlur" min="0" max="25" value="0" style="width: 100%; accent-color: var(--primary);" />
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -676,6 +783,74 @@
       <div class="modal-actions">
         <button id="btnResetTheme" class="btn btn-secondary">รีเซ็ตค่าเริ่มต้น</button>
         <button id="btnCloseTheme" class="btn btn-primary">เสร็จสิ้น</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Background Image Crop & Resize Modal -->
+  <div id="bgCropModal" class="modal-backdrop hidden">
+    <div class="modal-card bg-crop-modal-card glass-panel">
+      <div class="modal-header">
+        <div class="crop-modal-title-row">
+          <h3>✂️ ครอป & ปรับขนาดภาพพื้นหลัง</h3>
+          <span id="cropSizeInfo" class="crop-size-info mono">ขนาด: 0 × 0 px</span>
+        </div>
+        <p class="crop-modal-subtitle">ลากกรอบสีขาวหรือมุมเพื่อปรับขนาดภาพตามต้องการ หรือคลิกเลือกสัดส่วนด้านล่าง</p>
+      </div>
+
+      <div class="modal-body crop-modal-body">
+        <!-- Aspect Ratio Selection Row -->
+        <div class="crop-aspect-ratio-row">
+          <button type="button" class="btn-crop-aspect active" data-aspect="16:9">🖥️ 16:9 (จอคอม)</button>
+          <button type="button" class="btn-crop-aspect" data-aspect="9:16">📱 9:16 (จอมือถือ)</button>
+          <button type="button" class="btn-crop-aspect" data-aspect="4:3">📺 4:3</button>
+          <button type="button" class="btn-crop-aspect" data-aspect="1:1">⏹️ 1:1</button>
+          <button type="button" class="btn-crop-aspect" data-aspect="free">🔓 อิสระ</button>
+          <button type="button" class="btn-crop-aspect" data-aspect="full">🖼️ เต็มภาพ</button>
+        </div>
+
+        <!-- Canvas Crop Viewport -->
+        <div class="crop-canvas-viewport" id="cropCanvasViewport">
+          <canvas id="cropCanvas"></canvas>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" id="btnCancelCrop" class="btn btn-secondary">ยกเลิก</button>
+        <button type="button" id="btnApplyCrop" class="btn btn-primary">💾 บันทึกและใช้เป็นภาพพื้นหลัง</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Avatar Profile Picture Crop Modal -->
+  <div id="avatarCropModal" class="modal-backdrop hidden">
+    <div class="modal-card avatar-crop-modal-card glass-panel">
+      <div class="modal-header">
+        <div class="crop-modal-title-row">
+          <h3>✂️ ครอปรูปโปรไฟล์</h3>
+          <span id="avatarCropSizeInfo" class="crop-size-info mono">สัดส่วน 1:1</span>
+        </div>
+        <p class="crop-modal-subtitle">ลากกรอบสี่เหลี่ยมเพื่อเลือกส่วนของรูปที่ต้องการ หรือดึงมุมเพื่อปรับขนาดกรอบ</p>
+      </div>
+
+      <div class="modal-body avatar-crop-modal-body">
+        <!-- Canvas Viewport -->
+        <div class="crop-canvas-viewport avatar-crop-viewport" id="avatarCropCanvasViewport">
+          <canvas id="avatarCropCanvas"></canvas>
+        </div>
+
+        <!-- Live Circular Avatar Preview Row -->
+        <div class="avatar-crop-live-preview-box">
+          <span class="avatar-preview-label">ตัวอย่างรูปโปรไฟล์เมื่อแสดงผล:</span>
+          <div class="avatar-preview-circle-container">
+            <canvas id="avatarCirclePreviewCanvas" width="90" height="90" class="avatar-preview-circle"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" id="btnCancelAvatarCrop" class="btn btn-secondary">ยกเลิก</button>
+        <button type="button" id="btnApplyAvatarCrop" class="btn btn-primary">💾 บันทึกรูปโปรไฟล์</button>
       </div>
     </div>
   </div>
@@ -727,6 +902,10 @@
             </svg>
             <span>ลงชื่อเข้าใช้ด้วย Google (Google Sign-In)</span>
           </button>
+
+          <div class="auth-terms-notice">
+            การลงชื่อเข้าใช้ถือว่าคุณยอมรับ <a href="./terms.html" target="_blank" rel="noopener noreferrer">ข้อกำหนดการใช้งาน</a> และ <a href="./privacy.html" target="_blank" rel="noopener noreferrer">นโยบายความเป็นส่วนตัว</a>
+          </div>
         </div>
       </div>
       <div class="modal-actions">
