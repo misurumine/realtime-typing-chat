@@ -938,7 +938,7 @@
   let sentFriendRequests = new Set(); // Set<uid>
   let activeRoomCode = null;
   let activeRoomHostUid = null;
-  let activeRoomSortMode = 'length_1s'; // 'length_1s' (1s length check with hysteresis), 'stable', or 'activity'
+  let activeRoomSortMode = 'activity'; // 'activity' (Default - 3s), 'length' (3s text length with hysteresis), or 'stable'
   let previousMemberRanks = new Map(); // Map<uid, number> for hysteresis rank tracking
   let roomSortIntervalTimer = null;
   let isRoomPublic = true; // Whether active room is discoverable via Tag Matchmaking
@@ -1519,14 +1519,33 @@
     return Array.from(tagSet);
   }
 
+  function getRoomHostInfo() {
+    const hostUid = activeRoomHostUid || (currentUser ? currentUser.uid : null);
+    const hostMember = (hostUid && roomMembers.get(hostUid)) || (hostUid === currentUser?.uid ? currentUser : null);
+    return {
+      hostUid: hostUid,
+      hostName: hostMember ? hostMember.username : (currentUser ? currentUser.username : 'หัวห้อง'),
+      hostAvatar: hostMember ? hostMember.avatar : (currentUser ? currentUser.avatar : PRESET_AVATARS[0])
+    };
+  }
+
   function broadcastActiveRoomToDirectory() {
     if (!currentUser || !activeRoomCode || !isRoomPublic) return;
+
+    // Strict Host Rule: ONLY the room host may announce room information to the directory!
+    const isHost = Boolean(!activeRoomHostUid || activeRoomHostUid === currentUser.uid);
+    if (!isHost) {
+      // Non-host members must NEVER broadcast directory announcements, preventing room name swap flickers!
+      return;
+    }
+
+    const hostInfo = getRoomHostInfo();
     publishJson(topicDirectory(), {
       type: 'room_announce',
       roomCode: activeRoomCode,
-      hostUid: currentUser.uid,
-      hostName: currentUser.username,
-      hostAvatar: currentUser.avatar,
+      hostUid: hostInfo.hostUid,
+      hostName: hostInfo.hostName,
+      hostAvatar: hostInfo.hostAvatar,
       memberCount: Math.max(1, roomMembers.size),
       tags: getAggregatedRoomTags(),
       ts: Date.now()
@@ -1552,10 +1571,11 @@
   function handleDirectoryMessage(data) {
     if (!data) return;
 
-    // 1. Someone is scanning for active rooms -> if we are in a public room, announce our room & tags!
+    // 1. Someone is scanning for active rooms -> ONLY room host replies
     if (data.type === 'room_query') {
       const fromUid = sanitizeUid(data.fromUid);
-      if (activeRoomCode && isRoomPublic && currentUser && fromUid !== currentUser.uid) {
+      const isHost = Boolean(!activeRoomHostUid || activeRoomHostUid === currentUser?.uid);
+      if (activeRoomCode && isRoomPublic && isHost && currentUser && fromUid !== currentUser.uid) {
         broadcastActiveRoomToDirectory();
       }
       return;
@@ -1565,13 +1585,36 @@
     if (data.type === 'room_announce' && data.roomCode) {
       const cleanCode = sanitizeRoomCode(data.roomCode);
       if (!cleanCode) return;
+
+      const announceHostUid = sanitizeUid(data.hostUid);
+      const existing = discoveredRooms.get(cleanCode);
+
+      // Lock to room host: If this room is already tracked and host is established,
+      // prevent any non-host announcement from swapping hostName or hostAvatar
+      let finalHostUid = announceHostUid;
+      let finalHostName = sanitizeUsername(data.hostName || 'ไม่ระบุชื่อ', 'ไม่ระบุชื่อ');
+      let finalHostAvatar = sanitizeAvatarUrl(data.hostAvatar, PRESET_AVATARS[0]);
+
+      if (existing && existing.hostUid && announceHostUid && existing.hostUid !== announceHostUid) {
+        if (activeRoomCode && activeRoomCode === cleanCode && activeRoomHostUid) {
+          const hostInfo = getRoomHostInfo();
+          finalHostUid = hostInfo.hostUid;
+          finalHostName = hostInfo.hostName;
+          finalHostAvatar = hostInfo.hostAvatar;
+        } else {
+          finalHostUid = existing.hostUid;
+          finalHostName = existing.hostName;
+          finalHostAvatar = existing.hostAvatar;
+        }
+      }
+
       discoveredRooms.set(cleanCode, {
         roomCode: cleanCode,
-        hostUid: sanitizeUid(data.hostUid),
-        hostName: sanitizeUsername(data.hostName || 'ไม่ระบุชื่อ', 'ไม่ระบุชื่อ'),
-        hostAvatar: sanitizeAvatarUrl(data.hostAvatar, PRESET_AVATARS[0]),
+        hostUid: finalHostUid,
+        hostName: finalHostName,
+        hostAvatar: finalHostAvatar,
         memberCount: Math.max(1, Math.min(999, parseInt(data.memberCount, 10) || 1)),
-        tags: Array.isArray(data.tags) ? data.tags.slice(0, 8).map(sanitizeTag).filter(Boolean) : [],
+        tags: Array.isArray(data.tags) ? data.tags.slice(0, 8).map(sanitizeTag).filter(Boolean) : (existing ? existing.tags : []),
         updatedAt: Date.now()
       });
       renderDiscoveredRooms();
@@ -1646,6 +1689,14 @@
       const card = document.createElement('div');
       card.className = `discover-room-card ${room.matchCount > 0 ? 'high-match' : ''}`;
 
+      let currentHostName = room.hostName;
+      let currentHostAvatar = room.hostAvatar;
+      if (activeRoomCode && room.roomCode === activeRoomCode) {
+        const hostInfo = getRoomHostInfo();
+        currentHostName = hostInfo.hostName;
+        currentHostAvatar = hostInfo.hostAvatar;
+      }
+
       const matchBadgeHtml =
         room.matchCount > 0
           ? `<span class="match-score-pill">🎯 ตรงกับคุณ ${Number(room.matchCount) || 0} Tag (${Number(room.score) || 0}%)</span>`
@@ -1661,7 +1712,7 @@
               .join('')
           : '<span class="tag-badge-mini">ไม่มี Tag</span>';
 
-      const safeHostAvatar = escapeHtml(sanitizeAvatarUrl(room.hostAvatar, PRESET_AVATARS[0]));
+      const safeHostAvatar = escapeHtml(sanitizeAvatarUrl(currentHostAvatar, PRESET_AVATARS[0]));
       const safeRoomCode = escapeHtml(sanitizeRoomCode(room.roomCode));
       const safeMemberCount = Math.max(1, parseInt(room.memberCount, 10) || 1);
 
@@ -1679,7 +1730,7 @@
         <button type="button" class="btn btn-primary btn-sm btn-join-discovered">เข้าร่วม</button>
       `;
 
-      card.querySelector('.host-name-text').textContent = room.hostName;
+      card.querySelector('.host-name-text').textContent = currentHostName;
       card.querySelector('.btn-join-discovered').addEventListener('click', () => {
         joinRoomByCode(room.roomCode);
       });
@@ -1713,7 +1764,16 @@
       const isCurrent = activeRoomCode && room.roomCode === activeRoomCode;
       const item = document.createElement('div');
       item.className = 'friend-item';
-      const safeHostAvatar = escapeHtml(sanitizeAvatarUrl(room.hostAvatar, PRESET_AVATARS[0]));
+
+      let currentHostName = room.hostName;
+      let currentHostAvatar = room.hostAvatar;
+      if (isCurrent && activeRoomCode) {
+        const hostInfo = getRoomHostInfo();
+        currentHostName = hostInfo.hostName;
+        currentHostAvatar = hostInfo.hostAvatar;
+      }
+
+      const safeHostAvatar = escapeHtml(sanitizeAvatarUrl(currentHostAvatar, PRESET_AVATARS[0]));
       const safeRoomCode = escapeHtml(sanitizeRoomCode(room.roomCode));
       const safeMemberCount = Math.max(1, parseInt(room.memberCount, 10) || 1);
       const safeMatchCount = Number(room.matchCount) || 0;
@@ -1736,7 +1796,7 @@
           </button>
         </div>
       `;
-      item.querySelector('.friend-name').textContent = `ห้องของ ${room.hostName}`;
+      item.querySelector('.friend-name').textContent = `ห้องของ ${currentHostName}`;
       const joinBtn = item.querySelector('.btn-side-join');
       if (!isCurrent) {
         joinBtn.addEventListener('click', () => {
@@ -1791,14 +1851,7 @@
     // 1. Someone pinged us to check if we are online -> reply directly to their inbox & presence
     if (data.type === 'ping_status' && senderUid) {
       if (!friendsMap.has(senderUid)) {
-        // Ping sender is not in our friends list -> notify them to mutual unfriend
-        publishJson(topicInbox(senderUid), {
-          type: 'friend_removed',
-          from: {
-            uid: currentUser.uid,
-            username: currentUser.username
-          }
-        });
+        // Not in friends list (e.g. pending request or stranger) -> ignore gracefully, NEVER send destructive friend_removed!
         return;
       }
       publishJson(topicInbox(senderUid), {
@@ -2000,6 +2053,9 @@
         roomCode: activeRoomCode,
         lastSeen: Date.now()
       });
+      if (mqttClient && mqttClient.connected) {
+        mqttClient.subscribe(topicPresence(fromUid), { qos: 0 });
+      }
       saveFriendsList();
       renderFriendRequestsUI();
       renderFriendsList();
@@ -2090,7 +2146,7 @@
       } else if (!activeRoomHostUid) {
         activeRoomHostUid = cleanSenderUid;
       }
-      if (data.sortMode && ['length_1s', 'stable', 'activity'].includes(data.sortMode)) {
+      if (data.sortMode && ['activity', 'length', 'length_1s', 'stable'].includes(data.sortMode)) {
         activeRoomSortMode = data.sortMode;
       }
 
@@ -2124,8 +2180,13 @@
         image: myMember ? myMember.image : currentImage,
         isHost: Boolean(activeRoomHostUid === currentUser.uid),
         hostUid: activeRoomHostUid,
-        sortMode: activeRoomSortMode || 'length_1s'
+        sortMode: activeRoomSortMode || 'activity'
       });
+
+      // If we are host, broadcast authoritative card order to newcomer immediately!
+      if (activeRoomHostUid === currentUser.uid) {
+        syncHostRoomOrder();
+      }
 
       // If we are currently streaming screen, announce to newcomer immediately!
       if (isScreenSharing && currentUser) {
@@ -2157,8 +2218,9 @@
       } else if (data.isHost) {
         activeRoomHostUid = cleanSenderUid;
       }
-      if (data.sortMode && ['length_1s', 'stable', 'activity'].includes(data.sortMode)) {
+      if (data.sortMode && ['activity', 'length', 'length_1s', 'stable'].includes(data.sortMode)) {
         activeRoomSortMode = data.sortMode;
+        updateRoomHostUi();
       }
 
       roomMembers.set(cleanSenderUid, {
@@ -2185,7 +2247,7 @@
 
     if (data.type === 'room_sort_mode') {
       const newMode = data.sortMode;
-      if (['length_1s', 'stable', 'activity'].includes(newMode)) {
+      if (['activity', 'length', 'length_1s', 'stable'].includes(newMode)) {
         activeRoomSortMode = newMode;
         if (data.hostUid) {
           activeRoomHostUid = sanitizeUid(data.hostUid);
@@ -2194,6 +2256,43 @@
         previousMemberRanks.clear();
         reorderLiveCards();
         showToast(`👑 หัวห้องกำหนดการจัดลำดับเป็น: ${getSortModeLabel(newMode)}`);
+      }
+      return;
+    }
+
+    // Host-Authoritative Card Ordering Sync (Synced across all members every 3s)
+    if (data.type === 'room_order_sync' && Array.isArray(data.order)) {
+      const hostUid = sanitizeUid(data.hostUid);
+      if (hostUid) {
+        if (!activeRoomHostUid || activeRoomHostUid === hostUid) {
+          activeRoomHostUid = hostUid;
+          updateRoomHostUi();
+        }
+      }
+
+      if (data.sortMode && ['activity', 'length', 'length_1s', 'stable'].includes(data.sortMode)) {
+        if (data.sortMode !== activeRoomSortMode) {
+          activeRoomSortMode = data.sortMode;
+          updateRoomHostUi();
+        }
+      }
+
+      // Non-host members apply the host's authoritative order directly!
+      const isHost = Boolean(currentUser && activeRoomHostUid && activeRoomHostUid === currentUser.uid);
+      if (!isHost) {
+        const sortedFromHost = [];
+        data.order.forEach((uid) => {
+          const cleanUid = sanitizeUid(uid);
+          const m = roomMembers.get(cleanUid);
+          if (m) sortedFromHost.push(m);
+        });
+        // Include any newly joined members that host hasn't listed yet
+        roomMembers.forEach((m, uid) => {
+          if (!data.order.includes(uid)) {
+            sortedFromHost.push(m);
+          }
+        });
+        reorderLiveCards(sortedFromHost);
       }
       return;
     }
@@ -3706,7 +3805,7 @@
     activeRoomCode = clean;
     if (isCreator) {
       activeRoomHostUid = currentUser.uid;
-      activeRoomSortMode = 'length_1s';
+      activeRoomSortMode = 'activity';
     }
     roomMembers.clear();
     currentImage = null;
@@ -3748,7 +3847,7 @@
 
   function createNewRoom() {
     activeRoomHostUid = currentUser ? currentUser.uid : null;
-    activeRoomSortMode = 'length_1s';
+    activeRoomSortMode = 'activity';
     joinRoomByCode(generateRoomCode(), true);
   }
 
@@ -3888,23 +3987,14 @@
       const isHost = Boolean(currentUser && activeRoomHostUid && activeRoomHostUid === currentUser.uid);
       if (!isHost) {
         showToast('เฉพาะหัวห้องเท่านั้นที่สามารถเปลี่ยนการจัดลำดับได้');
-        selectRoomSortMode.value = activeRoomSortMode || 'length_1s';
+        selectRoomSortMode.value = activeRoomSortMode || 'activity';
         return;
       }
       const newMode = selectRoomSortMode.value;
       activeRoomSortMode = newMode;
-      showToast(`👑 หัวห้องเปลี่ยนการจัดลำดับเป็น: ${getSortModeLabel(newMode)}`);
       previousMemberRanks.clear();
-      reorderLiveCards();
-
-      // Broadcast to room
-      if (activeRoomCode) {
-        publishJson(topicRoom(activeRoomCode), {
-          type: 'room_sort_mode',
-          sortMode: newMode,
-          hostUid: currentUser.uid
-        });
-      }
+      syncHostRoomOrder();
+      showToast(`👑 เปลี่ยนการจัดลำดับเป็น: ${getSortModeLabel(newMode)}`);
     });
   }
 
@@ -4138,18 +4228,45 @@
   }
 
   function getSortModeLabel(mode) {
-    if (mode === 'length_1s') return '📏 เรียงตามความยาว (1 วิ)';
+    if (mode === 'length' || mode === 'length_1s') return '📏 เรียงลำดับตามความยาวตัวอักษร';
     if (mode === 'stable') return '📌 ตำแหน่งคงที่ (ไม่แย่งที่)';
     if (mode === 'activity') return '⚡ ตามกิจกรรมล่าสุด';
-    return mode || '📏 เรียงตามความยาว (1 วิ)';
+    return mode || '⚡ ตามกิจกรรมล่าสุด';
   }
 
   function startRoomSortInterval() {
     if (roomSortIntervalTimer) clearInterval(roomSortIntervalTimer);
     roomSortIntervalTimer = setInterval(() => {
       if (!activeRoomCode) return;
-      reorderLiveCards();
-    }, 1000); // 1-second batch reordering
+      const isHost = Boolean(!activeRoomHostUid || activeRoomHostUid === currentUser?.uid);
+      if (isHost) {
+        syncHostRoomOrder();
+      }
+    }, 3000); // 3-second batch reordering as requested by user
+  }
+
+  function syncHostRoomOrder() {
+    if (!activeRoomCode || !currentUser) return;
+    const isHost = Boolean(!activeRoomHostUid || activeRoomHostUid === currentUser.uid);
+    if (!isHost) return;
+
+    const members = Array.from(roomMembers.values());
+    if (members.length === 0) return;
+
+    const sorted = sortRoomMembers(members);
+    const orderUids = sorted.map((m) => m.uid);
+
+    // Apply locally on host with smooth glide
+    reorderLiveCards(sorted);
+
+    // Broadcast authoritative order and mode to all room members
+    publishJson(topicRoom(activeRoomCode), {
+      type: 'room_order_sync',
+      hostUid: currentUser.uid,
+      sortMode: activeRoomSortMode || 'activity',
+      order: orderUids,
+      ts: Date.now()
+    });
   }
 
   function stopRoomSortInterval() {
@@ -4166,7 +4283,7 @@
       roomSortWrap.classList.toggle('is-host', isHost);
     }
     if (selectRoomSortMode) {
-      selectRoomSortMode.value = activeRoomSortMode || 'length_1s';
+      selectRoomSortMode.value = activeRoomSortMode || 'activity';
       selectRoomSortMode.disabled = !isHost;
       selectRoomSortMode.title = isHost
         ? '👑 คุณคือหัวห้อง: สามารถเลือกรูปแบบการจัดลำดับสมาชิกในห้องได้'
@@ -4175,7 +4292,7 @@
   }
 
   function sortRoomMembers(members) {
-    const mode = activeRoomSortMode || 'length_1s';
+    const mode = activeRoomSortMode || 'activity';
 
     return members.slice().sort((a, b) => {
       const infoA = getMemberEngagementInfo(a);
@@ -4203,9 +4320,9 @@
         return (a.username || '').localeCompare(b.username || '');
       }
 
-      // MODE B: 'activity' (Most recent activity timestamp)
+      // MODE B: 'activity' (Most recent activity timestamp - 3s cycle)
       if (mode === 'activity') {
-        if (infoA.tier === 2) {
+        if (infoA.tier === 2 && infoB.tier === 2) {
           if (infoB.lastActive !== infoA.lastActive) {
             return infoB.lastActive - infoA.lastActive;
           }
@@ -4224,7 +4341,7 @@
         return (a.username || '').localeCompare(b.username || '');
       }
 
-      // MODE C: 'length_1s' (Default - Longest text first with 8-character hysteresis buffer + Idle decay)
+      // MODE C: 'length' / 'length_1s' (Longest text first with 8-character hysteresis buffer + Idle decay - 3s cycle)
       if (infoA.tier === 2 && infoB.tier === 2) {
         const rawA = (a.currentText || '').trim();
         const rawB = (b.currentText || '').trim();
@@ -4276,7 +4393,7 @@
     });
   }
 
-  function reorderLiveCards() {
+  function reorderLiveCards(sortedMembersOverride = null) {
     if (!liveCardsGrid || !activeRoomCode) return;
     const members = Array.from(roomMembers.values());
     if (members.length === 0) return;
@@ -4290,7 +4407,9 @@
       }
     });
 
-    const sorted = sortRoomMembers(members);
+    const sorted = Array.isArray(sortedMembersOverride) && sortedMembersOverride.length > 0
+      ? sortedMembersOverride
+      : sortRoomMembers(members);
 
     sorted.forEach((member, index) => {
       // Record rank for hysteresis comparison
@@ -4340,8 +4459,13 @@
           el.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
           el.style.transition = 'transform 0s';
           requestAnimationFrame(() => {
-            el.style.transition = 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)';
+            el.style.transition = 'transform 1.4s cubic-bezier(0.16, 1, 0.3, 1)';
             el.style.transform = '';
+            setTimeout(() => {
+              if (el && el.style) {
+                el.style.transition = '';
+              }
+            }, 1450);
           });
         }
       });
@@ -4506,57 +4630,79 @@
 
     const member = roomMembers.get(uid);
     const info = getMemberEngagementInfo(member || { uid, currentText: text, image: safeImage });
+    const isSelf = Boolean(currentUser && currentUser.uid === uid);
 
     cardEl.classList.toggle('is-streamer', info.isStreamer);
     cardEl.classList.toggle('actively-typing', hasContent);
     cardEl.classList.toggle('is-active-engagement', info.tier === 2);
     cardEl.classList.toggle('is-idle', info.tier === 3);
 
-    if (hasContent) {
-      if (hasImage) {
-        const imgWrap = document.createElement('div');
-        imgWrap.className = 'live-card-image-wrap';
-        if (String(safeImage).startsWith('data:video/')) {
-          const vidEl = document.createElement('video');
-          vidEl.src = safeImage;
-          vidEl.className = 'live-card-video';
-          vidEl.autoplay = true;
-          vidEl.loop = true;
-          vidEl.muted = true;
-          vidEl.playsInline = true;
-          imgWrap.appendChild(vidEl);
-        } else {
-          const imgEl = document.createElement('img');
-          imgEl.src = safeImage;
-          imgEl.alt = 'Live image';
-          imgEl.className = 'live-card-img';
-          imgWrap.appendChild(imgEl);
+    // 1. Prominent Live Stream Icon in Chat:
+    // Placed before GIF/Image and text (to the left of GIF)
+    if (info.isStreamer) {
+      const streamBadge = document.createElement('div');
+      streamBadge.className = 'live-stream-chat-badge';
+      streamBadge.title = isSelf
+        ? 'คุณกำลังไลฟ์สดอยู่ (คลิกเพื่อดู/ขยายหน้าต่างไลฟ์)'
+        : `${member?.username || 'เพื่อน'} กำลังไลฟ์สด (คลิกเพื่อเริ่มดูหน้าจอ)`;
+      streamBadge.innerHTML = `
+        <div class="live-stream-chat-icon-wrap">
+          <span class="live-stream-chat-emoji">🖥️</span>
+          <span class="live-stream-chat-ping"></span>
+        </div>
+        <div class="live-stream-chat-tag">
+          <span class="live-stream-dot"></span>
+          <span class="live-stream-label">LIVE</span>
+        </div>
+      `;
+      streamBadge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (floatingStreamWindow) floatingStreamWindow.classList.remove('hidden');
+        if (!isSelf && !isWatching) {
+          toggleWatchStream();
         }
-        bodyEl.appendChild(imgWrap);
-      }
+      });
+      bodyEl.appendChild(streamBadge);
+    }
 
-      if (hasText) {
-        const textWrap = document.createElement('div');
-        textWrap.className = 'live-card-text-wrap';
-        const textSpan = document.createElement('span');
-        textSpan.className = 'live-card-text';
-        textSpan.textContent = text;
-        const cursorSpan = document.createElement('span');
-        cursorSpan.className = 'live-cursor';
-        textWrap.appendChild(textSpan);
-        textWrap.appendChild(cursorSpan);
-        bodyEl.appendChild(textWrap);
-      } else if (hasImage) {
-        // If has image but no text yet: show live-cursor on the right if it's the current user (ready to type)
-        if (currentUser && currentUser.uid === uid) {
-          const textWrap = document.createElement('div');
-          textWrap.className = 'live-card-text-wrap';
-          const cursorSpan = document.createElement('span');
-          cursorSpan.className = 'live-cursor';
-          textWrap.appendChild(cursorSpan);
-          bodyEl.appendChild(textWrap);
-        }
+    // 2. GIF / Image: Appended after stream badge, so it's to the right of the live icon
+    if (hasImage) {
+      const imgWrap = document.createElement('div');
+      imgWrap.className = 'live-card-image-wrap';
+      if (String(safeImage).startsWith('data:video/')) {
+        const vidEl = document.createElement('video');
+        vidEl.src = safeImage;
+        vidEl.className = 'live-card-video';
+        vidEl.autoplay = true;
+        vidEl.loop = true;
+        vidEl.muted = true;
+        vidEl.playsInline = true;
+        imgWrap.appendChild(vidEl);
       } else {
+        const imgEl = document.createElement('img');
+        imgEl.src = safeImage;
+        imgEl.alt = 'Live image';
+        imgEl.className = 'live-card-img';
+        imgWrap.appendChild(imgEl);
+      }
+      bodyEl.appendChild(imgWrap);
+    }
+
+    // 3. Text and Caret
+    if (hasText) {
+      const textWrap = document.createElement('div');
+      textWrap.className = 'live-card-text-wrap';
+      const textSpan = document.createElement('span');
+      textSpan.className = 'live-card-text';
+      textSpan.textContent = text;
+      const cursorSpan = document.createElement('span');
+      cursorSpan.className = 'live-cursor';
+      textWrap.appendChild(textSpan);
+      textWrap.appendChild(cursorSpan);
+      bodyEl.appendChild(textWrap);
+    } else if (hasImage) {
+      // If has image but no text yet: show live-cursor on the right if it's the current user (ready to type)
+      if (isSelf) {
         const textWrap = document.createElement('div');
         textWrap.className = 'live-card-text-wrap';
         const cursorSpan = document.createElement('span');
@@ -4564,14 +4710,29 @@
         textWrap.appendChild(cursorSpan);
         bodyEl.appendChild(textWrap);
       }
-
-      bodyEl.scrollTop = bodyEl.scrollHeight;
-    } else {
+    } else if (!info.isStreamer) {
       const placeholder = document.createElement('span');
       placeholder.className = 'live-card-placeholder';
       placeholder.textContent = 'ยังไม่มีข้อความ (Non-Active)... (กด Enter เมื่อต้องการล้างทั้งหมด)';
       bodyEl.appendChild(placeholder);
+    } else {
+      // Streamer with no image and no text yet
+      if (isSelf) {
+        const textWrap = document.createElement('div');
+        textWrap.className = 'live-card-text-wrap';
+        const cursorSpan = document.createElement('span');
+        cursorSpan.className = 'live-cursor';
+        textWrap.appendChild(cursorSpan);
+        bodyEl.appendChild(textWrap);
+      } else {
+        const placeholder = document.createElement('span');
+        placeholder.className = 'live-card-placeholder';
+        placeholder.textContent = 'กำลังถ่ายทอดสดหน้าจอ... (คลิกไอคอน LIVE เพื่อรับชม)';
+        bodyEl.appendChild(placeholder);
+      }
     }
+
+    bodyEl.scrollTop = bodyEl.scrollHeight;
 
     if (info.isStreamer) {
       pillEl.className = 'typing-status-pill streamer-badge';
@@ -5436,6 +5597,40 @@
     triggerEnterClear();
   });
 
+  // Global Enter Key Handler: When user is not currently focusing an input, pressing Enter focuses the chat input with caret ready to type
+  window.addEventListener('keydown', (e) => {
+    const isEnter = e.key === 'Enter' || e.code === 'Enter' || e.keyCode === 13;
+    if (!isEnter) return;
+    if (e.isComposing) return;
+
+    const activeEl = document.activeElement;
+    // If user is already focused inside the liveTypingInput, let liveTypingInput handle sending/clearing
+    if (activeEl === liveTypingInput) return;
+
+    // If another editable field (search, friend UID, modal input) is active, let it handle keydown
+    const isOtherInput = activeEl && (
+      activeEl.tagName === 'INPUT' ||
+      activeEl.tagName === 'TEXTAREA' ||
+      activeEl.tagName === 'SELECT' ||
+      activeEl.isContentEditable
+    );
+    if (isOtherInput) return;
+
+    // Do not intercept if any modal / popup is open
+    const isModalOpen = Boolean(document.querySelector('.modal-backdrop:not(.hidden), .crop-modal-backdrop:not(.hidden), #themeModal:not(.hidden), #inviteModal:not(.hidden), #profileModal:not(.hidden), #securityAlertModal:not(.hidden)'));
+    if (isModalOpen) return;
+
+    // Only activate when user is inside an active room and room view is visible
+    if (activeRoomCode && liveTypingInput && roomActiveView && !roomActiveView.classList.contains('hidden')) {
+      e.preventDefault();
+      liveTypingInput.focus();
+      const caretPos = liveTypingInput.value.length;
+      try {
+        liveTypingInput.setSelectionRange(caretPos, caretPos);
+      } catch (err) {}
+    }
+  });
+
   // --- Invitation Modal Buttons ---
   btnAcceptInvite.addEventListener('click', () => {
     inviteModal.classList.add('hidden');
@@ -5533,7 +5728,7 @@
   }
 
   function setBgImageUI(dataUrl) {
-    if (!dataUrl || typeof dataUrl !== 'string' || !/^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/i.test(dataUrl.trim())) {
+    if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
       clearBgImageUI();
       return;
     }
@@ -5565,139 +5760,180 @@
     if (customBgControls) customBgControls.classList.add('hidden');
   }
 
-  function applyTheme(rawTheme) {
-    const theme = { ...DEFAULT_THEME, ...rawTheme };
-    const root = document.documentElement;
+  // High-performance theme persistence (Debounced to eliminate disk I/O while dragging sliders)
+  let themeSaveTimer = null;
+  function persistActiveTheme() {
+    clearTimeout(themeSaveTimer);
+    themeSaveTimer = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY_THEME, JSON.stringify(activeTheme));
+      } catch (err) {
+        console.warn('Failed to save theme:', err);
+      }
+    }, 350);
+  }
+
+  // Smooth, rAF-coalesced CSS properties updater for 60-120fps live theme preview
+  let themeRafPending = false;
+  let pendingThemeVars = null;
+
+  function applyThemeCssVars(rawTheme) {
+    pendingThemeVars = rawTheme;
+    if (themeRafPending) return;
+    themeRafPending = true;
+
+    requestAnimationFrame(() => {
+      themeRafPending = false;
+      if (!pendingThemeVars) return;
+      const theme = { ...DEFAULT_THEME, ...pendingThemeVars };
+      const root = document.documentElement;
+      const brightness = theme.brightness !== undefined ? theme.brightness : 100;
+      const opacity = theme.opacity !== undefined ? theme.opacity : 88;
+      const chatFontSize = theme.chatFontSize !== undefined ? theme.chatFontSize : 20;
+      const alphaRatio = Math.max(0, Math.min(100, opacity)) / 100;
+      const panelAlpha = alphaRatio;
+      const cardAlpha = alphaRatio;
+      const panelBlur = Math.round(16 * Math.min(1, alphaRatio * 1.5));
+      const isLight = isLightColor(theme.bg);
+
+      // Primary & Accent
+      const primaryHover = isLight ? mixHex(theme.primary, '#000000', 0.15) : mixHex(theme.primary, '#ffffff', 0.15);
+      const primaryText = isLight ? mixHex(theme.primary, '#000000', 0.2) : mixHex(theme.primary, '#ffffff', 0.38);
+
+      root.style.setProperty('--primary', theme.primary);
+      root.style.setProperty('--primary-hover', primaryHover);
+      root.style.setProperty('--primary-glow', hexToRgba(theme.primary, 0.35));
+      root.style.setProperty('--primary-soft', hexToRgba(theme.primary, 0.16));
+      root.style.setProperty('--primary-border', hexToRgba(theme.primary, 0.45));
+      root.style.setProperty('--primary-text', primaryText);
+
+      root.style.setProperty('--accent', theme.accent);
+      root.style.setProperty('--accent-glow', hexToRgba(theme.accent, 0.35));
+      root.style.setProperty('--accent-soft', hexToRgba(theme.accent, 0.16));
+      root.style.setProperty('--accent-border', hexToRgba(theme.accent, 0.45));
+
+      // Backgrounds & Cards
+      root.style.setProperty('--bg-dark', theme.bg);
+      root.style.setProperty('--bg-topbar', hexToRgba(theme.card, panelAlpha));
+      root.style.setProperty('--bg-panel', hexToRgba(theme.card, panelAlpha));
+      root.style.setProperty('--bg-subpanel', hexToRgba(theme.chatCard, Math.max(0, cardAlpha * 0.75)));
+      root.style.setProperty('--bg-card', hexToRgba(theme.chatCard, cardAlpha));
+      root.style.setProperty('--bg-card-idle', hexToRgba(theme.chatCard, Math.max(0, cardAlpha * 0.5)));
+      root.style.setProperty('--bg-card-self', hexToRgba(theme.primary, Math.max(0, (isLight ? 0.12 : 0.16) * (alphaRatio > 0 ? Math.max(0.4, alphaRatio) : 0))));
+      root.style.setProperty('--bg-input', hexToRgba(theme.chatCard, cardAlpha));
+      root.style.setProperty('--panel-blur', `${panelBlur}px`);
+
+      // Subtle surfaces & borders
+      root.style.setProperty('--surface-subtle', isLight ? 'rgba(15, 23, 42, 0.06)' : 'rgba(255, 255, 255, 0.06)');
+      root.style.setProperty('--surface-hover', isLight ? 'rgba(15, 23, 42, 0.12)' : 'rgba(255, 255, 255, 0.12)');
+      root.style.setProperty('--border-subtle', hexToRgba(theme.border, 0.48));
+      root.style.setProperty('--border-active', hexToRgba(theme.primary, 0.6));
+
+      // Typography & Chat Colors
+      root.style.setProperty('--text-main', theme.text);
+      root.style.setProperty('--text-muted', theme.mutedText);
+      root.style.setProperty('--chat-text', theme.chatText);
+      root.style.setProperty('--chat-text-self', theme.selfChatText);
+      root.style.setProperty('--chat-font-size', `${chatFontSize}px`);
+
+      // Corner Radius & Brightness
+      root.style.setProperty('--radius-lg', `${theme.radius + 4}px`);
+      root.style.setProperty('--radius-md', `${theme.radius}px`);
+      root.style.setProperty('--radius-sm', `${Math.max(0, theme.radius - 4)}px`);
+      root.style.setProperty('--ui-brightness', `${brightness}%`);
+
+      // Custom Background overlay controls (instant CSS variable, no image re-decoding)
+      const bgDim = theme.bgDim !== undefined ? theme.bgDim : 30;
+      const bgBlur = theme.bgBlur !== undefined ? theme.bgBlur : 0;
+      root.style.setProperty('--bg-overlay-dim', (bgDim / 100).toString());
+      root.style.setProperty('--bg-overlay-blur', `${bgBlur}px`);
+
+      // Update browser theme-color meta tag
+      const metaThemeColor = document.querySelector('meta[name="theme-color"]');
+      if (metaThemeColor) {
+        metaThemeColor.setAttribute('content', theme.bg);
+      }
+    });
+  }
+
+  // Synchronize values and labels across all theme inputs in modal
+  function syncThemeInputsUI(theme) {
+    if (!colorPickerPrimary) return;
     const brightness = theme.brightness !== undefined ? theme.brightness : 100;
     const opacity = theme.opacity !== undefined ? theme.opacity : 88;
     const chatFontSize = theme.chatFontSize !== undefined ? theme.chatFontSize : 20;
-    const alphaRatio = Math.max(0, Math.min(100, opacity)) / 100;
-    const panelAlpha = alphaRatio;
-    const cardAlpha = alphaRatio;
-    const panelBlur = Math.round(16 * Math.min(1, alphaRatio * 1.5));
-    const isLight = isLightColor(theme.bg);
-
-    // Primary & Accent
-    const primaryHover = isLight ? mixHex(theme.primary, '#000000', 0.15) : mixHex(theme.primary, '#ffffff', 0.15);
-    const primaryText = isLight ? mixHex(theme.primary, '#000000', 0.2) : mixHex(theme.primary, '#ffffff', 0.38);
-
-    root.style.setProperty('--primary', theme.primary);
-    root.style.setProperty('--primary-hover', primaryHover);
-    root.style.setProperty('--primary-glow', hexToRgba(theme.primary, 0.35));
-    root.style.setProperty('--primary-soft', hexToRgba(theme.primary, 0.16));
-    root.style.setProperty('--primary-border', hexToRgba(theme.primary, 0.45));
-    root.style.setProperty('--primary-text', primaryText);
-
-    root.style.setProperty('--accent', theme.accent);
-    root.style.setProperty('--accent-glow', hexToRgba(theme.accent, 0.35));
-    root.style.setProperty('--accent-soft', hexToRgba(theme.accent, 0.16));
-    root.style.setProperty('--accent-border', hexToRgba(theme.accent, 0.45));
-
-    // Backgrounds & Cards
-    root.style.setProperty('--bg-dark', theme.bg);
-    root.style.setProperty('--bg-topbar', hexToRgba(theme.card, panelAlpha));
-    root.style.setProperty('--bg-panel', hexToRgba(theme.card, panelAlpha));
-    root.style.setProperty('--bg-subpanel', hexToRgba(theme.chatCard, Math.max(0, cardAlpha * 0.75)));
-    root.style.setProperty('--bg-card', hexToRgba(theme.chatCard, cardAlpha));
-    root.style.setProperty('--bg-card-idle', hexToRgba(theme.chatCard, Math.max(0, cardAlpha * 0.5)));
-    root.style.setProperty('--bg-card-self', hexToRgba(theme.primary, Math.max(0, (isLight ? 0.12 : 0.16) * (alphaRatio > 0 ? Math.max(0.4, alphaRatio) : 0))));
-    root.style.setProperty('--bg-input', hexToRgba(theme.chatCard, cardAlpha));
-    root.style.setProperty('--panel-blur', `${panelBlur}px`);
-
-    // Subtle surfaces & borders
-    root.style.setProperty('--surface-subtle', isLight ? 'rgba(15, 23, 42, 0.06)' : 'rgba(255, 255, 255, 0.06)');
-    root.style.setProperty('--surface-hover', isLight ? 'rgba(15, 23, 42, 0.12)' : 'rgba(255, 255, 255, 0.12)');
-    root.style.setProperty('--border-subtle', hexToRgba(theme.border, 0.48));
-    root.style.setProperty('--border-active', hexToRgba(theme.primary, 0.6));
-
-    // Typography & Chat Colors
-    root.style.setProperty('--text-main', theme.text);
-    root.style.setProperty('--text-muted', theme.mutedText);
-    root.style.setProperty('--chat-text', theme.chatText);
-    root.style.setProperty('--chat-text-self', theme.selfChatText);
-    root.style.setProperty('--chat-font-size', `${chatFontSize}px`);
-
-    // Corner Radius & Brightness
-    root.style.setProperty('--radius-lg', `${theme.radius + 4}px`);
-    root.style.setProperty('--radius-md', `${theme.radius}px`);
-    root.style.setProperty('--radius-sm', `${Math.max(0, theme.radius - 4)}px`);
-    root.style.setProperty('--ui-brightness', `${brightness}%`);
-
-    // Custom Background overlay controls
     const bgDim = theme.bgDim !== undefined ? theme.bgDim : 30;
     const bgBlur = theme.bgBlur !== undefined ? theme.bgBlur : 0;
-    root.style.setProperty('--bg-overlay-dim', (bgDim / 100).toString());
-    root.style.setProperty('--bg-overlay-blur', `${bgBlur}px`);
 
-    // Update browser theme-color meta tag
-    const metaThemeColor = document.querySelector('meta[name="theme-color"]');
-    if (metaThemeColor) {
-      metaThemeColor.setAttribute('content', theme.bg);
-    }
+    colorPickerPrimary.value = theme.primary;
+    if (hexPrimary) hexPrimary.textContent = theme.primary;
+    colorPickerAccent.value = theme.accent;
+    if (hexAccent) hexAccent.textContent = theme.accent;
+    colorPickerBg.value = theme.bg;
+    if (hexBg) hexBg.textContent = theme.bg;
+    colorPickerCard.value = theme.card;
+    if (hexCard) hexCard.textContent = theme.card;
+    if (colorPickerChatCard) colorPickerChatCard.value = theme.chatCard;
+    if (hexChatCard) hexChatCard.textContent = theme.chatCard;
+    if (colorPickerBorder) colorPickerBorder.value = theme.border;
+    if (hexBorder) hexBorder.textContent = theme.border;
+    colorPickerText.value = theme.text;
+    if (hexText) hexText.textContent = theme.text;
+    if (colorPickerMutedText) colorPickerMutedText.value = theme.mutedText;
+    if (hexMutedText) hexMutedText.textContent = theme.mutedText;
+    if (colorPickerChatText) colorPickerChatText.value = theme.chatText;
+    if (hexChatText) hexChatText.textContent = theme.chatText;
+    if (colorPickerSelfChatText) colorPickerSelfChatText.value = theme.selfChatText;
+    if (hexSelfChatText) hexSelfChatText.textContent = theme.selfChatText;
 
-    // Sync input controls
-    if (colorPickerPrimary) {
-      colorPickerPrimary.value = theme.primary;
-      if (hexPrimary) hexPrimary.textContent = theme.primary;
-      colorPickerAccent.value = theme.accent;
-      if (hexAccent) hexAccent.textContent = theme.accent;
-      colorPickerBg.value = theme.bg;
-      if (hexBg) hexBg.textContent = theme.bg;
-      colorPickerCard.value = theme.card;
-      if (hexCard) hexCard.textContent = theme.card;
-      if (colorPickerChatCard) colorPickerChatCard.value = theme.chatCard;
-      if (hexChatCard) hexChatCard.textContent = theme.chatCard;
-      if (colorPickerBorder) colorPickerBorder.value = theme.border;
-      if (hexBorder) hexBorder.textContent = theme.border;
-      colorPickerText.value = theme.text;
-      if (hexText) hexText.textContent = theme.text;
-      if (colorPickerMutedText) colorPickerMutedText.value = theme.mutedText;
-      if (hexMutedText) hexMutedText.textContent = theme.mutedText;
-      if (colorPickerChatText) colorPickerChatText.value = theme.chatText;
-      if (hexChatText) hexChatText.textContent = theme.chatText;
-      if (colorPickerSelfChatText) colorPickerSelfChatText.value = theme.selfChatText;
-      if (hexSelfChatText) hexSelfChatText.textContent = theme.selfChatText;
+    if (rangeChatFontSize) rangeChatFontSize.value = chatFontSize;
+    if (chatFontSizeValText) chatFontSizeValText.textContent = `${chatFontSize}px`;
+    rangeRadius.value = theme.radius;
+    if (radiusValText) radiusValText.textContent = `${theme.radius}px`;
+    if (rangeOpacity) rangeOpacity.value = opacity;
+    if (opacityValText) opacityValText.textContent = `${opacity}%`;
+    if (rangeBrightness) rangeBrightness.value = brightness;
+    if (brightnessValText) brightnessValText.textContent = `${brightness}%`;
 
-      if (rangeChatFontSize) rangeChatFontSize.value = chatFontSize;
-      if (chatFontSizeValText) chatFontSizeValText.textContent = `${chatFontSize}px`;
-      rangeRadius.value = theme.radius;
-      if (radiusValText) radiusValText.textContent = `${theme.radius}px`;
-      if (rangeOpacity) rangeOpacity.value = opacity;
-      if (opacityValText) opacityValText.textContent = `${opacity}%`;
-      if (rangeBrightness) rangeBrightness.value = brightness;
-      if (brightnessValText) brightnessValText.textContent = `${brightness}%`;
+    if (rangeBgDim) rangeBgDim.value = bgDim;
+    if (bgDimValText) bgDimValText.textContent = `${bgDim}%`;
+    if (rangeBgBlur) rangeBgBlur.value = bgBlur;
+    if (bgBlurValText) bgBlurValText.textContent = `${bgBlur}px`;
+  }
 
-      if (rangeBgDim) rangeBgDim.value = bgDim;
-      if (bgDimValText) bgDimValText.textContent = `${bgDim}%`;
-      if (rangeBgBlur) rangeBgBlur.value = bgBlur;
-      if (bgBlurValText) bgBlurValText.textContent = `${bgBlur}px`;
-    }
+  // Full apply (initial boot, presets, reset)
+  function applyTheme(rawTheme, syncBg = true) {
+    const theme = { ...DEFAULT_THEME, ...rawTheme };
+    applyThemeCssVars(theme);
+    syncThemeInputsUI(theme);
 
-    // Apply or remove custom wallpaper
-    if (theme.hasCustomBg) {
-      if (cachedBgDataUrl) {
-        setBgImageUI(cachedBgDataUrl);
+    if (syncBg) {
+      if (theme.hasCustomBg) {
+        if (cachedBgDataUrl) {
+          setBgImageUI(cachedBgDataUrl);
+        } else {
+          loadCustomBgAsset().then((dataUrl) => {
+            if (dataUrl && activeTheme.hasCustomBg) {
+              cachedBgDataUrl = dataUrl;
+              setBgImageUI(dataUrl);
+            } else {
+              clearBgImageUI();
+            }
+          });
+        }
       } else {
-        loadCustomBgAsset().then((dataUrl) => {
-          if (dataUrl && activeTheme.hasCustomBg) {
-            cachedBgDataUrl = dataUrl;
-            setBgImageUI(dataUrl);
-          } else {
-            clearBgImageUI();
-          }
-        });
+        clearBgImageUI();
       }
-    } else {
-      clearBgImageUI();
     }
 
-    localStorage.setItem(STORAGE_KEY_THEME, JSON.stringify(theme));
+    persistActiveTheme();
   }
 
   let activeTheme = loadCustomTheme();
   applyTheme(activeTheme);
 
   btnOpenTheme.addEventListener('click', () => {
+    syncThemeInputsUI(activeTheme);
     themeModal.classList.remove('hidden');
   });
 
@@ -5721,31 +5957,36 @@
     showToast('รีเซ็ตธีมกลับเป็นค่าเริ่มต้นแล้ว');
   });
 
-  // Color picker & slider events
-  const bindThemeInput = (el, key, isInt = false) => {
+  // Highly optimized color picker & slider events (Zero regex, zero DB calls, rAF throttled)
+  const bindThemeInput = (el, labelEl, key, isInt = false, suffix = '') => {
     if (!el) return;
     el.addEventListener('input', (e) => {
-      activeTheme[key] = isInt ? parseInt(e.target.value, 10) : e.target.value;
-      applyTheme(activeTheme);
+      const val = isInt ? parseInt(e.target.value, 10) : e.target.value;
+      activeTheme[key] = val;
+      if (labelEl) {
+        labelEl.textContent = `${val}${suffix}`;
+      }
+      applyThemeCssVars(activeTheme);
+      persistActiveTheme();
     });
   };
 
-  bindThemeInput(colorPickerPrimary, 'primary');
-  bindThemeInput(colorPickerAccent, 'accent');
-  bindThemeInput(colorPickerBg, 'bg');
-  bindThemeInput(colorPickerCard, 'card');
-  bindThemeInput(colorPickerChatCard, 'chatCard');
-  bindThemeInput(colorPickerBorder, 'border');
-  bindThemeInput(colorPickerText, 'text');
-  bindThemeInput(colorPickerMutedText, 'mutedText');
-  bindThemeInput(colorPickerChatText, 'chatText');
-  bindThemeInput(colorPickerSelfChatText, 'selfChatText');
-  bindThemeInput(rangeChatFontSize, 'chatFontSize', true);
-  bindThemeInput(rangeRadius, 'radius', true);
-  bindThemeInput(rangeOpacity, 'opacity', true);
-  bindThemeInput(rangeBrightness, 'brightness', true);
-  bindThemeInput(rangeBgDim, 'bgDim', true);
-  bindThemeInput(rangeBgBlur, 'bgBlur', true);
+  bindThemeInput(colorPickerPrimary, hexPrimary, 'primary');
+  bindThemeInput(colorPickerAccent, hexAccent, 'accent');
+  bindThemeInput(colorPickerBg, hexBg, 'bg');
+  bindThemeInput(colorPickerCard, hexCard, 'card');
+  bindThemeInput(colorPickerChatCard, hexChatCard, 'chatCard');
+  bindThemeInput(colorPickerBorder, hexBorder, 'border');
+  bindThemeInput(colorPickerText, hexText, 'text');
+  bindThemeInput(colorPickerMutedText, hexMutedText, 'mutedText');
+  bindThemeInput(colorPickerChatText, hexChatText, 'chatText');
+  bindThemeInput(colorPickerSelfChatText, hexSelfChatText, 'selfChatText');
+  bindThemeInput(rangeChatFontSize, chatFontSizeValText, 'chatFontSize', true, 'px');
+  bindThemeInput(rangeRadius, radiusValText, 'radius', true, 'px');
+  bindThemeInput(rangeOpacity, opacityValText, 'opacity', true, '%');
+  bindThemeInput(rangeBrightness, brightnessValText, 'brightness', true, '%');
+  bindThemeInput(rangeBgDim, bgDimValText, 'bgDim', true, '%');
+  bindThemeInput(rangeBgBlur, bgBlurValText, 'bgBlur', true, 'px');
 
   if (btnRemoveCustomBg) {
     btnRemoveCustomBg.addEventListener('click', async () => {
@@ -6648,6 +6889,10 @@
     if (btnStopWatchStream) btnStopWatchStream.textContent = '🔴 หยุดไลฟ์';
     updateScreenShareButtonState();
     reorderLiveCards();
+    const myMem = roomMembers.get(currentUser.uid);
+    if (myMem) {
+      updateSingleCardContent(currentUser.uid, myMem.currentText, myMem.image);
+    }
 
     updateQualityDisplay();
 
@@ -6695,6 +6940,10 @@
     activeStreamerUsername = null;
     updateScreenShareButtonState();
     reorderLiveCards();
+    const myMem = roomMembers.get(currentUser.uid);
+    if (myMem) {
+      updateSingleCardContent(currentUser.uid, myMem.currentText, myMem.image);
+    }
     renderAllLiveCards();
 
     if (wasStreamer && activeRoomCode) {
@@ -6820,6 +7069,10 @@
 
     updateScreenShareButtonState();
     reorderLiveCards();
+    const myMem = roomMembers.get(currentUser.uid);
+    if (myMem) {
+      updateSingleCardContent(currentUser.uid, myMem.currentText, myMem.image);
+    }
     renderAllLiveCards();
 
     // Notify streamer to release encoding bandwidth
@@ -6846,6 +7099,10 @@
     if (floatingStreamWindow) floatingStreamWindow.classList.add('hidden');
     updateScreenShareButtonState();
     reorderLiveCards();
+    const myMem = roomMembers.get(currentUser.uid);
+    if (myMem) {
+      updateSingleCardContent(currentUser.uid, myMem.currentText, myMem.image);
+    }
   }
 
   // 6. WebRTC Sender Quality Downscaling, Framerate & Bitrate Control
