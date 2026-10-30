@@ -3383,3 +3383,139 @@ kbd {
   }
 }
 
+/* Security Threat Alert & Sanitizer Modal */
+.security-alert-modal-card {
+  max-width: 530px;
+  width: 92%;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  box-shadow: 0 12px 40px rgba(239, 68, 68, 0.22), 0 4px 16px rgba(0, 0, 0, 0.4);
+  animation: modalScaleIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.security-header {
+  border-bottom: 1px solid rgba(239, 68, 68, 0.25);
+  padding-bottom: 12px;
+}
+
+.security-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.security-shield-icon {
+  font-size: 2rem;
+  line-height: 1;
+  filter: drop-shadow(0 2px 8px rgba(239, 68, 68, 0.4));
+  animation: pulseShield 2s infinite ease-in-out;
+}
+
+@keyframes pulseShield {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+
+.security-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.security-subtitle {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  display: block;
+  margin-top: 2px;
+}
+
+.security-alert-box {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 0.86rem;
+  color: #fca5a5;
+  line-height: 1.45;
+}
+
+.security-details-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.security-detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.security-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.security-value {
+  font-size: 0.88rem;
+  color: var(--text-main);
+  word-break: break-all;
+}
+
+.threat-highlight {
+  color: #f87171;
+  font-weight: 700;
+}
+
+.threat-highlight.warning {
+  color: #fbbf24;
+}
+
+.threat-highlight.critical {
+  color: #ef4444;
+}
+
+.threat-highlight.high {
+  color: #f97316;
+}
+
+.security-code-box {
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 0.82rem;
+  color: #38bdf8;
+  max-height: 90px;
+  overflow-y: auto;
+  word-break: break-all;
+  white-space: pre-wrap;
+  user-select: all;
+}
+
+.security-advice-box {
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 0.83rem;
+  color: var(--text-main);
+  line-height: 1.5;
+}
+
+.security-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+
+.security-actions .btn {
+  font-size: 0.86rem;
+  padding: 8px 16px;
+}
+
+

@@ -915,6 +915,52 @@
     </div>
   </div>
 
+  <!-- Security Threat Alert & Sanitizer Modal -->
+  <div id="securityAlertModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="secAlertTitle">
+    <div class="modal-card security-alert-modal-card glass-panel">
+      <div class="modal-header security-header">
+        <div class="security-title-row">
+          <span class="security-shield-icon">🛡️</span>
+          <div>
+            <h3 id="secAlertTitle">ตรวจพบสคริปต์หรือโค้ดแฝงในไฟล์รูปภาพ</h3>
+            <span class="security-subtitle">ระบบความปลอดภัย LiveType SafeImage Scanner</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div class="security-alert-box">
+          <div class="security-alert-summary" id="secAlertSummary">
+            ไฟล์นี้ไม่ผ่านการตรวจสอบความปลอดภัยเนื่องจากมีแท็กหรือคำสั่งสคริปต์แทรกอยู่
+          </div>
+        </div>
+
+        <div class="security-details-grid">
+          <div class="security-detail-item">
+            <span class="security-label">📁 ชื่อไฟล์:</span>
+            <span id="secAlertFileName" class="security-value mono">image.png</span>
+          </div>
+          <div class="security-detail-item">
+            <span class="security-label">⚠️ สิ่งที่ตรวจพบ:</span>
+            <span id="secAlertThreatType" class="security-value threat-highlight">แท็กภาพเวกเตอร์ (&lt;svg&gt;) / C2PA Metadata</span>
+          </div>
+          <div class="security-detail-item" id="secAlertSnippetRow">
+            <span class="security-label">🔍 โค้ด/ข้อความที่ตรวจพบในไฟล์:</span>
+            <div id="secAlertSnippetBox" class="security-code-box mono"></div>
+          </div>
+          <div class="security-detail-item">
+            <span class="security-label">💡 รายละเอียดและการวินิจฉัย:</span>
+            <div id="secAlertAdvice" class="security-advice-box"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions security-actions">
+        <button type="button" id="btnCancelSecurityAlert" class="btn btn-secondary">ยกเลิกการอัปโหลด</button>
+        <button type="button" id="btnSanitizeAndProceed" class="btn btn-primary">✨ ล้างโค้ดแฝงด้วย Canvas แล้วใช้งานต่อ</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Google Identity Services (GIS) Client Library -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <!-- Google Drive AppData Sync Library -->

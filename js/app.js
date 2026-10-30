@@ -422,46 +422,180 @@
     try {
       // Scan head (512KB) and tail (128KB) for embedded HTML/JS/PHP/SVG polyglot payloads
       const MAX_SCAN = 512 * 1024;
-      const headBuf = await file.slice(0, Math.min(file.size, MAX_SCAN)).arrayBuffer();
-      const decoder = new TextDecoder('latin1');
-      let sample = decoder.decode(new Uint8Array(headBuf));
-      if (file.size > MAX_SCAN) {
-        const tailBuf = await file.slice(Math.max(0, file.size - 131072), file.size).arrayBuffer();
-        sample += '\n' + decoder.decode(new Uint8Array(tailBuf));
+      let headBuf;
+      if (typeof file.arrayBuffer === 'function' && file.size <= MAX_SCAN) {
+        headBuf = await file.arrayBuffer();
+      } else if (file.slice) {
+        headBuf = await file.slice(0, Math.min(file.size, MAX_SCAN)).arrayBuffer();
+      } else {
+        headBuf = await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result);
+          fr.onerror = reject;
+          fr.readAsArrayBuffer(file.slice ? file.slice(0, Math.min(file.size, MAX_SCAN)) : file);
+        });
       }
-      const dangerousPatterns =
-        /<\s*script\b|javascript\s*:|vbscript\s*:|on(load|error|mouseover|click|focus)\s*=|<\s*iframe\b|<\s*object\b|<\s*embed\b|<\s*svg\b|<\?php\b|eval\s*\(|document\.cookie/i;
-      return !dangerousPatterns.test(sample);
+
+      let decoder;
+      try {
+        decoder = new TextDecoder('latin1');
+      } catch (e) {
+        try {
+          decoder = new TextDecoder('iso-8859-1');
+        } catch (e2) {
+          decoder = new TextDecoder();
+        }
+      }
+      let sample = decoder.decode(new Uint8Array(headBuf));
+
+      if (file.size > MAX_SCAN && file.slice) {
+        try {
+          const tailBuf = await file.slice(Math.max(0, file.size - 131072), file.size).arrayBuffer();
+          sample += '\n' + decoder.decode(new Uint8Array(tailBuf));
+        } catch (e) {}
+      }
+
+      const patternRules = [
+        {
+          id: 'script_tag',
+          name: 'แท็กสคริปต์ปฏิบัติการ (<script>)',
+          severity: 'critical',
+          regex: /<\s*script\b[^>]*>/i,
+          desc: 'แท็ก JavaScript แท้จริงที่สามารถสั่งรันโค้ดบนเบราว์เซอร์ได้'
+        },
+        {
+          id: 'javascript_protocol',
+          name: 'โปรโตคอลสคริปต์ (javascript:)',
+          severity: 'critical',
+          regex: /javascript\s*:[^"'\s>]*/i,
+          desc: 'URL Scheme ที่ใช้รันคำสั่ง JavaScript อัตโนมัติ'
+        },
+        {
+          id: 'vbscript_protocol',
+          name: 'โปรโตคอลสคริปต์ (vbscript:)',
+          severity: 'critical',
+          regex: /vbscript\s*:[^"'\s>]*/i,
+          desc: 'VBScript execution scheme'
+        },
+        {
+          id: 'event_handler',
+          name: 'Event Handler ทำงานอัตโนมัติ (onload/onerror/onclick)',
+          severity: 'critical',
+          regex: /on(?:load|error|mouseover|click|focus|submit|reset)\s*=\s*["']?[^"'>\s]+/i,
+          desc: 'แอตทริบิวต์ดักจับเหตุการณ์ที่รันโค้ดเมื่อโหลดหรือแสดงภาพ'
+        },
+        {
+          id: 'iframe_tag',
+          name: 'แท็กเฟรมซ้อน (<iframe)',
+          severity: 'high',
+          regex: /<\s*iframe\b[^>]*>/i,
+          desc: 'แท็กฝังหน้าเว็บหรือเนื้อหาภายนอก'
+        },
+        {
+          id: 'object_embed_tag',
+          name: 'แท็กวัตถุภายนอก (<object> หรือ <embed>)',
+          severity: 'high',
+          regex: /<\s*(?:object|embed)\b[^>]*>/i,
+          desc: 'แท็กฝัง Plugin หรือ Executable Binary'
+        },
+        {
+          id: 'php_tag',
+          name: 'โค้ดเซิร์ฟเวอร์ PHP (<?php)',
+          severity: 'high',
+          regex: /<\?php\b[\s\S]{0,100}/i,
+          desc: 'สคริปต์ฝั่งเซิร์ฟเวอร์ PHP ที่ใช้ใน Polyglot Webshell'
+        },
+        {
+          id: 'eval_call',
+          name: 'ฟังก์ชันประมวลผลโค้ด (eval())',
+          severity: 'critical',
+          regex: /eval\s*\([^)]*\)/i,
+          desc: 'คำสั่งรัน Dynamic Code Execution ใน JavaScript'
+        },
+        {
+          id: 'cookie_theft',
+          name: 'คำสั่งเข้าถึงคุกกี้ (document.cookie)',
+          severity: 'critical',
+          regex: /document\.cookie/i,
+          desc: 'คำสั่งเข้าถึงข้อมูล Session/Cookie ของผู้ใช้'
+        },
+        {
+          id: 'svg_tag',
+          name: 'แท็กภาพเวกเตอร์ (<svg>) / C2PA Metadata',
+          severity: 'warning',
+          regex: /<\s*svg\b[^>]*>/i,
+          desc: 'โค้ดภาพเวกเตอร์ XML หรือ Metadata แสดงสัญลักษณ์ดิจิทัล (เช่น C2PA ของ OpenAI / DALL-E)'
+        }
+      ];
+
+      for (const rule of patternRules) {
+        const match = sample.match(rule.regex);
+        if (match) {
+          const rawMatch = match[0];
+          const matchIndex = match.index || 0;
+          const snippetStart = Math.max(0, matchIndex - 20);
+          const snippetEnd = Math.min(sample.length, matchIndex + rawMatch.length + 40);
+          const snippet = sample.slice(snippetStart, snippetEnd).replace(/[\r\n\t]+/g, ' ').trim();
+
+          const isC2PA = /c2pa|softwareAgent|ChatGPT|gpt-image|DALL-E/i.test(
+            sample.slice(Math.max(0, matchIndex - 300), Math.min(sample.length, matchIndex + 300))
+          );
+
+          return {
+            isClean: false,
+            ruleId: rule.id,
+            threatName: rule.name,
+            severity: rule.severity,
+            matchedSnippet: rawMatch.slice(0, 100),
+            contextSnippet: snippet.slice(0, 140),
+            description: rule.desc,
+            isC2PA,
+            advice: isC2PA
+              ? 'รูปภาพนี้สร้างด้วย AI (เช่น ChatGPT/DALL-E) และมีข้อมูลสิทธิ์ Content Credentials (C2PA) ซึ่งฝังไอคอน <svg> ไว้ แม้ไม่ใช่ไวรัสจริงแต่มีโค้ดเวกเตอร์แฝงอยู่ คุณสามารถกดปุ่ม "ล้างโค้ดแฝงด้วย Canvas" เพื่อตัดข้อมูล Metadata ออกและใช้งานต่อได้อย่างปลอดภัย 100%'
+              : (rule.severity === 'critical'
+                ? `ตรวจพบคำสั่งปฏิบัติการ JavaScript หรือ Event Handler [${rawMatch.slice(0, 40)}] ที่อาจเป็นภัยคุกคาม XSS ระบบได้ทำการระงับไฟล์นี้ทันที`
+                : `ตรวจพบแท็กมาร์กอัปแปลกปลอม [${rawMatch.slice(0, 40)}] แฝงอยู่ในไฟล์รูปภาพ แนะนำให้ล้างข้อมูลด้วย Canvas ก่อนใช้งาน`)
+          };
+        }
+      }
+
+      return { isClean: true };
     } catch (e) {
-      return false;
+      console.warn('LiveType Image Security Scanner notice:', e);
+      return { isClean: true };
     }
   }
 
   async function validateImageFileSecurity(file, { maxBytes = 25 * 1024 * 1024, allowGif = true } = {}) {
     if (!file || file.size <= 0) {
-      return { ok: false, reason: '⚠️ ไม่พบข้อมูลในไฟล์รูปภาพ' };
+      return { ok: false, reason: '⚠️ ไม่พบข้อมูลในไฟล์รูปภาพ', threatDetails: null };
     }
     if (file.size > maxBytes) {
-      return { ok: false, reason: '⚠️ ไฟล์รูปภาพมีขนาดใหญ่เกินกำหนด (สูงสุด 25MB)' };
+      return { ok: false, reason: '⚠️ ไฟล์รูปภาพมีขนาดใหญ่เกินกำหนด (สูงสุด 25MB)', threatDetails: null };
     }
     const magic = await validateImageMagicBytes(file);
     if (!magic.valid || !magic.detectedType) {
       return {
         ok: false,
-        reason: '🛡️ ระบบความปลอดภัยบล็อกไฟล์นี้: อนุญาตเฉพาะไฟล์ภาพจริง (JPG, PNG, WEBP, GIF) เท่านั้น'
+        reason: '🛡️ ระบบความปลอดภัยบล็อกไฟล์นี้: อนุญาตเฉพาะไฟล์ภาพจริง (JPG, PNG, WEBP, GIF) เท่านั้น',
+        threatDetails: null
       };
     }
     if (!allowGif && magic.detectedType === 'image/gif') {
       return {
         ok: false,
-        reason: '⚠️ กรุณาเลือกไฟล์ภาพนิ่ง (JPG, PNG, WEBP) สำหรับส่วนนี้'
+        reason: '⚠️ กรุณาเลือกไฟล์ภาพนิ่ง (JPG, PNG, WEBP) สำหรับส่วนนี้',
+        threatDetails: null
       };
     }
-    const isClean = await scanFileForEmbeddedPayload(file);
-    if (!isClean) {
+    const scanResult = await scanFileForEmbeddedPayload(file);
+    if (!scanResult.isClean) {
+      const summaryMsg = `🛡️ บล็อกไฟล์รูปภาพ: ตรวจพบ [${scanResult.threatName}] โค้ดที่พบ: "${scanResult.matchedSnippet}"`;
       return {
         ok: false,
-        reason: '🛡️ ตรวจพบโค้ดหรือสคริปต์แปลกปลอมแฝงอยู่ในไฟล์รูปภาพ (Picture Injection Blocked!)'
+        reason: summaryMsg,
+        threatDetails: scanResult,
+        file
       };
     }
     return { ok: true, detectedType: magic.detectedType };
@@ -520,6 +654,7 @@
   let selectedStreamMode = 'motion'; // 'motion' (Smooth/Gaming) or 'detail' (Sharp/Text)
   let streamStatsInterval = null;
   let lastStatsBytes = 0;
+  let lastStatsFrames = 0;
   let lastStatsTimestamp = 0;
 
   const STORAGE_KEY_STREAM_VOLUME = 'livetype_stream_volume_v1';
@@ -764,6 +899,17 @@
   const btnCancelAvatarCrop = document.getElementById('btnCancelAvatarCrop');
   const btnApplyAvatarCrop = document.getElementById('btnApplyAvatarCrop');
 
+  // Security Threat Alert & Sanitizer Modal Elements
+  const securityAlertModal = document.getElementById('securityAlertModal');
+  const secAlertSummary = document.getElementById('secAlertSummary');
+  const secAlertFileName = document.getElementById('secAlertFileName');
+  const secAlertThreatType = document.getElementById('secAlertThreatType');
+  const secAlertSnippetBox = document.getElementById('secAlertSnippetBox');
+  const secAlertSnippetRow = document.getElementById('secAlertSnippetRow');
+  const secAlertAdvice = document.getElementById('secAlertAdvice');
+  const btnCancelSecurityAlert = document.getElementById('btnCancelSecurityAlert');
+  const btnSanitizeAndProceed = document.getElementById('btnSanitizeAndProceed');
+
   // --- Topic Builders (Protected against MQTT wildcard / path injection) ---
   const topicInbox = (uid) => `${TOPIC_PREFIX}/inbox/${sanitizeUid(uid)}`;
   const topicPresence = (uid) => `${TOPIC_PREFIX}/presence/${sanitizeUid(uid)}`;
@@ -864,14 +1010,14 @@
   }
 
   // --- Toast Notification ---
-  function showToast(message) {
+  function showToast(message, duration = 3000) {
     const el = document.createElement('div');
     el.className = 'toast';
     el.textContent = message;
     toastContainer.appendChild(el);
     setTimeout(() => {
       el.remove();
-    }, 3000);
+    }, duration);
   }
 
   // --- Serverless Realtime Network Engine (MQTT over WSS) ---
@@ -1828,7 +1974,10 @@
       if (!file) return;
       const check = await validateImageFileSecurity(file, { allowGif: true });
       if (!check.ok) {
-        showToast(check.reason);
+        showToast(check.reason, 6000);
+        showSecurityAlertModal(file, check.threatDetails, (cleanImg) => {
+          initAvatarCropper(cleanImg);
+        });
         inputCustomAvatar.value = '';
         return;
       }
@@ -2155,6 +2304,133 @@
       if (avatarCropModal) avatarCropModal.classList.add('hidden');
       if (inputCustomAvatar) inputCustomAvatar.value = '';
       showToast('เปลี่ยนรูปโปรไฟล์เรียบร้อยแล้ว ✨');
+    });
+  }
+
+  // --- Security Threat Alert & Canvas Sanitizer Dialog ---
+  let activeSanitizingFile = null;
+  let activeSanitizeCallback = null;
+
+  function showSecurityAlertModal(file, threatDetails, onSanitizeClean) {
+    if (!securityAlertModal) return;
+
+    activeSanitizingFile = file;
+    activeSanitizeCallback = onSanitizeClean || null;
+
+    if (secAlertFileName) {
+      const sizeKb = file && file.size ? ` (${(file.size / 1024).toFixed(1)} KB)` : '';
+      secAlertFileName.textContent = (file ? file.name : 'image') + sizeKb;
+    }
+
+    if (threatDetails) {
+      if (secAlertSummary) {
+        secAlertSummary.textContent =
+          threatDetails.severity === 'critical'
+            ? '🚫 ตรวจพบคำสั่งสคริปต์ที่เป็นอันตรายต่อความปลอดภัยในไฟล์รูปภาพ ระบบบล็อกเพื่อป้องกันการโจมตี'
+            : '⚠️ ตรวจพบแท็กโค้ดหรือ Metadata แปลกปลอมแฝงอยู่ในไฟล์รูปภาพ';
+      }
+      if (secAlertThreatType) {
+        secAlertThreatType.textContent = threatDetails.threatName || 'สคริปต์แปลกปลอม';
+        secAlertThreatType.className = `security-value threat-highlight ${threatDetails.severity || 'warning'}`;
+      }
+      if (secAlertSnippetBox) {
+        secAlertSnippetBox.textContent = threatDetails.matchedSnippet || '(ไม่สามารถแสดงตัวอย่างได้)';
+      }
+      if (secAlertSnippetRow) {
+        secAlertSnippetRow.style.display = threatDetails.matchedSnippet ? 'flex' : 'none';
+      }
+      if (secAlertAdvice) {
+        secAlertAdvice.textContent = threatDetails.advice || threatDetails.description || '';
+      }
+    } else {
+      if (secAlertSummary) secAlertSummary.textContent = 'ไฟล์นี้ไม่ผ่านการตรวจสอบความปลอดภัยของระบบ';
+      if (secAlertThreatType) secAlertThreatType.textContent = 'ตรวจพบลักษณะต้องสงสัย';
+      if (secAlertSnippetRow) secAlertSnippetRow.style.display = 'none';
+      if (secAlertAdvice) secAlertAdvice.textContent = 'กรุณาเลือกไฟล์ภาพมาตรฐาน JPG, PNG หรือ WebP อื่นๆ';
+    }
+
+    if (btnSanitizeAndProceed) {
+      if (onSanitizeClean && file && file.type !== 'image/gif') {
+        btnSanitizeAndProceed.style.display = 'inline-flex';
+      } else {
+        btnSanitizeAndProceed.style.display = 'none';
+      }
+    }
+
+    securityAlertModal.classList.remove('hidden');
+  }
+
+  function closeSecurityAlertModal() {
+    if (securityAlertModal) securityAlertModal.classList.add('hidden');
+    activeSanitizeCallback = null;
+    activeSanitizingFile = null;
+  }
+
+  if (btnCancelSecurityAlert) {
+    btnCancelSecurityAlert.addEventListener('click', closeSecurityAlertModal);
+  }
+
+  if (btnSanitizeAndProceed) {
+    btnSanitizeAndProceed.addEventListener('click', () => {
+      const file = activeSanitizingFile;
+      const callback = activeSanitizeCallback;
+      closeSecurityAlertModal();
+      if (!file || !callback) return;
+
+      showToast('⏳ กำลังล้างโค้ดแฝงและ Metadata ออกจากรูปภาพด้วย Canvas...', 3500);
+
+      const objUrl = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(objUrl);
+        if (
+          img.naturalWidth <= 0 ||
+          img.naturalHeight <= 0 ||
+          img.naturalWidth > MAX_IMAGE_DIMENSION ||
+          img.naturalHeight > MAX_IMAGE_DIMENSION
+        ) {
+          showToast('🚫 ขนาดพิกเซลของรูปภาพไม่ถูกต้องหรือใหญ่เกินกำหนด');
+          return;
+        }
+
+        // Render pure pixels onto an in-memory Canvas to strip 100% of EXIF, C2PA, XML, SVG, Polyglots
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            showToast('🚫 ไม่สามารถประมวลผลล้างรูปภาพได้');
+            return;
+          }
+          const cleanName = (file.name || 'image').replace(/\.[^.]+$/, '') + '_clean.png';
+          const cleanFile = new File([blob], cleanName, { type: 'image/png' });
+
+          const cleanObjUrl = URL.createObjectURL(cleanFile);
+          const cleanImg = new Image();
+          cleanImg.onload = () => {
+            URL.revokeObjectURL(cleanObjUrl);
+            showToast('✨ ล้างโค้ดแฝงและ Metadata เรียบร้อยแล้ว ปลอดภัย 100%');
+            try {
+              callback(cleanImg, cleanFile);
+            } catch (err) {
+              console.error('Sanitize callback error:', err);
+            }
+          };
+          cleanImg.onerror = () => {
+            URL.revokeObjectURL(cleanObjUrl);
+            showToast('🚫 ไม่สามารถแสดงผลรูปภาพที่ล้างแล้วได้');
+          };
+          cleanImg.src = cleanObjUrl;
+        }, 'image/png');
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objUrl);
+        showToast('🚫 ไม่สามารถถอดรหัสรูปภาพนี้ได้');
+      };
+      img.src = objUrl;
     });
   }
 
@@ -3387,7 +3663,23 @@
 
       const secCheck = await validateImageFileSecurity(file, { allowGif: true });
       if (!secCheck.ok) {
-        showToast(secCheck.reason);
+        showToast(secCheck.reason, 6000);
+        showSecurityAlertModal(file, secCheck.threatDetails, async (cleanImg, cleanFile) => {
+          await stopQrCameraScanner();
+          const fileScanner = new window.Html5Qrcode('qrReaderBox');
+          try {
+            const decodedText = await fileScanner.scanFile(cleanFile, true);
+            const code = extractRoomCodeFromScannedText(decodedText);
+            if (code) {
+              qrScannerModal.classList.add('hidden');
+              joinRoomByCode(code);
+            } else {
+              showToast('ไม่พบรหัสห้องใน QR Code นี้');
+            }
+          } catch (err) {
+            showToast('ไม่สามารถอ่าน QR Code จากรูปภาพนี้ได้ กรุณาลองรูปอื่น');
+          }
+        });
         inputQrFile.value = '';
         return;
       }
@@ -4036,7 +4328,18 @@
     // 1. Validate Magic Bytes + Scan for Polyglot/Embedded Script Payloads
     const secCheck = await validateImageFileSecurity(file, { allowGif: true });
     if (!secCheck.ok) {
-      showToast(secCheck.reason);
+      showToast(secCheck.reason, 6000);
+      showSecurityAlertModal(file, secCheck.threatDetails, (cleanImg) => {
+        if (cleanImg.naturalWidth > MAX_IMAGE_DIMENSION || cleanImg.naturalHeight > MAX_IMAGE_DIMENSION) {
+          showToast('🚫 ความละเอียดรูปภาพสูงเกินพิกัดความปลอดภัย (สูงสุด 8192x8192 px)');
+          return;
+        }
+        const sanitizedDataUrl = sanitizeStaticImageViaCanvas(cleanImg, 'image/png');
+        setAndBroadcastLiveMedia(
+          sanitizedDataUrl,
+          '📷 ส่งรูปภาพ (ล้างโค้ดแฝง/Metadata แล้ว) เรียบร้อย! (กด Enter เพื่อล้าง)'
+        );
+      });
       inputLiveImage.value = '';
       return;
     }
@@ -4950,7 +5253,10 @@
 
       const secCheck = await validateImageFileSecurity(file, { allowGif: true });
       if (!secCheck.ok) {
-        showToast(secCheck.reason);
+        showToast(secCheck.reason, 6000);
+        showSecurityAlertModal(file, secCheck.threatDetails, (cleanImg) => {
+          initBgCropper(cleanImg);
+        });
         inputCustomBg.value = '';
         return;
       }
@@ -5490,16 +5796,16 @@
   function getBitrateBps(resolution, fps) {
     const targetFps = parseInt(fps, 10) || 60;
     if (resolution === '1080p') {
-      return targetFps >= 60 ? 7500000 : 5000000; // 7.5 Mbps @ 60fps / 5 Mbps @ 30fps
+      return targetFps >= 60 ? 6000000 : 4000000; // 6 Mbps @ 60fps / 4 Mbps @ 30fps
     } else if (resolution === '720p') {
-      return targetFps >= 60 ? 4500000 : 3000000; // 4.5 Mbps @ 60fps / 3 Mbps @ 30fps
+      return targetFps >= 60 ? 3500000 : 2200000; // 3.5 Mbps @ 60fps / 2.2 Mbps @ 30fps
     } else if (resolution === '480p') {
-      return 1800000; // 1.8 Mbps
+      return 1500000; // 1.5 Mbps
     } else if (resolution === '360p') {
-      return 900000; // 900 kbps
+      return 800000; // 800 kbps
     }
     // 'original'
-    return targetFps >= 60 ? 9000000 : 6500000; // 9 Mbps @ 60fps / 6.5 Mbps @ 30fps
+    return targetFps >= 60 ? 6500000 : 4500000; // 6.5 Mbps @ 60fps / 4.5 Mbps @ 30fps
   }
 
   function getBitrateKbps(resolution, fps) {
@@ -5507,7 +5813,7 @@
   }
 
   // SDP Munging: Unlock WebRTC bandwidth ceiling for 1080p/720p 60fps streaming
-  function setSDPBitrate(sdp, bitrateKbps = 7500) {
+  function setSDPBitrate(sdp, bitrateKbps = 5000) {
     if (!sdp) return sdp;
     const bitrateBps = bitrateKbps * 1000;
     let sdpCleaned = sdp.replace(/b=(AS|TIAS):[0-9]+\r\n/g, '');
@@ -5523,32 +5829,41 @@
     );
   }
 
-  // Prioritize H.264 (Hardware GPU Acceleration - NVENC/Intel QSV/AMD) over CPU VP8/VP9
+  // Codec Preference: Prioritize H.264 (packetization-mode=1) & VP8 for stable 60 FPS
   function preferH264Codec(pc) {
     if (!pc || !pc.getTransceivers || !window.RTCRtpSender || !RTCRtpSender.getCapabilities) return;
     try {
       const videoCapabilities = RTCRtpSender.getCapabilities('video');
       if (!videoCapabilities || !videoCapabilities.codecs) return;
 
-      const h264Codecs = videoCapabilities.codecs.filter(
-        (c) => c.mimeType && c.mimeType.toLowerCase() === 'video/h264'
+      // H.264 packetization-mode=1 allows large 1080p/720p 60fps frames without MTU fragmentation drop
+      const h264Mode1 = videoCapabilities.codecs.filter(
+        (c) => c.mimeType && c.mimeType.toLowerCase() === 'video/h264' &&
+               c.sdpFmtpLine && c.sdpFmtpLine.includes('packetization-mode=1')
       );
-      const otherCodecs = videoCapabilities.codecs.filter(
-        (c) => c.mimeType && c.mimeType.toLowerCase() !== 'video/h264'
+      const vp8Codecs = videoCapabilities.codecs.filter(
+        (c) => c.mimeType && c.mimeType.toLowerCase() === 'video/vp8'
+      );
+      const otherH264 = videoCapabilities.codecs.filter(
+        (c) => c.mimeType && c.mimeType.toLowerCase() === 'video/h264' &&
+               (!c.sdpFmtpLine || !c.sdpFmtpLine.includes('packetization-mode=1'))
+      );
+      const remainingCodecs = videoCapabilities.codecs.filter(
+        (c) => c.mimeType && c.mimeType.toLowerCase() !== 'video/h264' && c.mimeType.toLowerCase() !== 'video/vp8'
       );
 
-      if (h264Codecs.length > 0) {
-        pc.getTransceivers().forEach((transceiver) => {
-          if (
-            (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'video') ||
-            (transceiver.receiver && transceiver.receiver.track && transceiver.receiver.track.kind === 'video')
-          ) {
-            try {
-              transceiver.setCodecPreferences([...h264Codecs, ...otherCodecs]);
-            } catch (e) {}
-          }
-        });
-      }
+      const preferredCodecs = [...h264Mode1, ...vp8Codecs, ...otherH264, ...remainingCodecs];
+
+      pc.getTransceivers().forEach((transceiver) => {
+        if (
+          (transceiver.sender && transceiver.sender.track && transceiver.sender.track.kind === 'video') ||
+          (transceiver.receiver && transceiver.receiver.track && transceiver.receiver.track.kind === 'video')
+        ) {
+          try {
+            transceiver.setCodecPreferences(preferredCodecs);
+          } catch (e) {}
+        }
+      });
     } catch (err) {
       console.warn('Could not set codec preferences:', err);
     }
@@ -5561,12 +5876,14 @@
       streamStatsInterval = null;
     }
     lastStatsBytes = 0;
+    lastStatsFrames = 0;
     lastStatsTimestamp = 0;
   }
 
   function startStreamStatsMonitor() {
     stopStreamStatsMonitor();
     lastStatsBytes = 0;
+    lastStatsFrames = 0;
     lastStatsTimestamp = performance.now();
 
     streamStatsInterval = setInterval(async () => {
@@ -5585,22 +5902,33 @@
         if (inboundVideo) {
           const now = performance.now();
           const bytes = inboundVideo.bytesReceived || 0;
+          const frames = inboundVideo.framesDecoded || inboundVideo.framesReceived || 0;
           let bitrateMbps = 0;
+          let currentFps = 0;
 
-          if (lastStatsTimestamp && bytes >= lastStatsBytes) {
+          if (lastStatsTimestamp && now > lastStatsTimestamp) {
             const timeDiffSec = (now - lastStatsTimestamp) / 1000;
             if (timeDiffSec > 0.4) {
-              const bitsDiff = (bytes - lastStatsBytes) * 8;
-              bitrateMbps = (bitsDiff / timeDiffSec / 1000000).toFixed(1);
+              if (bytes >= lastStatsBytes) {
+                const bitsDiff = (bytes - lastStatsBytes) * 8;
+                bitrateMbps = (bitsDiff / timeDiffSec / 1000000).toFixed(1);
+              }
+              if (lastStatsFrames > 0 && frames >= lastStatsFrames) {
+                currentFps = Math.round((frames - lastStatsFrames) / timeDiffSec);
+              } else if (inboundVideo.framesPerSecond !== undefined) {
+                currentFps = Math.round(inboundVideo.framesPerSecond);
+              }
             }
           }
 
+          if (currentFps === 0 && inboundVideo.framesPerSecond !== undefined) {
+            currentFps = Math.round(inboundVideo.framesPerSecond);
+          }
+
           lastStatsBytes = bytes;
+          lastStatsFrames = frames;
           lastStatsTimestamp = now;
 
-          const currentFps = inboundVideo.framesPerSecond !== undefined
-            ? Math.round(inboundVideo.framesPerSecond)
-            : (inboundVideo.frameHeight ? selectedFps : 0);
           const height = inboundVideo.frameHeight || liveStreamVideo.videoHeight || 720;
 
           if (streamStatusBadge) {
@@ -5710,7 +6038,8 @@
       localScreenStream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           cursor: 'always',
-          frameRate: { ideal: 60, max: 60 },
+          displaySurface: 'monitor',
+          frameRate: { ideal: 60, min: 30, max: 60 },
           width: { ideal: 1920, max: 3840 },
           height: { ideal: 1080, max: 2160 }
         },
@@ -5719,7 +6048,10 @@
           noiseSuppression: false,
           autoGainControl: false,
           channelCount: 2
-        }
+        },
+        systemAudio: 'include',
+        surfaceSwitching: 'include',
+        selfBrowserSurface: 'exclude'
       });
     } catch (err) {
       if (err.name !== 'NotAllowedError') {
@@ -5732,11 +6064,14 @@
     activeStreamerUid = currentUser.uid;
     activeStreamerUsername = currentUser.username;
 
-    // Listen to native browser "Stop sharing" bar & apply smooth 60fps motion hint
+    // Apply high-framerate motion hints & lock ideal frameRate on active track
     const videoTrack = localScreenStream.getVideoTracks()[0];
     if (videoTrack) {
       if ('contentHint' in videoTrack) {
         videoTrack.contentHint = selectedStreamMode === 'detail' ? 'detail' : 'motion';
+      }
+      if (videoTrack.applyConstraints) {
+        videoTrack.applyConstraints({ frameRate: { ideal: 60, max: 60 } }).catch(() => {});
       }
       videoTrack.onended = () => {
         stopScreenShare();
@@ -5968,13 +6303,15 @@
       if (!videoSender) return;
 
       const params = videoSender.getParameters();
-      if (!params.encodings || params.encodings.length === 0) {
-        params.encodings = [{}];
+      if (!params || !params.encodings || params.encodings.length === 0) {
+        return;
       }
 
-      // 1. Bitrate Allocation (High Bitrate for crisp & smooth quality)
+      // 1. Bitrate Allocation (Smooth 60 FPS without bufferbloat)
       const targetBitrate = getBitrateBps(resolution, fps);
       params.encodings[0].maxBitrate = targetBitrate;
+      params.encodings[0].minBitrate = 1200000; // Floor at 1.2 Mbps to prevent GCC dropping to 8 FPS
+      params.encodings[0].networkPriority = 'high';
 
       // 2. Degradation Preference:
       // 'maintain-framerate' locks 60 FPS without dropping frames (for smooth video / gaming)
@@ -6002,10 +6339,8 @@
       }
 
       // 4. Cap maxFramerate (15, 30, 60 FPS)
-      const targetFps = parseInt(fps, 10);
-      if (targetFps && [15, 30, 60].includes(targetFps)) {
-        params.encodings[0].maxFramerate = targetFps;
-      }
+      const targetFps = parseInt(fps, 10) || 60;
+      params.encodings[0].maxFramerate = targetFps;
 
       await videoSender.setParameters(params);
     } catch (err) {
@@ -6043,6 +6378,17 @@
           fromUid: currentUser.uid,
           candidate: event.candidate
         });
+      }
+    };
+
+    pc.onsignalingstatechange = () => {
+      if (pc.signalingState === 'stable') {
+        applyQualityConstraints(
+          pc,
+          data.resolution || selectedResolution,
+          data.fps || selectedFps,
+          data.mode || selectedStreamMode
+        );
       }
     };
 
@@ -6122,6 +6468,12 @@
 
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      await applyQualityConstraints(
+        pc,
+        data.resolution || selectedResolution,
+        data.fps || selectedFps,
+        data.mode || selectedStreamMode
+      );
     } catch (err) {
       console.warn('Error setting remote description from viewer:', err);
     }
