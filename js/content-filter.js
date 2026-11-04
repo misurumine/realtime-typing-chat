@@ -87,7 +87,12 @@
     saveSettings({ adultFilter: Boolean(enabled) });
   }
 
+  const profanityCache = new Map();
+  const hasThaiCharsRegex = /[\u0E00-\u0E7F]/;
+  const hasLatinCharsRegex = /[a-zA-Z]/;
+
   function setProfanityFilterEnabled(enabled) {
+    profanityCache.clear();
     saveSettings({ profanityFilter: Boolean(enabled) });
   }
 
@@ -168,25 +173,38 @@
     if (!text || typeof text !== 'string') return '';
     if (!isProfanityFilterEnabled()) return text;
 
+    if (profanityCache.has(text)) {
+      return profanityCache.get(text);
+    }
+
     let filtered = text;
 
-    // Apply Thai patterns
-    for (const pattern of thaiProfanityPatterns) {
-      filtered = filtered.replace(pattern, (match) => {
-        const trimmed = match.trim();
-        if (!trimmed) return match;
-        return match.replace(trimmed, '****');
-      });
+    // Apply Thai patterns only if string has Thai characters
+    if (hasThaiCharsRegex.test(filtered)) {
+      for (const pattern of thaiProfanityPatterns) {
+        filtered = filtered.replace(pattern, (match) => {
+          const trimmed = match.trim();
+          if (!trimmed) return match;
+          return match.replace(trimmed, '****');
+        });
+      }
     }
 
-    // Apply English patterns
-    for (const pattern of englishProfanityPatterns) {
-      filtered = filtered.replace(pattern, (match) => {
-        const trimmed = match.trim();
-        if (!trimmed) return match;
-        return match.replace(trimmed, '****');
-      });
+    // Apply English patterns only if string has Latin characters
+    if (hasLatinCharsRegex.test(filtered)) {
+      for (const pattern of englishProfanityPatterns) {
+        filtered = filtered.replace(pattern, (match) => {
+          const trimmed = match.trim();
+          if (!trimmed) return match;
+          return match.replace(trimmed, '****');
+        });
+      }
     }
+
+    if (profanityCache.size > 600) {
+      profanityCache.clear();
+    }
+    profanityCache.set(text, filtered);
 
     return filtered;
   }
@@ -197,18 +215,46 @@
 
   const adultKeywordsRegex = /(?:porn|xxx|hentai|blowjob|dildo|naked_women|sex_video|sexxx)/i;
 
-  // Initialize and load the AI MobileNet model in the background
+  function loadScriptOnce(src) {
+    return new Promise((resolve, reject) => {
+      const existing = document.querySelector(`script[src="${src}"]`);
+      if (existing) {
+        if (existing.getAttribute('data-loaded') === 'true') {
+          resolve();
+          return;
+        }
+        existing.addEventListener('load', () => resolve(), { once: true });
+        existing.addEventListener('error', (e) => reject(e), { once: true });
+        return;
+      }
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = () => {
+        s.setAttribute('data-loaded', 'true');
+        resolve();
+      };
+      s.onerror = (e) => reject(e);
+      document.head.appendChild(s);
+    });
+  }
+
+  // Initialize and load the AI MobileNet model on-demand only when an image is scanned
   async function initAiModel() {
     if (nsfwModel) return nsfwModel;
     if (modelLoadPromise) return modelLoadPromise;
-
-    if (typeof window === 'undefined' || typeof window.nsfwjs === 'undefined') {
-      return null;
-    }
+    if (typeof window === 'undefined' || typeof document === 'undefined') return null;
 
     isModelLoading = true;
     modelLoadPromise = (async () => {
       try {
+        if (typeof window.tf === 'undefined') {
+          await loadScriptOnce('https://unpkg.com/@tensorflow/tfjs@4.20.0/dist/tf.min.js');
+        }
+        if (typeof window.nsfwjs === 'undefined') {
+          await loadScriptOnce('https://unpkg.com/nsfwjs@2.4.2/dist/nsfwjs.min.js');
+        }
+        if (typeof window.nsfwjs === 'undefined') return null;
         // Load lightweight MobileNetV2 NSFW model from high-speed jsdelivr CDN
         nsfwModel = await window.nsfwjs.load('https://cdn.jsdelivr.net/gh/infinitered/nsfwjs/models/mobilenet_v2/');
         console.log('⚡ LiveType AI Content Safety: Deep Learning NSFW Model initialized!');

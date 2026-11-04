@@ -4602,23 +4602,60 @@
     });
   }
 
+  let lastRenderedCardOrderKey = '';
+
+  function updateStatusPillIfChanged(pillEl, info, member) {
+    if (!pillEl) return;
+    let pillKey = 'idle';
+    if (info.isStreamer) {
+      pillKey = 'streamer';
+    } else if (info.hasContent) {
+      pillKey = info.hasImage && !info.hasText ? 'active_img' : 'active_txt';
+    } else if (info.hasRecentEmote) {
+      pillKey = `emote_${member ? member.lastEmote || '' : ''}`;
+    }
+
+    if (pillEl._pillKey === pillKey) return;
+    pillEl._pillKey = pillKey;
+
+    if (info.isStreamer) {
+      pillEl.className = 'typing-status-pill streamer-badge';
+      pillEl.innerHTML = '<span class="pulse-dot red"></span> 🔴 กำลังไลฟ์สด';
+    } else if (info.hasContent) {
+      pillEl.className = 'typing-status-pill active';
+      pillEl.innerHTML = '<span class="pulse-dot"></span> ' + (info.hasImage && !info.hasText ? '🖼️ ส่งรูป/GIF สด' : '⚡ กำลังส่งสด...');
+    } else if (info.hasRecentEmote) {
+      pillEl.className = 'typing-status-pill active emote-active';
+      pillEl.textContent = `✨ ส่งอีโมจิ ${member ? member.lastEmote || '' : ''}`;
+    } else {
+      pillEl.className = 'typing-status-pill idle';
+      pillEl.textContent = '💤 Non-Active';
+    }
+  }
+
   function reorderLiveCards(sortedMembersOverride = null) {
     if (!liveCardsGrid || !activeRoomCode) return;
     const members = Array.from(roomMembers.values());
     if (members.length === 0) return;
 
-    // FLIP Animation: Measure initial positions (First)
-    const firstRects = new Map();
-    members.forEach((m) => {
-      const el = document.getElementById(`live-card-${m.uid}`);
-      if (el) {
-        firstRects.set(m.uid, el.getBoundingClientRect());
-      }
-    });
-
     const sorted = Array.isArray(sortedMembersOverride) && sortedMembersOverride.length > 0
       ? sortedMembersOverride
       : sortRoomMembers(members);
+
+    const newOrderKey = sorted.map((m) => m.uid).join('|');
+    const orderChanged = Boolean(lastRenderedCardOrderKey && lastRenderedCardOrderKey !== newOrderKey);
+    lastRenderedCardOrderKey = newOrderKey;
+
+    // FLIP Animation: Only measure bounding rects when card order actually changed!
+    const firstRects = new Map();
+    if (orderChanged) {
+      members.forEach((m) => {
+        const el = document.getElementById(`live-card-${m.uid}`);
+        if (el) {
+          firstRects.set(m.uid, el.getBoundingClientRect());
+        }
+      });
+    }
 
     sorted.forEach((member, index) => {
       // Record rank for hysteresis comparison
@@ -4627,8 +4664,11 @@
       const cardEl = document.getElementById(`live-card-${member.uid}`);
       if (!cardEl) return;
 
-      // Update CSS order (0 = top, 1, 2, ...)
-      cardEl.style.order = index;
+      // Update CSS order (0 = top, 1, 2, ...) only if changed
+      const orderStr = String(index);
+      if (cardEl.style.order !== orderStr) {
+        cardEl.style.order = orderStr;
+      }
 
       const info = getMemberEngagementInfo(member);
       cardEl.classList.toggle('is-streamer', info.isStreamer);
@@ -4636,24 +4676,12 @@
       cardEl.classList.toggle('is-idle', info.tier === 3);
 
       const pillEl = document.getElementById(`status-pill-${member.uid}`);
-      if (pillEl) {
-        if (info.isStreamer) {
-          pillEl.className = 'typing-status-pill streamer-badge';
-          pillEl.innerHTML = '<span class="pulse-dot red"></span> 🔴 กำลังไลฟ์สด';
-        } else if (info.hasContent) {
-          pillEl.className = 'typing-status-pill active';
-          pillEl.innerHTML = '<span class="pulse-dot"></span> ' + (info.hasImage && !info.hasText ? '🖼️ ส่งรูป/GIF สด' : '⚡ กำลังส่งสด...');
-        } else if (info.hasRecentEmote) {
-          pillEl.className = 'typing-status-pill active emote-active';
-          pillEl.textContent = `✨ ส่งอีโมจิ ${member.lastEmote || ''}`;
-        } else {
-          pillEl.className = 'typing-status-pill idle';
-          pillEl.textContent = '💤 Non-Active';
-        }
-      }
+      updateStatusPillIfChanged(pillEl, info, member);
     });
 
-    // FLIP Animation: Invert & Play (Smooth sliding cards!)
+    if (!orderChanged) return;
+
+    // FLIP Animation: Invert & Play (Smooth sliding cards only when rank changes!)
     requestAnimationFrame(() => {
       sorted.forEach((member) => {
         const el = document.getElementById(`live-card-${member.uid}`);
@@ -4665,16 +4693,16 @@
         const deltaY = first.top - last.top;
 
         if (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1) {
-          el.style.transform = `translate(${deltaX}px, ${deltaY}px)`;
+          el.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
           el.style.transition = 'transform 0s';
           requestAnimationFrame(() => {
-            el.style.transition = 'transform 1.4s cubic-bezier(0.16, 1, 0.3, 1)';
+            el.style.transition = 'transform 0.42s cubic-bezier(0.22, 1, 0.36, 1)';
             el.style.transform = '';
             setTimeout(() => {
               if (el && el.style) {
                 el.style.transition = '';
               }
-            }, 1450);
+            }, 450);
           });
         }
       });
@@ -4919,6 +4947,7 @@
 
     // Sort members by engagement: Streamer (#1) -> Active (#2: typing/emote/gif) -> Non-Active (#3)
     const sortedMembers = sortRoomMembers(Array.from(roomMembers.values()));
+    lastRenderedCardOrderKey = sortedMembers.map((m) => m.uid).join('|');
 
     sortedMembers.forEach((member, index) => {
       const isSelf = currentUser && member.uid === currentUser.uid;
@@ -5096,15 +5125,10 @@
     const pillEl = document.getElementById(`status-pill-${uid}`);
     if (!bodyEl || !cardEl || !pillEl) return;
 
-    const safeImage = sanitizeChatMediaUrl(image);
-    bodyEl.innerHTML = '';
+    const safeImage = image ? sanitizeChatMediaUrl(image) : null;
     const hasText = Boolean(text && text.length > 0);
     const hasImage = Boolean(safeImage);
     const hasContent = hasText || hasImage;
-
-    bodyEl.classList.toggle('has-image', hasImage);
-    bodyEl.classList.toggle('has-text', hasText);
-    bodyEl.classList.toggle('has-image-and-text', hasImage && hasText);
 
     const member = roomMembers.get(uid);
     const info = getMemberEngagementInfo(member || { uid, currentText: text, image: safeImage });
@@ -5114,6 +5138,32 @@
     cardEl.classList.toggle('actively-typing', hasContent);
     cardEl.classList.toggle('is-active-engagement', info.tier === 2);
     cardEl.classList.toggle('is-idle', info.tier === 3);
+
+    updateStatusPillIfChanged(pillEl, info, member);
+
+    const mediaKeySig = hasImage ? safeImage.slice(0, 96) : '';
+    const renderSig = `${hasText ? 1 : 0}|${info.isStreamer ? 1 : 0}|${mediaKeySig}|${isSelf ? 1 : 0}`;
+
+    // ⚡ ZERO-ALLOCATION FAST PATH:
+    // If user is typing text and media/streamer state hasn't changed, update TextNode directly in <0.05ms!
+    if (hasText && bodyEl._renderSig === renderSig && bodyEl._textSpan && bodyEl.contains(bodyEl._textSpan)) {
+      const safeDisplayText = window.ContentFilter ? window.ContentFilter.filterProfanity(text) : text;
+      if (bodyEl._textSpan.textContent !== safeDisplayText) {
+        bodyEl._textSpan.textContent = safeDisplayText;
+      }
+      if (!isSelf && isMemberTranslationActive(uid)) {
+        scheduleMemberTranslation(uid, text, TRANSLATION_DEBOUNCE_MS);
+      }
+      return;
+    }
+
+    bodyEl._renderSig = renderSig;
+    bodyEl._textSpan = null;
+    bodyEl.innerHTML = '';
+
+    bodyEl.classList.toggle('has-image', hasImage);
+    bodyEl.classList.toggle('has-text', hasText);
+    bodyEl.classList.toggle('has-image-and-text', hasImage && hasText);
 
     // 1. Prominent Live Stream Icon in Chat:
     // Placed before GIF/Image and text (to the left of GIF)
@@ -5174,38 +5224,30 @@
       if (window.ContentFilter && window.ContentFilter.isAdultFilterEnabled()) {
         const cachedAdult = window.ContentFilter.getCachedAdultStatus(safeImage);
         if (cachedAdult === true) {
-          // ภาพนี้ตรวจแล้วและเป็นภาพ 18+ ลามกอนาจารจริง -> ใส่ภาพเซ็นเซอร์ทันที
           const censoredBox = window.ContentFilter.createCensoredMediaContainer(safeImage, isVideo);
           imgWrap.appendChild(censoredBox);
         } else if (cachedAdult === false) {
-          // ภาพนี้ตรวจแล้วและเป็นภาพปลอดภัย (คนใส่ชุดเต็ม, ภาพทั่วไป) -> แสดงผลภาพจริงทันที
           imgWrap.appendChild(createRawMediaEl());
         } else {
-          // หากอยู่ในจังหวะที่ AI กำลังโหลดหรือยังตรวจไม่เสร็จ:
-          // ส่งภาพ "รูปกล้องพื้นหลังสีขาว เหมือนภาพยังไม่โหลดลงไปก่อน" เผื่อภาพที่เป็นภาพโป๊เปลือยจริงจะได้ Safe 100%
           const pendingPlaceholder = window.ContentFilter.createPendingScanPlaceholder
             ? window.ContentFilter.createPendingScanPlaceholder(safeImage, isVideo)
             : createRawMediaEl();
           imgWrap.appendChild(pendingPlaceholder);
 
-          // รันตรวจความปลอดภัยด้วย AI ในพื้นหลัง
           window.ContentFilter.checkAdultContent(safeImage, (isAdult) => {
             const currentWrap = bodyEl.querySelector(`.live-card-image-wrap[data-media-key="${CSS.escape(mediaKey)}"]`);
             if (currentWrap) {
               currentWrap.innerHTML = '';
               if (isAdult) {
-                // ถ้าตรวจเสร็จแล้วพบว่าเป็นภาพโป๊เปลือยจริง -> เปลี่ยนเป็นภาพเซ็นเซอร์ 18+
                 const censoredBox = window.ContentFilter.createCensoredMediaContainer(safeImage, isVideo);
                 currentWrap.appendChild(censoredBox);
               } else {
-                // ถ้าตรวจเสร็จแล้วพบว่าเป็นภาพปลอดภัย (คนใส่ชุดเต็ม, ภาพทั่วไป) -> เปลี่ยนเป็นภาพจริงทันที!
                 currentWrap.appendChild(createRawMediaEl());
               }
             }
           });
         }
       } else {
-        // หากปิดระบบซ่อนเนื้อหาสำหรับผู้ใหญ่ จะไม่มีการกรองรูปภาพลามกหรือเนื้อหาสำหรับผู้ใหญ่ ปล่อยไว้เหมือนเดิม
         imgWrap.appendChild(createRawMediaEl());
       }
       bodyEl.appendChild(imgWrap);
@@ -5217,9 +5259,9 @@
       textWrap.className = 'live-card-text-wrap';
       const textSpan = document.createElement('span');
       textSpan.className = 'live-card-text';
-      // ระบบปิดคำหยาบ จะกรองข้อความที่รวมแล้วมีแนวโน้มที่จะเป็นคำหยาบจะกลายเป็น **** ไว้ (เปิด/ปิด ได้ที่โปรไฟล์)
       const safeDisplayText = window.ContentFilter ? window.ContentFilter.filterProfanity(text) : text;
       textSpan.textContent = safeDisplayText;
+      bodyEl._textSpan = textSpan;
       const cursorSpan = document.createElement('span');
       cursorSpan.className = 'live-cursor';
       textWrap.appendChild(textSpan);
@@ -5246,7 +5288,6 @@
     }
 
     if (!hasText && hasImage) {
-      // If has image but no text yet: show live-cursor on the right if it's the current user (ready to type)
       if (isSelf) {
         const textWrap = document.createElement('div');
         textWrap.className = 'live-card-text-wrap';
@@ -5261,7 +5302,6 @@
       placeholder.textContent = 'ยังไม่มีข้อความ (Non-Active)... (กด Enter เมื่อต้องการล้างทั้งหมด)';
       bodyEl.appendChild(placeholder);
     } else if (!hasText) {
-      // Streamer with no image and no text yet
       if (isSelf) {
         const textWrap = document.createElement('div');
         textWrap.className = 'live-card-text-wrap';
@@ -5275,22 +5315,6 @@
         placeholder.textContent = 'กำลังถ่ายทอดสดหน้าจอ... (คลิกไอคอน LIVE เพื่อรับชม)';
         bodyEl.appendChild(placeholder);
       }
-    }
-
-    bodyEl.scrollTop = bodyEl.scrollHeight;
-
-    if (info.isStreamer) {
-      pillEl.className = 'typing-status-pill streamer-badge';
-      pillEl.innerHTML = '<span class="pulse-dot red"></span> 🔴 กำลังไลฟ์สด';
-    } else if (hasContent) {
-      pillEl.className = 'typing-status-pill active';
-      pillEl.innerHTML = '<span class="pulse-dot"></span> ' + (hasImage && !hasText ? '🖼️ ส่งรูป/GIF สด' : '⚡ กำลังส่งสด...');
-    } else if (info.hasRecentEmote) {
-      pillEl.className = 'typing-status-pill active emote-active';
-      pillEl.textContent = `✨ ส่งอีโมจิ ${member ? member.lastEmote || '' : ''}`;
-    } else {
-      pillEl.className = 'typing-status-pill idle';
-      pillEl.textContent = '💤 Non-Active';
     }
   }
 
@@ -6077,6 +6101,46 @@
     }
   });
 
+  let typingBroadcastTimer = null;
+  let lastTypingBroadcastTs = 0;
+  let pendingTypingText = null;
+  const TYPING_BROADCAST_THROTTLE_MS = 40;
+
+  function flushTypingBroadcast(textToSend) {
+    if (typingBroadcastTimer) {
+      clearTimeout(typingBroadcastTimer);
+      typingBroadcastTimer = null;
+    }
+    if (!currentUser || !activeRoomCode) return;
+    lastTypingBroadcastTs = Date.now();
+    // Lightweight packet: omit heavy base64 avatar/image on keystrokes since room members already have them synced!
+    publishJson(topicRoom(activeRoomCode), {
+      type: 'typing_update',
+      uid: currentUser.uid,
+      username: currentUser.username,
+      text: textToSend
+    });
+  }
+
+  function scheduleTypingBroadcast(textToSend) {
+    pendingTypingText = textToSend;
+    const now = Date.now();
+    const elapsed = now - lastTypingBroadcastTs;
+    if (elapsed >= TYPING_BROADCAST_THROTTLE_MS && !typingBroadcastTimer) {
+      flushTypingBroadcast(pendingTypingText);
+      return;
+    }
+    if (!typingBroadcastTimer) {
+      const waitMs = Math.max(8, TYPING_BROADCAST_THROTTLE_MS - elapsed);
+      typingBroadcastTimer = setTimeout(() => {
+        typingBroadcastTimer = null;
+        if (pendingTypingText !== null) {
+          flushTypingBroadcast(pendingTypingText);
+        }
+      }, waitMs);
+    }
+  }
+
   function handleLiveInputChange() {
     if (!currentUser || !activeRoomCode) return;
     if (liveTypingInput.value.length > MAX_CHAR_LIMIT) {
@@ -6096,22 +6160,20 @@
         myMem.lastActiveAt = 0;
       }
       updateSingleCardContent(currentUser.uid, currentText, myMem.image);
-      // Note: reorderLiveCards() is decoupled from keystrokes and handled smoothly on 1s interval!
+      // Note: reorderLiveCards() is decoupled from keystrokes and handled smoothly on interval!
     }
 
-    publishJson(topicRoom(activeRoomCode), {
-      type: 'typing_update',
-      uid: currentUser.uid,
-      username: currentUser.username,
-      avatar: currentUser.avatar,
-      text: currentText,
-      image: currentImage
-    });
+    scheduleTypingBroadcast(currentText);
   }
 
   function triggerEnterClear() {
     if (!currentUser || !activeRoomCode) return;
     if (!canExecuteAction('enter_clear', false)) return;
+    if (typingBroadcastTimer) {
+      clearTimeout(typingBroadcastTimer);
+      typingBroadcastTimer = null;
+    }
+    pendingTypingText = null;
     liveTypingInput.value = '';
     charCounter.textContent = `0 / 250 ตัวอักษร`;
     hideInputImagePreview();
@@ -6453,6 +6515,7 @@
       root.style.setProperty('--radius-md', `${theme.radius}px`);
       root.style.setProperty('--radius-sm', `${Math.max(0, theme.radius - 4)}px`);
       root.style.setProperty('--ui-brightness', `${brightness}%`);
+      document.body.classList.toggle('has-custom-brightness', brightness !== 100);
 
       // Custom Background overlay controls (instant CSS variable, no image re-decoding)
       const bgDim = theme.bgDim !== undefined ? theme.bgDim : 30;

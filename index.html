@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Kanit:wght@300;400;500;600&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/style.css?v=2.3" />
+  <link rel="stylesheet" href="./css/style.css?v=3.2" />
 </head>
 <body>
   <!-- Custom Background Wallpaper Layer -->
@@ -1276,15 +1276,12 @@
 
   <!-- MQTT over WebSockets for 100% Serverless Realtime Pub/Sub across iOS, Android, Windows -->
   <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
-  <!-- HTML5 QR Code Scanner Library (Camera & Image File QR Decoder) -->
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-  <!-- TensorFlow.js & NSFWJS On-Device Deep Learning AI Classifier (Deferred) -->
-  <script src="https://unpkg.com/@tensorflow/tfjs@4.20.0/dist/tf.min.js" defer></script>
-  <script src="https://unpkg.com/nsfwjs@2.4.2/dist/nsfwjs.min.js" defer></script>
-  <!-- Content Safety: Adult Content (NSFW) & Profanity Filter Module -->
-  <script src="./js/content-filter.js"></script>
-  <!-- P2P Unlimited File Transfer Module (WebRTC DataChannel + File System Access API) -->
-  <script src="./js/p2p-file-transfer.js?v=3.1"></script>
-  <script src="./js/app.js?v=3.1"></script>
+  <!-- HTML5 QR Code Scanner Library (Deferred so it never blocks startup) -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+  <!-- Content Safety: Adult Content (NSFW lazy-loads TFJS on demand) & Fast Cached Profanity Filter -->
+  <script src="./js/content-filter.js?v=3.2"></script>
+  <!-- P2P Unlimited File Transfer Module (WebRTC DataChannel + Native TCP + File System Access API) -->
+  <script src="./js/p2p-file-transfer.js?v=3.2"></script>
+  <script src="./js/app.js?v=3.2"></script>
 </body>
 </html>

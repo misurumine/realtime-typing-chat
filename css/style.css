@@ -55,8 +55,11 @@ html, body {
   font-family: 'Kanit', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   display: flex;
   flex-direction: column;
-  filter: brightness(var(--ui-brightness, 100%));
   transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+body.has-custom-brightness {
+  filter: brightness(var(--ui-brightness, 100%));
 }
 
 /* Custom Background Wallpaper Layer */
@@ -1763,13 +1766,12 @@ body.has-custom-bg .app-custom-bg {
   align-items: flex-start;
   gap: 14px;
   background: var(--bg-card);
-  backdrop-filter: blur(calc(var(--panel-blur, 16px) * 0.75));
-  -webkit-backdrop-filter: blur(calc(var(--panel-blur, 16px) * 0.75));
   border: 1.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   padding: 14px 16px;
   position: relative;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease, background 0.2s ease;
+  contain: layout style;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease, background 0.18s ease;
   overflow: visible;
   min-height: 80px;
   height: auto;
