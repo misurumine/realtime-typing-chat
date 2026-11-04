@@ -1,8 +1,9 @@
-const CACHE_NAME = 'livetype-pwa-v2';
+const CACHE_NAME = 'livetype-pwa-v3';
 const ASSETS = [
   './',
   './index.html',
   './css/style.css',
+  './js/p2p-file-transfer.js',
   './js/app.js',
   './manifest.json',
   './assets/icons/icon.svg'
@@ -25,7 +26,16 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return;
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
+    fetch(event.request)
+      .then((response) => {
+        if (response && response.status === 200 && response.type === 'basic') {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

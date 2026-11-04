@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Kanit:wght@300;400;500;600&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/style.css" />
+  <link rel="stylesheet" href="./css/style.css?v=2.3" />
 </head>
 <body>
   <!-- Custom Background Wallpaper Layer -->
@@ -180,6 +180,52 @@
                 </div>
                 <label class="switch-toggle" for="toggleProfanityFilter">
                   <input type="checkbox" id="toggleProfanityFilter" checked />
+                  <span class="slider-round"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Realtime Live Translation Settings -->
+          <div class="content-safety-section">
+            <label class="section-label">🌐 ระบบแปลภาษาแบบเรียลไทม์ (Realtime Live Translation)</label>
+            <div class="safety-toggle-list">
+              <!-- Target Language Selection -->
+              <div class="safety-toggle-card">
+                <div class="safety-toggle-info">
+                  <div class="safety-toggle-title">
+                    <span class="safety-icon">🇹🇭</span> ภาษาที่คุณต้องการอ่าน (Target Language)
+                  </div>
+                  <div class="safety-toggle-desc">
+                    ภาษาปลายทางเมื่อระบบทำการแปลข้อความสดของผู้อื่นให้คุณ (ค่าเริ่มต้นคือ ภาษาไทย)
+                  </div>
+                </div>
+                <div class="select-lang-wrapper">
+                  <select id="selectTargetLang" class="select-lang-input">
+                    <option value="th" selected>🇹🇭 ภาษาไทย (Thai)</option>
+                    <option value="en">🇺🇸 English (อังกฤษ)</option>
+                    <option value="ja">🇯🇵 日本語 (ญี่ปุ่น)</option>
+                    <option value="zh-CN">🇨🇳 中文 (จีนตัวย่อ)</option>
+                    <option value="ko">🇰🇷 한국어 (เกาหลี)</option>
+                    <option value="de">🇩🇪 Deutsch (เยอรมัน)</option>
+                    <option value="fr">🇫🇷 Français (ฝรั่งเศส)</option>
+                    <option value="es">🇪🇸 Español (สเปน)</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Auto-Translate Toggle -->
+              <div class="safety-toggle-card">
+                <div class="safety-toggle-info">
+                  <div class="safety-toggle-title">
+                    <span class="safety-icon">⚡</span> ตรวจจับและแปลภาษาอัตโนมัติ (Auto-Detect)
+                  </div>
+                  <div class="safety-toggle-desc">
+                    หากเปิดไว้ ระบบจะแปลข้อความจากผู้ใช้ที่พิมพ์ภาษาต่างประเทศให้คุณอัตโนมัติ (หน่วงเวลา 2 วินาทีหลังหยุดพิมพ์) หรือสามารถเปิด/ปิดเฉพาะคนได้ที่ปุ่ม 🌐 บนการ์ดของแต่ละคน
+                  </div>
+                </div>
+                <label class="switch-toggle" for="toggleAutoTranslate">
+                  <input type="checkbox" id="toggleAutoTranslate" />
                   <span class="slider-round"></span>
                 </label>
               </div>
@@ -1014,6 +1060,188 @@
     </div>
   </div>
 
+  <!-- P2P File Transfer: Sender Modal -->
+  <div id="p2pSendModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal-card p2p-modal-card glass-panel">
+      <div class="modal-header">
+        <div class="p2p-modal-title-row">
+          <span class="p2p-header-icon">📁</span>
+          <div>
+            <h3>ส่งไฟล์ตรงแบบ P2P (ไม่จำกัดขนาด)</h3>
+            <p class="modal-subtitle">ข้อมูลจะวิ่งตรงสู่เครื่องผู้รับผ่าน WebRTC DataChannel โดยไม่ผ่านเซิร์ฟเวอร์</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-body">
+        <!-- Target User Info -->
+        <div class="p2p-target-profile-card">
+          <img id="p2pSendTargetAvatar" src="./assets/avatars/avatar-1.svg" alt="Target Avatar" class="avatar-md" />
+          <div class="p2p-target-info">
+            <span class="p2p-target-label">ผู้รับปลายทาง:</span>
+            <div id="p2pSendTargetName" class="p2p-target-name">ผู้ใช้</div>
+            <div id="p2pSendTargetUid" class="p2p-target-uid mono">UID: -----</div>
+          </div>
+        </div>
+
+        <!-- Form State: Select File -->
+        <div id="p2pSendFormState" class="p2p-form-state">
+          <!-- Dropzone -->
+          <div id="p2pSendDropzone" class="p2p-dropzone" title="คลิกเพื่อเลือกไฟล์ หรือลากไฟล์มาวางที่นี่">
+            <input type="file" id="p2pSendFileInput" class="hidden" />
+            <div class="p2p-dropzone-icon">📥</div>
+            <div class="p2p-dropzone-text"><strong>คลิกเลือกไฟล์</strong> หรือลากไฟล์มาวางที่นี่</div>
+            <div class="p2p-dropzone-hint">รองรับไฟล์ทุกประเภท ทุกขนาด (เช่น วิดีโอ 51GB, ZIP, ISO ฯลฯ)</div>
+          </div>
+
+          <!-- Selected File Preview Card (Hidden initially) -->
+          <div id="p2pSendFilePreview" class="p2p-file-preview-card hidden">
+            <div class="p2p-file-preview-left">
+              <span id="p2pFilePreviewIcon" class="p2p-file-icon">🎬</span>
+              <div class="p2p-file-details">
+                <div id="p2pFilePreviewName" class="p2p-file-name">video.mp4</div>
+                <div id="p2pFilePreviewSize" class="p2p-file-size mono">0 B</div>
+                <div id="p2pFileHugeBadge" class="p2p-file-huge-badge hidden">⚡ สตรีมดิสก์ P2P รองรับไฟล์ขนาดใหญ่พิเศษ</div>
+              </div>
+            </div>
+            <button type="button" id="btnP2PRemoveFile" class="btn-icon p2p-btn-remove" title="เปลี่ยนไฟล์">✕</button>
+          </div>
+        </div>
+
+        <!-- Waiting State: Waiting for recipient to accept (1s retry loop & 30s timeout) -->
+        <div id="p2pSendWaitingState" class="p2p-waiting-state hidden">
+          <div class="p2p-waiting-spinner"></div>
+          <h4>กำลังส่งคำขอหา <span id="p2pWaitingTargetName" class="highlight-name">...</span> ทุก ๆ 1 วินาที</h4>
+          <div id="p2pWaitingCountdown" class="p2p-waiting-countdown-badge mono">⏳ รอการตอบรับ: 30 วิ</div>
+          <div id="p2pWaitingStatusMsg" class="p2p-waiting-status-msg">กำลังส่งคำขอรอบที่ 1...</div>
+          <p class="p2p-waiting-sub" style="margin-top: 8px;">ระบบจะส่งสัญญาณซ้ำทุก 1 วิ เพื่อป้องกันเน็ตสะดุด หากไม่ตอบรับภายใน 30 วินาที จะยกเลิกคำขออัตโนมัติ</p>
+          <button type="button" id="btnP2PAbortWaiting" class="btn btn-secondary btn-sm" style="margin-top: 14px;">✕ ยกเลิกคำขอ</button>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" id="btnP2PCancelSend" class="btn btn-secondary">ยกเลิก</button>
+        <button type="button" id="btnP2PConfirmSend" class="btn btn-primary" disabled>🚀 ส่งคำขอส่งไฟล์</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- P2P File Transfer: Incoming Request Modal -->
+  <div id="p2pReceiveModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal-card p2p-modal-card glass-panel">
+      <div class="modal-header">
+        <div class="p2p-modal-title-row">
+          <span class="p2p-header-icon pulse-glow">📥</span>
+          <div>
+            <h3>มีคำขอส่งไฟล์ P2P เข้ามา!</h3>
+            <p class="modal-subtitle">เพื่อนในห้องต้องการส่งไฟล์ตรงให้คุณแบบ Peer-to-Peer</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-body">
+        <!-- Sender Info -->
+        <div class="p2p-target-profile-card">
+          <img id="p2pReceiveSenderAvatar" src="./assets/avatars/avatar-1.svg" alt="Sender Avatar" class="avatar-md" />
+          <div class="p2p-target-info">
+            <span class="p2p-target-label">ผู้ส่ง:</span>
+            <div id="p2pReceiveSenderName" class="p2p-target-name">ผู้ใช้</div>
+            <div id="p2pReceiveSenderUid" class="p2p-target-uid mono">UID: -----</div>
+          </div>
+        </div>
+
+        <!-- File Details Card -->
+        <div class="p2p-file-preview-card incoming">
+          <div class="p2p-file-preview-left">
+            <span id="p2pReceiveFileIcon" class="p2p-file-icon">🎬</span>
+            <div class="p2p-file-details">
+              <div id="p2pReceiveFileName" class="p2p-file-name">video.mp4</div>
+              <div id="p2pReceiveFileSize" class="p2p-file-size mono highlight-size">51.00 GB</div>
+              <div id="p2pReceiveHugeNotice" class="p2p-file-huge-badge hidden">💡 ไฟล์ขนาดใหญ่ ระบบจะเขียนลงฮาร์ดดิสก์ทันทีโดยไม่เปลือง RAM</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="p2p-security-note">
+          🔒 ข้อมูลจะวิ่งตรงสู่เครื่องคุณเท่านั้น ไม่มีการอัปโหลดขึ้นเซิร์ฟเวอร์ใด ๆ ทั้งสิ้น
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" id="btnP2PDeclineReceive" class="btn btn-danger">✕ ปฏิเสธ</button>
+        <button type="button" id="btnP2PAcceptReceive" class="btn btn-success">💾 ยอมรับและเลือกที่บันทึกไฟล์</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating P2P File Transfer Progress Widget -->
+  <div id="p2pTransferWidget" class="floating-p2p-widget glass-panel hidden" role="region" aria-label="P2P File Transfer">
+    <div class="p2p-widget-header">
+      <div class="p2p-widget-header-left">
+        <span class="p2p-widget-status-dot"></span>
+        <span id="p2pWidgetHeaderTitle" class="p2p-widget-title">📤 กำลังส่งไฟล์ (P2P Direct)</span>
+      </div>
+      <div class="p2p-widget-header-actions">
+        <button type="button" id="btnP2PMinimizeWidget" class="btn-floating-tool" title="ย่อ / ขยาย">🗕</button>
+        <button type="button" id="btnP2PCancelTransfer" class="btn-floating-tool btn-floating-close" title="ยกเลิกการถ่ายโอน">✕</button>
+      </div>
+    </div>
+
+    <!-- Active Transfer Body -->
+    <div id="p2pWidgetBody" class="p2p-widget-body">
+      <!-- Target & File Meta Row -->
+      <div class="p2p-widget-meta-row">
+        <div class="p2p-widget-file-info">
+          <span id="p2pWidgetFileIcon" class="p2p-widget-file-icon">🎬</span>
+          <div class="p2p-widget-file-texts">
+            <span id="p2pWidgetFileName" class="p2p-widget-file-name">video.mp4</span>
+            <div class="p2p-widget-sub-meta">
+              <span id="p2pWidgetDirectionBadge" class="p2p-direction-badge out">ส่งออก</span>
+              <span id="p2pWidgetPeerName" class="p2p-widget-peer-name">User B</span>
+              <span class="dot-sep">•</span>
+              <span id="p2pWidgetFileSize" class="p2p-widget-total-size mono">51.00 GB</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Animated Progress Bar -->
+      <div class="p2p-progress-track">
+        <div id="p2pWidgetProgressBar" class="p2p-progress-fill" style="width: 0%;"></div>
+      </div>
+
+      <!-- Realtime Transfer Stats -->
+      <div class="p2p-widget-stats-grid">
+        <div class="p2p-stat-item">
+          <span class="stat-label">ความคืบหน้า</span>
+          <span id="p2pWidgetProgressPercent" class="stat-value mono">0.0%</span>
+        </div>
+        <div class="p2p-stat-item">
+          <span class="stat-label">ส่งแล้ว / ทั้งหมด</span>
+          <span id="p2pWidgetBytesTransferred" class="stat-value mono">0 B / 0 B</span>
+        </div>
+        <div class="p2p-stat-item">
+          <span class="stat-label">ความเร็วเฉลี่ย</span>
+          <span id="p2pWidgetSpeed" class="stat-value mono highlight-speed">⚡ 0 B/s</span>
+        </div>
+        <div class="p2p-stat-item">
+          <span class="stat-label">เวลาที่เหลือ</span>
+          <span id="p2pWidgetEta" class="stat-value mono highlight-eta">⏳ กำลังเชื่อมต่อ...</span>
+        </div>
+      </div>
+
+      <div id="p2pWidgetStatusText" class="p2p-widget-status-msg">กำลังเจาะท่อ P2P WebRTC...</div>
+    </div>
+
+    <!-- Completion View (Shown on 100% success) -->
+    <div id="p2pWidgetCompletionView" class="p2p-widget-completion hidden">
+      <div class="completion-icon">✅</div>
+      <h4 id="p2pCompletionTitle">🎉 ถ่ายโอนไฟล์สำเร็จ 100%!</h4>
+      <p id="p2pCompletionSub">ไฟล์ถูกส่งถึงเครื่องปลายทางเรียบร้อยแล้ว</p>
+      <button type="button" id="btnP2PCloseCompletion" class="btn btn-primary btn-sm" style="margin-top: 10px;">ตกลง</button>
+    </div>
+  </div>
+
   <!-- Google Identity Services (GIS) Client Library -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <!-- Google Drive AppData Sync Library -->
@@ -1028,6 +1256,8 @@
   <script src="https://unpkg.com/nsfwjs@2.4.2/dist/nsfwjs.min.js"></script>
   <!-- Content Safety: Adult Content (NSFW) & Profanity Filter Module -->
   <script src="./js/content-filter.js"></script>
-  <script src="./js/app.js"></script>
+  <!-- P2P Unlimited File Transfer Module (WebRTC DataChannel + File System Access API) -->
+  <script src="./js/p2p-file-transfer.js?v=2.3"></script>
+  <script src="./js/app.js?v=2.3"></script>
 </body>
 </html>

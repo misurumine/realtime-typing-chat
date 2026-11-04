@@ -49,8 +49,17 @@
       if (e.target.closest('.btn-emote-item') || e.target.closest('#emotePickerGrid')) {
         return;
       }
-      // Never block or throttle video player or stream controls
-      if (e.target.closest('#floatingStreamWindow') || e.target.closest('#btnToggleScreenShare') || e.target.closest('.btn-stream-card-trigger')) {
+      // Never block or throttle video player, stream controls, or P2P file transfer controls
+      if (
+        e.target.closest('#floatingStreamWindow') ||
+        e.target.closest('#btnToggleScreenShare') ||
+        e.target.closest('.btn-stream-card-trigger') ||
+        e.target.closest('#p2pSendModal') ||
+        e.target.closest('#p2pReceiveModal') ||
+        e.target.closest('#p2pTransferWidget') ||
+        e.target.closest('.btn-card-send-file') ||
+        e.target.closest('.btn-file-friend')
+      ) {
         return;
       }
       const clickable = e.target.closest('button, .tag-chip, .btn-sidebar-pill, .btn-picker-tab, .discord-cat-tile, .btn-preset-theme');
@@ -951,6 +960,32 @@
   let brokerIndex = 0;
   let heartbeatTimer = null;
 
+  // Realtime Live Translation State
+  const TRANSLATION_DEBOUNCE_MS = 2000; // 2 seconds debounce as requested
+  let targetLanguage = localStorage.getItem('chat_target_lang') || 'th';
+  let isAutoTranslateEnabled = localStorage.getItem('chat_auto_translate') === 'true';
+
+  const activeTranslateUids = new Set(
+    (() => {
+      try {
+        const saved = localStorage.getItem('chat_translate_uids');
+        return saved ? JSON.parse(saved) : [];
+      } catch (e) {
+        return [];
+      }
+    })()
+  );
+
+  function saveActiveTranslateUids() {
+    try {
+      localStorage.setItem('chat_translate_uids', JSON.stringify(Array.from(activeTranslateUids)));
+    } catch (e) {}
+  }
+
+  const clientTranslationCache = new Map(); // key: `${targetLang}:${text.trim()}` -> { translatedText, detectedSource }
+  const memberTranslateTimers = new Map(); // key: uid -> timerId
+  const memberActiveTranslations = new Map(); // key: uid -> { originalText, translatedText, detectedSource, targetLang, isLoading }
+
   // WebRTC Live Screen Streaming State
   let localScreenStream = null;
   let isScreenSharing = false;
@@ -1032,6 +1067,8 @@
   // Content Safety & Moderation Settings Elements
   const toggleAdultFilter = document.getElementById('toggleAdultFilter');
   const toggleProfanityFilter = document.getElementById('toggleProfanityFilter');
+  const selectTargetLang = document.getElementById('selectTargetLang');
+  const toggleAutoTranslate = document.getElementById('toggleAutoTranslate');
   const btnBackToChat = document.getElementById('btnBackToChat');
 
   const btnGoogleSignIn = document.getElementById('btnGoogleSignIn');
@@ -1339,6 +1376,25 @@
     }, duration);
   }
 
+  // --- Sync P2P Unlimited File Transfer Engine ---
+  function syncP2PTransferEngine() {
+    if (window.P2PFileTransfer && currentUser) {
+      window.P2PFileTransfer.init({
+        currentUser,
+        topicInbox,
+        publishJson: (topic, payload) => {
+          publishJson(topic, payload);
+          // Dual-channel delivery: also broadcast via active room topic so in-room peers receive packets with 0% drop!
+          if (activeRoomCode && payload && payload.type && String(payload.type).startsWith('p2p_file_')) {
+            publishJson(topicRoom(activeRoomCode), payload);
+          }
+        },
+        showToast,
+        rtcConfig: RTC_CONFIG
+      });
+    }
+  }
+
   // --- Serverless Realtime Network Engine (MQTT over WSS) ---
   function connectServerlessNetwork() {
     if (!currentUser) return;
@@ -1406,6 +1462,9 @@
       requestDirectoryScan();
       pingAllFriends();
       checkUrlRoomInvite();
+
+      // 6. Initialize P2P Unlimited File Transfer Engine
+      syncP2PTransferEngine();
     });
 
     mqttClient.on('error', () => {
@@ -1853,6 +1912,11 @@
       return;
     }
 
+    // P2P Unlimited File Transfer Signaling & Handshake Messages
+    if (window.P2PFileTransfer && window.P2PFileTransfer.handleInboxMessage(data)) {
+      return;
+    }
+
     // 1. Someone pinged us to check if we are online -> reply directly to their inbox & presence
     if (data.type === 'ping_status' && senderUid) {
       if (!friendsMap.has(senderUid)) {
@@ -2024,6 +2088,18 @@
     if (!currentUser || !activeRoomCode) return;
     if (!data) return;
     const cleanSenderUid = data.uid ? sanitizeUid(data.uid) : '';
+
+    // Direct room-level P2P file transfer signaling fallback (instant delivery inside room)
+    if (
+      data.type &&
+      String(data.type).startsWith('p2p_file_') &&
+      data.targetUid &&
+      sanitizeUid(data.targetUid) === currentUser.uid
+    ) {
+      if (window.P2PFileTransfer && window.P2PFileTransfer.handleInboxMessage(data)) {
+        return;
+      }
+    }
 
     // Direct room-level friend request/accepted sync (instant fallback in case inbox packet drops)
     if (data.type === 'room_friend_request' && data.targetUid === currentUser.uid && data.from) {
@@ -2303,6 +2379,7 @@
     }
 
     if (data.type === 'member_leave') {
+      clearMemberTranslation(cleanSenderUid);
       if (roomMembers.has(cleanSenderUid)) {
         const leftUser = roomMembers.get(cleanSenderUid);
         roomMembers.delete(cleanSenderUid);
@@ -2368,6 +2445,7 @@
     }
 
     if (data.type === 'typing_clear') {
+      clearMemberTranslation(cleanSenderUid);
       if (roomMembers.has(cleanSenderUid)) {
         const m = roomMembers.get(cleanSenderUid);
         m.currentText = '';
@@ -3011,12 +3089,18 @@
     initInterestTagsPicker();
     updateAuthUIState();
 
-    // Sync Content Safety Toggle States in Profile View
+    // Sync Content Safety & Translation States in Profile View
     if (toggleAdultFilter && window.ContentFilter) {
       toggleAdultFilter.checked = window.ContentFilter.isAdultFilterEnabled();
     }
     if (toggleProfanityFilter && window.ContentFilter) {
       toggleProfanityFilter.checked = window.ContentFilter.isProfanityFilterEnabled();
+    }
+    if (selectTargetLang) {
+      selectTargetLang.value = targetLanguage;
+    }
+    if (toggleAutoTranslate) {
+      toggleAutoTranslate.checked = isAutoTranslateEnabled;
     }
     if (btnBackToChat) {
       if (activeRoomCode) {
@@ -3049,6 +3133,7 @@
     renderFriendsList();
     renderDiscoveredRooms();
     connectServerlessNetwork();
+    syncP2PTransferEngine();
   }
 
   // Check if user opened a shared link like ?room=ABCDEF
@@ -3082,6 +3167,7 @@
       profanityFilterEnabled: window.ContentFilter ? window.ContentFilter.isProfanityFilterEnabled() : true
     };
     saveUserSession(currentUser);
+    if (window.P2PFileTransfer) window.P2PFileTransfer.updateUser(currentUser);
     syncGoogleDriveIfAuthenticated();
 
     // If already in a room, update our profile inside the room
@@ -3138,6 +3224,36 @@
       );
       if (activeRoomCode) {
         renderAllLiveCards();
+      }
+    });
+  }
+
+  // --- Realtime Live Translation Settings Event Listeners ---
+  if (selectTargetLang) {
+    selectTargetLang.value = targetLanguage;
+    selectTargetLang.addEventListener('change', (e) => {
+      targetLanguage = e.target.value || 'th';
+      localStorage.setItem('chat_target_lang', targetLanguage);
+      memberActiveTranslations.clear();
+      refreshAllTranslations();
+      const langName = e.target.options[e.target.selectedIndex]?.text || targetLanguage;
+      showToast(`🌐 ตั้งค่าภาษาที่คุณต้องการอ่านเป็น "${langName}" แล้ว`);
+    });
+  }
+
+  if (toggleAutoTranslate) {
+    toggleAutoTranslate.checked = isAutoTranslateEnabled;
+    toggleAutoTranslate.addEventListener('change', (e) => {
+      isAutoTranslateEnabled = e.target.checked;
+      localStorage.setItem('chat_auto_translate', isAutoTranslateEnabled ? 'true' : 'false');
+      showToast(
+        isAutoTranslateEnabled
+          ? '⚡ เปิดระบบตรวจจับและแปลภาษาต่างประเทศอัตโนมัติแล้ว (หน่วง 2 วิ)'
+          : 'ℹ️ ปิดการแปลอัตโนมัติแล้ว (สามารถกดเปิด/ปิดเฉพาะคนได้ที่ปุ่ม 🌐 บนการ์ด)'
+      );
+      renderAllLiveCards();
+      if (isAutoTranslateEnabled) {
+        refreshAllTranslations();
       }
     });
   }
@@ -3779,6 +3895,7 @@
           <button class="btn btn-primary btn-sm btn-chat-friend">
             ${activeRoomCode ? '➕ เชิญเข้าห้อง' : '💬 ชวนคุย'}
           </button>
+          ${friend.online ? '<button type="button" class="btn btn-secondary btn-sm btn-file-friend" title="ส่งไฟล์ตรงแบบ P2P ให้คนนี้">📁 ส่งไฟล์</button>' : ''}
           <button class="btn-icon btn-remove-friend" title="ลบเพื่อน">✕</button>
         </div>
       `;
@@ -3788,6 +3905,17 @@
       item.querySelector('.btn-chat-friend').addEventListener('click', () => {
         inviteFriendToChat(friend.uid);
       });
+
+      const fileFriendBtn = item.querySelector('.btn-file-friend');
+      if (fileFriendBtn) {
+        fileFriendBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          syncP2PTransferEngine();
+          if (window.P2PFileTransfer) {
+            window.P2PFileTransfer.openSendForMember(friend);
+          }
+        });
+      }
 
       item.querySelector('.btn-remove-friend').addEventListener('click', () => {
         const friendName = friend.username || friend.uid;
@@ -3851,6 +3979,9 @@
     const oldCode = activeRoomCode;
     stopRoomSortInterval();
     cleanupStreamState();
+    memberTranslateTimers.forEach((timer) => clearTimeout(timer));
+    memberTranslateTimers.clear();
+    memberActiveTranslations.clear();
     publishJson(topicRoom(oldCode), {
       type: 'member_leave',
       uid: currentUser.uid
@@ -4550,6 +4681,236 @@
     });
   }
 
+  // ==========================================
+  // REALTIME LIVE TRANSLATION MODULE
+  // ==========================================
+
+  function isMemberTranslationActive(uid) {
+    if (!uid || (currentUser && uid === currentUser.uid)) return false;
+    return activeTranslateUids.has(uid) || isAutoTranslateEnabled;
+  }
+
+  function toggleMemberTranslation(uid) {
+    const cleanUid = sanitizeUid(uid);
+    if (!cleanUid) return;
+    const member = roomMembers.get(cleanUid);
+    const memberName = member ? member.username : cleanUid;
+
+    if (activeTranslateUids.has(cleanUid)) {
+      activeTranslateUids.delete(cleanUid);
+      saveActiveTranslateUids();
+      if (memberTranslateTimers.has(cleanUid)) {
+        clearTimeout(memberTranslateTimers.get(cleanUid));
+        memberTranslateTimers.delete(cleanUid);
+      }
+      memberActiveTranslations.delete(cleanUid);
+      const existing = document.getElementById(`translate-box-${cleanUid}`);
+      if (existing) existing.remove();
+      updateCardTranslateButtonState(cleanUid);
+      showToast(`🌐 ปิดการแปลภาษาสำหรับ "${memberName}" แล้ว`);
+    } else {
+      activeTranslateUids.add(cleanUid);
+      saveActiveTranslateUids();
+      updateCardTranslateButtonState(cleanUid);
+      showToast(`🌐 เปิดแปลไทยสำหรับ "${memberName}" แล้ว (หน่วง 2 วิหลังพิมพ์)`);
+      if (member && member.currentText && member.currentText.trim()) {
+        scheduleMemberTranslation(cleanUid, member.currentText, 400);
+      }
+    }
+  }
+
+  function updateCardTranslateButtonState(uid) {
+    const card = document.getElementById(`live-card-${uid}`);
+    if (!card) return;
+    const btn = card.querySelector('.btn-card-translate');
+    if (!btn) return;
+    const active = isMemberTranslationActive(uid);
+    btn.classList.toggle('is-active', active);
+    const label = btn.querySelector('.translate-btn-label');
+    if (label) {
+      label.textContent = active ? 'แปลไทย: เปิด' : 'แปลไทย';
+    }
+    const member = roomMembers.get(uid);
+    btn.title = active
+      ? `เปิดแปลไทยสำหรับ ${member ? member.username : uid} อยู่ (คลิกเพื่อปิด)`
+      : `คลิกเพื่อเปิดแปลภาษาไทยเฉพาะ ${member ? member.username : uid} (หน่วง 2 วิหลังพิมพ์)`;
+  }
+
+  function scheduleMemberTranslation(uid, text, delayMs = TRANSLATION_DEBOUNCE_MS) {
+    if (!uid) return;
+    if (memberTranslateTimers.has(uid)) {
+      clearTimeout(memberTranslateTimers.get(uid));
+    }
+
+    const timer = setTimeout(async () => {
+      memberTranslateTimers.delete(uid);
+      await performMemberTranslation(uid, text);
+    }, delayMs);
+
+    memberTranslateTimers.set(uid, timer);
+  }
+
+  async function performMemberTranslation(uid, text) {
+    const cleanText = (text || '').trim();
+    if (!cleanText) return;
+
+    const member = roomMembers.get(uid);
+    if (!member || (member.currentText || '').trim() !== cleanText) {
+      return;
+    }
+
+    if (!isMemberTranslationActive(uid)) {
+      return;
+    }
+
+    const cacheKey = `${targetLanguage}:${cleanText}`;
+    if (clientTranslationCache.has(cacheKey)) {
+      const cached = clientTranslationCache.get(cacheKey);
+      if (cached.detectedSource === targetLanguage) {
+        memberActiveTranslations.delete(uid);
+        const existing = document.getElementById(`translate-box-${uid}`);
+        if (existing) existing.remove();
+        return;
+      }
+      memberActiveTranslations.set(uid, {
+        originalText: cleanText,
+        translatedText: cached.translatedText,
+        detectedSource: cached.detectedSource,
+        targetLang: targetLanguage,
+        isLoading: false
+      });
+      refreshCardTranslationBox(uid);
+      return;
+    }
+
+    // Show subtle loading state
+    memberActiveTranslations.set(uid, {
+      originalText: cleanText,
+      isLoading: true
+    });
+    refreshCardTranslationBox(uid);
+
+    try {
+      const res = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: cleanText,
+          target: targetLanguage,
+          source: 'auto'
+        })
+      });
+
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const result = await res.json();
+
+      if (result && result.success && result.translatedText) {
+        clientTranslationCache.set(cacheKey, result);
+
+        const currentMem = roomMembers.get(uid);
+        if (currentMem && (currentMem.currentText || '').trim() === cleanText) {
+          if (result.detectedSource === targetLanguage) {
+            memberActiveTranslations.delete(uid);
+            const existing = document.getElementById(`translate-box-${uid}`);
+            if (existing) existing.remove();
+          } else {
+            memberActiveTranslations.set(uid, {
+              originalText: cleanText,
+              translatedText: result.translatedText,
+              detectedSource: result.detectedSource,
+              targetLang: targetLanguage,
+              isLoading: false
+            });
+            refreshCardTranslationBox(uid);
+          }
+        }
+      } else {
+        memberActiveTranslations.delete(uid);
+        refreshCardTranslationBox(uid);
+      }
+    } catch (err) {
+      console.warn('[Translate] Error:', err);
+      memberActiveTranslations.delete(uid);
+      refreshCardTranslationBox(uid);
+    }
+  }
+
+  function getOrCreateTranslationBox(uid, currentText) {
+    const activeTrans = memberActiveTranslations.get(uid);
+    if (!activeTrans) return null;
+
+    if (!activeTrans.isLoading && (activeTrans.originalText || '').trim() !== (currentText || '').trim()) {
+      return null;
+    }
+
+    const box = document.createElement('div');
+    box.id = `translate-box-${uid}`;
+    box.className = 'live-card-translation-box';
+
+    if (activeTrans.isLoading) {
+      box.innerHTML = `
+        <div class="live-card-translation-loading">
+          <span class="loading-dot-pulse"></span>
+          <span>กำลังแปลสด (หน่วง 2 วิ)...</span>
+        </div>
+      `;
+      return box;
+    }
+
+    const srcLang = (activeTrans.detectedSource || 'auto').toUpperCase();
+    const tgtLang = (activeTrans.targetLang || targetLanguage).toUpperCase();
+
+    box.innerHTML = `
+      <div class="live-card-translation-header">
+        <div class="live-card-translation-badge">
+          <span>✨</span>
+          <span>แปลสด</span>
+          <span class="translate-lang-tag">${srcLang} ➔ ${tgtLang}</span>
+        </div>
+      </div>
+      <div class="live-card-translation-text">${escapeHtml(activeTrans.translatedText)}</div>
+    `;
+    return box;
+  }
+
+  function refreshCardTranslationBox(uid) {
+    const member = roomMembers.get(uid);
+    if (!member) return;
+    const bodyEl = document.getElementById(`card-body-${uid}`);
+    if (!bodyEl) return;
+    const textWrap = bodyEl.querySelector('.live-card-text-wrap');
+    if (!textWrap) return;
+
+    const existingBox = document.getElementById(`translate-box-${uid}`);
+    if (existingBox) existingBox.remove();
+
+    const newBox = getOrCreateTranslationBox(uid, member.currentText);
+    if (newBox) {
+      textWrap.appendChild(newBox);
+    }
+  }
+
+  function clearMemberTranslation(uid) {
+    if (memberTranslateTimers.has(uid)) {
+      clearTimeout(memberTranslateTimers.get(uid));
+      memberTranslateTimers.delete(uid);
+    }
+    memberActiveTranslations.delete(uid);
+    const existing = document.getElementById(`translate-box-${uid}`);
+    if (existing) existing.remove();
+  }
+
+  function refreshAllTranslations() {
+    roomMembers.forEach((member) => {
+      if (currentUser && member.uid === currentUser.uid) return;
+      if (isMemberTranslationActive(member.uid) && member.currentText && member.currentText.trim()) {
+        scheduleMemberTranslation(member.uid, member.currentText, 200);
+      } else {
+        clearMemberTranslation(member.uid);
+      }
+    });
+  }
+
   function renderAllLiveCards() {
     liveCardsGrid.innerHTML = '';
     roomMemberCount.textContent = `${roomMembers.size} คนในห้อง`;
@@ -4575,7 +4936,12 @@
         })
         .join('');
 
+      const safeMemberUid = escapeHtml(sanitizeUid(member.uid));
+      const safeMemberAvatar = escapeHtml(sanitizeAvatarUrl(member.avatar));
+
       let friendActionHtml = '';
+      let translateActionHtml = '';
+      let sendFileActionHtml = '';
       if (!isSelf) {
         if (isAlreadyFriend) {
           friendActionHtml = `<button type="button" class="btn-card-add-friend is-friend" data-action="remove" title="คลิกเพื่อยกเลิกความเป็นเพื่อน"><span class="friend-label-normal">✓ เพื่อน</span><span class="friend-label-hover">✕ ลบเพื่อน</span></button>`;
@@ -4586,10 +4952,17 @@
         } else {
           friendActionHtml = `<button type="button" class="btn-card-add-friend" data-action="request">Add friend</button>`;
         }
-      }
 
-      const safeMemberUid = escapeHtml(sanitizeUid(member.uid));
-      const safeMemberAvatar = escapeHtml(sanitizeAvatarUrl(member.avatar));
+        const isTranslating = isMemberTranslationActive(member.uid);
+        const activeClass = isTranslating ? 'is-active' : '';
+        const titleText = isTranslating
+          ? `เปิดแปลไทยสำหรับ ${escapeHtml(member.username)} อยู่ (คลิกเพื่อปิด)`
+          : `คลิกเพื่อเปิดแปลภาษาไทยเฉพาะ ${escapeHtml(member.username)} (หน่วง 2 วิหลังพิมพ์)`;
+        translateActionHtml = `<button type="button" class="btn-card-translate ${activeClass}" data-uid="${safeMemberUid}" title="${titleText}"><span class="translate-btn-icon">🌐</span> <span class="translate-btn-label">${isTranslating ? 'แปลไทย: เปิด' : 'แปลไทย'}</span></button>`;
+
+        // P2P Direct File Transfer Button
+        sendFileActionHtml = `<button type="button" class="btn-card-send-file" data-uid="${safeMemberUid}" title="ส่งไฟล์ตรงแบบ P2P ให้ ${escapeHtml(member.username)} (ไม่จำกัดขนาด)"><span class="file-btn-icon">📁</span> <span class="file-btn-label">ส่งไฟล์</span></button>`;
+      }
 
       let statusPillHtml = '';
       if (info.isStreamer) {
@@ -4637,6 +5010,8 @@
           </div>
           <div class="live-card-status-row">
             ${friendActionHtml}
+            ${translateActionHtml}
+            ${sendFileActionHtml}
             ${streamBadgeHtml}
             ${statusPillHtml}
           </div>
@@ -4684,7 +5059,31 @@
         });
       }
 
+      const translateBtn = card.querySelector('.btn-card-translate');
+      if (translateBtn) {
+        translateBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleMemberTranslation(member.uid);
+        });
+      }
+
+      const sendFileBtn = card.querySelector('.btn-card-send-file');
+      if (sendFileBtn) {
+        sendFileBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          syncP2PTransferEngine();
+          if (window.P2PFileTransfer) {
+            window.P2PFileTransfer.openSendForMember(member);
+          } else {
+            console.error('[P2P] window.P2PFileTransfer is not loaded yet');
+          }
+        });
+      }
+
       liveCardsGrid.appendChild(card);
+      if (window.P2PFileTransfer && typeof window.P2PFileTransfer.syncCardButton === 'function') {
+        window.P2PFileTransfer.syncCardButton(member.uid);
+      }
       updateSingleCardContent(member.uid, member.currentText, member.image);
     });
     updateRoomHostUi();
@@ -4824,8 +5223,28 @@
       cursorSpan.className = 'live-cursor';
       textWrap.appendChild(textSpan);
       textWrap.appendChild(cursorSpan);
+
+      // Render translation box underneath if translation is active for this user
+      if (!isSelf) {
+        const transBox = getOrCreateTranslationBox(uid, text);
+        if (transBox) {
+          textWrap.appendChild(transBox);
+        }
+      }
+
       bodyEl.appendChild(textWrap);
-    } else if (hasImage) {
+
+      // Debounce 2 seconds translation trigger
+      if (!isSelf && isMemberTranslationActive(uid)) {
+        scheduleMemberTranslation(uid, text, TRANSLATION_DEBOUNCE_MS);
+      }
+    } else {
+      if (!isSelf) {
+        clearMemberTranslation(uid);
+      }
+    }
+
+    if (!hasText && hasImage) {
       // If has image but no text yet: show live-cursor on the right if it's the current user (ready to type)
       if (isSelf) {
         const textWrap = document.createElement('div');
@@ -4835,12 +5254,12 @@
         textWrap.appendChild(cursorSpan);
         bodyEl.appendChild(textWrap);
       }
-    } else if (!info.isStreamer) {
+    } else if (!hasText && !info.isStreamer) {
       const placeholder = document.createElement('span');
       placeholder.className = 'live-card-placeholder';
       placeholder.textContent = 'ยังไม่มีข้อความ (Non-Active)... (กด Enter เมื่อต้องการล้างทั้งหมด)';
       bodyEl.appendChild(placeholder);
-    } else {
+    } else if (!hasText) {
       // Streamer with no image and no text yet
       if (isSelf) {
         const textWrap = document.createElement('div');
