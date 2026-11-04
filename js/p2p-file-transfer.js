@@ -15,10 +15,13 @@
 (function () {
   'use strict';
 
-  // Config Constants
-  const CHUNK_SIZE = 64 * 1024; // 64 KB per chunk (optimal for WebRTC DataChannel MTU)
-  const BUFFER_HIGH_WATERMARK = 4 * 1024 * 1024; // 4 MB backpressure threshold
-  const BUFFER_LOW_WATERMARK = 1 * 1024 * 1024;  // 1 MB resume threshold
+  // Config Constants (Ultra High-Speed 8-Channel Striping + 8MB Batch Streaming)
+  const NUM_CHANNELS = 8; // 8 Parallel DataChannels for maximum throughput
+  const CHUNK_SIZE = 128 * 1024 - 128; // 130,944 bytes (safe 128KB chunk for all WebRTC SCTP MTUs)
+  const BATCH_SIZE = 8 * 1024 * 1024; // 8 MB disk write batching for peak sequential SSD I/O
+  const BUFFER_HIGH_WATERMARK = 2 * 1024 * 1024; // 2 MB backpressure threshold per channel
+  const BUFFER_LOW_WATERMARK = 512 * 1024;  // 512 KB resume threshold per channel
+  const HEADER_SIZE = 8; // 8 bytes BigUint64 byteOffset (raw uncompressed binary framing)
   const REQUEST_TIMEOUT_SEC = 30; // 30 seconds timeout
   const RETRY_INTERVAL_MS = 1000;  // 1 second retry loop
 
@@ -183,8 +186,24 @@
 
     // Send Modal: File selection via click on dropzone
     if (dom.dropzone && dom.fileInput) {
-      dom.dropzone.addEventListener('click', (e) => {
+      dom.dropzone.addEventListener('click', async (e) => {
         if (e.target === dom.fileInput) return;
+        if (window.electronAPI && typeof window.electronAPI.showOpenDialog === 'function') {
+          try {
+            const res = await window.electronAPI.showOpenDialog();
+            if (!res.canceled && res.filePath) {
+              handleFileSelected({
+                name: res.fileName,
+                size: res.fileSize,
+                path: res.filePath,
+                isNative: true
+              }, false);
+            }
+            return;
+          } catch (err) {
+            console.error('[P2PFileTransfer] Electron showOpenDialog error:', err);
+          }
+        }
         autoStartOnNextFilePick = false;
         dom.fileInput.value = '';
         dom.fileInput.click();
@@ -219,7 +238,17 @@
       dom.dropzone.addEventListener('drop', (e) => {
         if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
           autoStartOnNextFilePick = false;
-          handleFileSelected(e.dataTransfer.files[0], false);
+          const dropFile = e.dataTransfer.files[0];
+          if (window.electronAPI && dropFile.path) {
+            handleFileSelected({
+              name: dropFile.name,
+              size: dropFile.size,
+              path: dropFile.path,
+              isNative: true
+            }, false);
+          } else {
+            handleFileSelected(dropFile, false);
+          }
         }
       });
     }
@@ -432,7 +461,20 @@
     }
 
     // Trigger native OS file picker immediately on user click so selecting a file immediately starts the 30s request loop
-    if (dom.fileInput) {
+    if (window.electronAPI && typeof window.electronAPI.showOpenDialog === 'function') {
+      window.electronAPI.showOpenDialog().then((res) => {
+        if (!res.canceled && res.filePath) {
+          handleFileSelected({
+            name: res.fileName,
+            size: res.fileSize,
+            path: res.filePath,
+            isNative: true
+          }, true);
+        }
+      }).catch((err) => {
+        console.error('[P2PFileTransfer] Native file picker error:', err);
+      });
+    } else if (dom.fileInput) {
       autoStartOnNextFilePick = true;
       dom.fileInput.value = '';
       try {
@@ -665,6 +707,7 @@
           type: 'p2p_file_request',
           transferId,
           attempt: requestRetryCount,
+          isNativeElectron: Boolean(window.electronAPI && window.electronAPI.isElectron),
           file: {
             name: file.name,
             size: file.size,
@@ -799,6 +842,131 @@
       });
     }
 
+    // --- High-Speed Desktop App Branch (Raw TCP Direct Streaming) ---
+    if (window.electronAPI && window.electronAPI.isElectron && req.isNativeElectron) {
+      let saveRes;
+      try {
+        saveRes = await window.electronAPI.showSaveDialog({
+          suggestedName: req.file.name
+        });
+      } catch (dialogErr) {
+        console.error('[P2PFileTransfer] Native save dialog error:', dialogErr);
+      }
+
+      if (!saveRes || saveRes.canceled || !saveRes.filePath) {
+        preparingTransferId = null;
+        if (config.currentUser) {
+          sendPacketToPeer(req.from.uid, {
+            type: 'p2p_file_response',
+            transferId: req.transferId,
+            accepted: false,
+            reason: 'ผู้รับยกเลิกการเลือกที่บันทึกไฟล์',
+            from: { uid: config.currentUser.uid, username: config.currentUser.username }
+          });
+        }
+        if (config.showToast) config.showToast('ยกเลิกการบันทึกไฟล์');
+        return;
+      }
+
+      let tcpServerInfo;
+      try {
+        tcpServerInfo = await window.electronAPI.startTcpReceiver(
+          req.transferId,
+          saveRes.filePath,
+          req.file.size
+        );
+      } catch (tcpErr) {
+        preparingTransferId = null;
+        console.error('[P2PFileTransfer] Failed to start native TCP receiver:', tcpErr);
+        if (config.showToast) config.showToast('⚠️ ไม่สามารถเปิดพอร์ตรับข้อมูลได้: ' + tcpErr.message);
+        return;
+      }
+
+      activeSession = {
+        role: 'receiver',
+        transferId: req.transferId,
+        targetUid: req.from.uid,
+        targetUsername: req.from.username || req.from.uid,
+        targetAvatar: req.from.avatar,
+        file: req.file,
+        isNativeTcp: true,
+        savePath: saveRes.filePath,
+        transferredBytes: 0,
+        totalBytes: req.file.size,
+        startTime: Date.now(),
+        lastSpeedCheckTime: Date.now(),
+        lastSpeedCheckBytes: 0,
+        currentSpeed: 0,
+        statsInterval: null,
+        isPaused: false,
+        isCancelled: false,
+        isComplete: false
+      };
+
+      openWidget('receiver', req.file, {
+        username: req.from.username,
+        avatar: req.from.avatar
+      });
+
+      if (dom.statusText) {
+        dom.statusText.textContent = '🚀 Native TCP Server พร้อมแล้ว กำลังรอผู้ส่งเริ่มสตรีมตรงระดับความเร็วฮาร์ดแวร์...';
+      }
+
+      const unbindProgress = window.electronAPI.onTcpProgress((data) => {
+        if (activeSession && activeSession.transferId === data.transferId) {
+          activeSession.transferredBytes = data.transferred;
+          activeSession.currentSpeed = data.speed;
+          updateProgressUI(data.transferred, data.total, true);
+          if (dom.speedBadge) {
+            dom.speedBadge.textContent = `🚀 ${formatBytes(data.speed)}/s (Native Turbo)`;
+          }
+          if (dom.etaBadge) {
+            const remainingBytes = data.total - data.transferred;
+            if (data.speed > 1024) {
+              const remainingSec = remainingBytes / data.speed;
+              dom.etaBadge.textContent = `⏳ เหลืออีก ${formatDuration(remainingSec)}`;
+            } else {
+              dom.etaBadge.textContent = '⏳ กำลังคำนวณ...';
+            }
+          }
+        }
+      });
+
+      const unbindComplete = window.electronAPI.onTcpComplete((data) => {
+        if (activeSession && activeSession.transferId === data.transferId) {
+          handleTcpTransferComplete();
+          if (activeSession && activeSession.tcpUnbinds) {
+            activeSession.tcpUnbinds.forEach((fn) => fn());
+            activeSession.tcpUnbinds = [];
+          }
+        }
+      });
+
+      const unbindError = window.electronAPI.onTcpError((data) => {
+        if (activeSession && activeSession.transferId === data.transferId) {
+          cancelTransfer('เกิดข้อผิดพลาดในการรับไฟล์ (Native TCP): ' + data.error);
+          if (activeSession && activeSession.tcpUnbinds) {
+            activeSession.tcpUnbinds.forEach((fn) => fn());
+            activeSession.tcpUnbinds = [];
+          }
+        }
+      });
+
+      activeSession.tcpUnbinds = [unbindProgress, unbindComplete, unbindError];
+
+      sendPacketToPeer(req.from.uid, {
+        type: 'p2p_file_response',
+        transferId: req.transferId,
+        accepted: true,
+        isNativeTcp: true,
+        port: tcpServerInfo.port,
+        localIps: tcpServerInfo.localIps,
+        from: { uid: config.currentUser.uid, username: config.currentUser.username }
+      });
+
+      return;
+    }
+
     let writableStream = null;
 
     // Check File System Access API support for streaming directly to disk
@@ -857,8 +1025,12 @@
       file: req.file,
       pc: null,
       dc: null,
+      channels: [],
       pendingCandidates: [],
       writableStream,
+      receivedChunks: new Map(), // byteOffset -> Uint8Array
+      nextWriteOffset: 0,
+      bufferedBytesInBatch: 0,
       writeQueue: Promise.resolve(),
       fallbackChunks: writableStream ? null : [],
       transferredBytes: 0,
@@ -870,7 +1042,8 @@
       statsInterval: null,
       isPaused: false,
       isCancelled: false,
-      isComplete: false
+      isComplete: false,
+      hasStartedStats: false
     };
     preparingTransferId = null;
 
@@ -908,8 +1081,10 @@
 
     pc.ondatachannel = (event) => {
       const dc = event.channel;
-      activeSession.dc = dc;
       dc.binaryType = 'arraybuffer';
+      if (!activeSession.channels) activeSession.channels = [];
+      activeSession.channels.push(dc);
+      if (!activeSession.dc) activeSession.dc = dc; // Primary channel
       setupReceiverDataChannel(dc);
     };
 
@@ -918,10 +1093,13 @@
 
   function setupReceiverDataChannel(dc) {
     dc.onopen = () => {
-      if (dom.statusText) dom.statusText.textContent = 'เชื่อมต่อ P2P สำเร็จ กำลังเริ่มรับข้อมูล...';
-      activeSession.startTime = Date.now();
-      activeSession.lastSpeedCheckTime = Date.now();
-      startStatsMonitor();
+      if (!activeSession.hasStartedStats) {
+        activeSession.hasStartedStats = true;
+        if (dom.statusText) dom.statusText.textContent = 'เชื่อมต่อ P2P สำเร็จ กำลังเริ่มรับข้อมูลความเร็วสูง...';
+        activeSession.startTime = Date.now();
+        activeSession.lastSpeedCheckTime = Date.now();
+        startStatsMonitor();
+      }
     };
 
     dc.onclose = () => {
@@ -949,29 +1127,85 @@
           console.error('Error parsing control message:', e);
         }
       } else {
-        const chunk = event.data;
-        activeSession.transferredBytes += chunk.byteLength;
-        updateProgressUI(activeSession.transferredBytes, activeSession.totalBytes);
+        const rawBuffer = event.data;
+        if (!rawBuffer || rawBuffer.byteLength < HEADER_SIZE) return;
 
-        if (activeSession.writableStream) {
-          // Strictly sequential write queue to avoid concurrent write collisions in FileSystemWritableFileStream
-          activeSession.writeQueue = activeSession.writeQueue
-            .then(async () => {
-              if (activeSession && !activeSession.isCancelled && activeSession.writableStream) {
-                await activeSession.writableStream.write(new Uint8Array(chunk));
-              }
-            })
-            .catch((err) => {
-              console.error('Error writing chunk to disk:', err);
-              if (activeSession && !activeSession.isCancelled) {
-                cancelTransfer('เกิดข้อผิดพลาดในการเขียนไฟล์ลงฮาร์ดดิสก์: ' + err.message);
-              }
-            });
-        } else if (activeSession.fallbackChunks) {
-          activeSession.fallbackChunks.push(chunk);
-        }
+        // Header: [8 bytes BigUint64 byteOffset]
+        // Payload: pure uncompressed binary slice from source file
+        const view = new DataView(rawBuffer, 0, HEADER_SIZE);
+        const offset = Number(view.getBigUint64(0, false));
+        const payload = new Uint8Array(rawBuffer, HEADER_SIZE);
+
+        handleIncomingChunk(offset, payload);
       }
     };
+  }
+
+  function handleIncomingChunk(offset, payload) {
+    if (!activeSession || activeSession.isCancelled) return;
+
+    activeSession.receivedChunks.set(offset, payload);
+    activeSession.bufferedBytesInBatch += payload.byteLength;
+    activeSession.transferredBytes += payload.byteLength;
+    updateProgressUI(activeSession.transferredBytes, activeSession.totalBytes);
+
+    tryFlushBatch(false);
+  }
+
+  function tryFlushBatch(force = false) {
+    if (!activeSession || activeSession.isCancelled) return;
+
+    if (!activeSession.writableStream) {
+      // In fallback mode (in-memory Blob)
+      return;
+    }
+
+    while (true) {
+      let contiguousBytes = 0;
+      let checkOffset = activeSession.nextWriteOffset;
+      const partsToFlush = [];
+
+      while (activeSession.receivedChunks.has(checkOffset)) {
+        const part = activeSession.receivedChunks.get(checkOffset);
+        contiguousBytes += part.byteLength;
+        partsToFlush.push(part);
+        checkOffset += part.byteLength;
+        if (!force && contiguousBytes >= BATCH_SIZE) {
+          break;
+        }
+      }
+
+      if (contiguousBytes === 0) break;
+      if (!force && contiguousBytes < BATCH_SIZE) break;
+
+      const batchBuffer = new Uint8Array(contiguousBytes);
+      let writePos = 0;
+      let removeOffset = activeSession.nextWriteOffset;
+      for (let i = 0; i < partsToFlush.length; i++) {
+        const part = partsToFlush[i];
+        batchBuffer.set(part, writePos);
+        writePos += part.byteLength;
+        activeSession.receivedChunks.delete(removeOffset);
+        removeOffset += part.byteLength;
+      }
+
+      activeSession.nextWriteOffset = checkOffset;
+      activeSession.bufferedBytesInBatch -= contiguousBytes;
+
+      activeSession.writeQueue = activeSession.writeQueue
+        .then(async () => {
+          if (!activeSession || activeSession.isCancelled || !activeSession.writableStream) return;
+          await activeSession.writableStream.write(batchBuffer);
+        })
+        .catch((err) => {
+          console.error('Error writing batch to disk:', err);
+          if (activeSession && !activeSession.isCancelled) {
+            cancelTransfer('เกิดข้อผิดพลาดในการเขียนไฟล์ลงฮาร์ดดิสก์: ' + err.message);
+          }
+        });
+
+      if (!force) break;
+    }
   }
 
   async function finishReceivingFile() {
@@ -981,7 +1215,10 @@
 
     if (dom.statusText) dom.statusText.textContent = 'กำลังบันทึกและปิดไฟล์...';
 
-    // 1. Wait for all queued chunk writes to finish writing to disk
+    // 1. Force flush any remaining batch / tail chunks
+    tryFlushBatch(true);
+
+    // 2. Wait for all queued chunk writes to finish writing to disk
     if (activeSession.writeQueue) {
       try {
         await activeSession.writeQueue;
@@ -990,7 +1227,7 @@
       }
     }
 
-    // 2. Commit and close the writable stream so Chrome moves .crswap to the target file
+    // 3. Commit and close the writable stream so Chrome moves .crswap to the target file
     if (activeSession.writableStream) {
       try {
         await activeSession.writableStream.close();
@@ -1002,7 +1239,9 @@
       }
     } else if (activeSession.fallbackChunks) {
       try {
-        const blob = new Blob(activeSession.fallbackChunks, { type: activeSession.file.type || 'application/octet-stream' });
+        const sortedOffsets = Array.from(activeSession.receivedChunks.keys()).sort((a, b) => a - b);
+        const allBuffers = sortedOffsets.map((off) => activeSession.receivedChunks.get(off));
+        const blob = new Blob(allBuffers, { type: activeSession.file.type || 'application/octet-stream' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -1011,20 +1250,21 @@
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        activeSession.fallbackChunks = null;
+        activeSession.receivedChunks.clear();
       } catch (e) {
         console.error('Fallback blob error:', e);
       }
     }
 
-    // 3. Send acknowledgment to sender so sender knows disk write is 100% complete
-    if (activeSession.dc && activeSession.dc.readyState === 'open') {
+    // 4. Send acknowledgment to sender so sender knows disk write is 100% complete
+    const primaryDc = (activeSession.channels && activeSession.channels[0]) || activeSession.dc;
+    if (primaryDc && primaryDc.readyState === 'open') {
       try {
-        activeSession.dc.send(JSON.stringify({ header: 'file_ack' }));
+        primaryDc.send(JSON.stringify({ header: 'file_ack' }));
       } catch (e) {}
     }
 
-    updateProgressUI(activeSession.totalBytes, activeSession.totalBytes);
+    updateProgressUI(activeSession.totalBytes, activeSession.totalBytes, true);
     showCompletionUI(
       '🎉 บันทึกไฟล์สำเร็จ 100%!',
       `รับไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) เรียบร้อยแล้ว`
@@ -1090,6 +1330,71 @@
       avatar: activeSession.targetAvatar
     });
 
+    // --- High-Speed Desktop App Branch (Raw TCP Direct Streaming) ---
+    if (data.isNativeTcp && window.electronAPI && activeSession.file && activeSession.file.path) {
+      activeSession.isNativeTcp = true;
+      if (dom.statusText) dom.statusText.textContent = '🚀 กำลังเชื่อมต่อ Native TCP ท่อตรงระดับฮาร์ดแวร์...';
+
+      const ips = Array.isArray(data.localIps) && data.localIps.length > 0 ? data.localIps : ['127.0.0.1'];
+      const lanIp = ips.find((ip) => ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.'));
+      const targetIp = lanIp || ips[0];
+
+      const unbindProgress = window.electronAPI.onTcpProgress((tcpData) => {
+        if (activeSession && activeSession.transferId === tcpData.transferId) {
+          activeSession.transferredBytes = tcpData.transferred;
+          activeSession.currentSpeed = tcpData.speed;
+          updateProgressUI(tcpData.transferred, tcpData.total, true);
+          if (dom.speedBadge) {
+            dom.speedBadge.textContent = `🚀 ${formatBytes(tcpData.speed)}/s (Native Turbo)`;
+          }
+          if (dom.etaBadge) {
+            const remainingBytes = tcpData.total - tcpData.transferred;
+            if (tcpData.speed > 1024) {
+              const remainingSec = remainingBytes / tcpData.speed;
+              dom.etaBadge.textContent = `⏳ เหลืออีก ${formatDuration(remainingSec)}`;
+            } else {
+              dom.etaBadge.textContent = '⏳ กำลังคำนวณ...';
+            }
+          }
+        }
+      });
+
+      const unbindComplete = window.electronAPI.onTcpComplete((tcpData) => {
+        if (activeSession && activeSession.transferId === tcpData.transferId) {
+          handleTcpTransferComplete();
+          if (activeSession && activeSession.tcpUnbinds) {
+            activeSession.tcpUnbinds.forEach((fn) => fn());
+            activeSession.tcpUnbinds = [];
+          }
+        }
+      });
+
+      const unbindError = window.electronAPI.onTcpError((tcpData) => {
+        if (activeSession && activeSession.transferId === tcpData.transferId) {
+          cancelTransfer('เกิดข้อผิดพลาดในการส่งข้อมูล (Native TCP): ' + tcpData.error);
+          if (activeSession && activeSession.tcpUnbinds) {
+            activeSession.tcpUnbinds.forEach((fn) => fn());
+            activeSession.tcpUnbinds = [];
+          }
+        }
+      });
+
+      activeSession.tcpUnbinds = [unbindProgress, unbindComplete, unbindError];
+
+      window.electronAPI.startTcpSender(
+        activeSession.transferId,
+        targetIp,
+        ips,
+        data.port,
+        activeSession.file.path,
+        activeSession.file.size
+      ).catch((err) => {
+        cancelTransfer('ไม่สามารถเชื่อมต่อ Native TCP ไปยังผู้รับได้: ' + err.message);
+      });
+
+      return;
+    }
+
     if (dom.statusText) dom.statusText.textContent = 'ผู้รับยอมรับแล้ว กำลังสร้างการเชื่อมต่อ P2P...';
 
     const pc = new RTCPeerConnection(config.rtcConfig);
@@ -1105,39 +1410,55 @@
       }
     };
 
-    const dc = pc.createDataChannel('p2p_file_channel', { ordered: true });
-    activeSession.dc = dc;
-    dc.binaryType = 'arraybuffer';
-    dc.bufferedAmountLowThreshold = BUFFER_LOW_WATERMARK;
+    activeSession.channels = [];
+    activeSession.openChannelsCount = 0;
+    activeSession.isStreamingStarted = false;
 
-    dc.onopen = () => {
-      if (dom.statusText) dom.statusText.textContent = 'เชื่อมต่อ P2P สำเร็จ กำลังเริ่มสตรีมไฟล์ตรง...';
-      activeSession.startTime = Date.now();
-      activeSession.lastSpeedCheckTime = Date.now();
-      startStatsMonitor();
-      startStreamingFile();
-    };
-
-    dc.onclose = () => {
-      if (activeSession && !activeSession.isComplete && !activeSession.isCancelled) {
-        cancelTransfer('การเชื่อมต่อหลุดกะทันหัน');
-      }
-    };
-
-    dc.onerror = (err) => {
-      console.error('Sender DataChannel error:', err);
-    };
-
-    dc.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.header === 'file_cancel') {
-          cancelTransfer(msg.reason || 'ผู้รับได้ยกเลิกการรับไฟล์', false);
-        } else if (msg.header === 'file_ack') {
-          finishSendingFile();
+    function setupSenderDataChannel(dc, index) {
+      dc.onopen = () => {
+        activeSession.openChannelsCount++;
+        if (dom.statusText) {
+          dom.statusText.textContent = `เชื่อมต่อ P2P ท่อคู่ขนาน (${activeSession.openChannelsCount}/${NUM_CHANNELS}) สำเร็จ...`;
         }
-      } catch (e) {}
-    };
+        if (index === 0 && !activeSession.isStreamingStarted) {
+          activeSession.isStreamingStarted = true;
+          activeSession.startTime = Date.now();
+          activeSession.lastSpeedCheckTime = Date.now();
+          startStatsMonitor();
+          startStreamingFile();
+        }
+      };
+
+      dc.onclose = () => {
+        if (activeSession && !activeSession.isComplete && !activeSession.isCancelled) {
+          cancelTransfer('การเชื่อมต่อหลุดกะทันหัน');
+        }
+      };
+
+      dc.onerror = (err) => {
+        console.error(`Sender DataChannel ${index} error:`, err);
+      };
+
+      dc.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.header === 'file_cancel') {
+            cancelTransfer(msg.reason || 'ผู้รับได้ยกเลิกการรับไฟล์', false);
+          } else if (msg.header === 'file_ack') {
+            finishSendingFile();
+          }
+        } catch (e) {}
+      };
+    }
+
+    for (let i = 0; i < NUM_CHANNELS; i++) {
+      const dc = pc.createDataChannel(`p2p_file_${i}`, { ordered: true });
+      dc.binaryType = 'arraybuffer';
+      dc.bufferedAmountLowThreshold = BUFFER_LOW_WATERMARK;
+      setupSenderDataChannel(dc, i);
+      activeSession.channels.push(dc);
+    }
+    activeSession.dc = activeSession.channels[0]; // Primary channel
 
     try {
       const offer = await pc.createOffer();
@@ -1199,63 +1520,79 @@
     }
   }
 
-  // --- High-Performance File Streaming Engine with Backpressure ---
+  // --- High-Performance Multi-Channel Turbo File Streaming Engine ---
   function startStreamingFile() {
     if (!activeSession || activeSession.role !== 'sender') return;
 
     const file = activeSession.file;
     const totalSize = file.size;
-    const dc = activeSession.dc;
     let offset = 0;
 
-    try {
-      dc.bufferedAmountLowThreshold = BUFFER_LOW_WATERMARK;
-    } catch (e) {}
-
-    dc.send(
-      JSON.stringify({
-        header: 'file_start',
-        name: file.name,
-        size: totalSize,
-        type: file.type,
-        chunkSize: CHUNK_SIZE
-      })
-    );
-
-    function waitForBufferDrain(callback) {
-      if (!activeSession || !activeSession.dc || activeSession.dc.readyState !== 'open') {
-        return callback();
-      }
-
-      if (activeSession.dc.bufferedAmount === 0) {
-        return callback();
-      }
-
+    const primaryDc = (activeSession.channels && activeSession.channels[0]) || activeSession.dc;
+    if (primaryDc && primaryDc.readyState === 'open') {
       try {
-        activeSession.dc.bufferedAmountLowThreshold = 0;
+        primaryDc.send(
+          JSON.stringify({
+            header: 'file_start',
+            name: file.name,
+            size: totalSize,
+            type: file.type,
+            chunkSize: CHUNK_SIZE,
+            numChannels: NUM_CHANNELS
+          })
+        );
       } catch (e) {}
+    }
+
+    // Dynamically calculate effective chunk size based on negotiated SCTP maxMessageSize
+    const maxSctp = (activeSession.pc && activeSession.pc.sctp && activeSession.pc.sctp.maxMessageSize)
+      ? activeSession.pc.sctp.maxMessageSize
+      : 262144;
+    // Strictly cap chunk size with safe headroom below maxMessageSize (safe 64KB chunk for all WebRTC SCTP stacks)
+    const effectiveChunkSize = Math.max(16384, Math.min(65536, maxSctp) - 1024);
+
+    // Packet Buffer Recycling Pool (16 reusable packet buffers to eliminate GC allocations)
+    const PACKET_POOL_SIZE = 16;
+    const maxPacketCapacity = Math.max(262144, effectiveChunkSize + HEADER_SIZE + 1024);
+    const packetPool = Array.from({ length: PACKET_POOL_SIZE }, () => new Uint8Array(maxPacketCapacity));
+    let packetPoolIndex = 0;
+
+    function waitForAllChannelsDrain(callback) {
+      if (!activeSession) return callback();
+
+      const openChannels = (activeSession.channels || [activeSession.dc]).filter(
+        (ch) => ch && ch.readyState === 'open'
+      );
+      if (openChannels.length === 0) return callback();
+
+      const isAllDrained = () => openChannels.every((ch) => ch.bufferedAmount === 0);
+
+      if (isAllDrained()) return callback();
 
       let done = false;
       const onDrain = () => {
         if (done) return;
         done = true;
-        if (activeSession && activeSession.dc) {
-          activeSession.dc.onbufferedamountlow = null;
+        if (activeSession && activeSession.channels) {
+          activeSession.channels.forEach((ch) => {
+            ch.onbufferedamountlow = null;
+          });
         }
         clearInterval(pollInterval);
         callback();
       };
 
-      activeSession.dc.onbufferedamountlow = onDrain;
+      openChannels.forEach((ch) => {
+        try {
+          ch.bufferedAmountLowThreshold = 0;
+        } catch (e) {}
+        ch.onbufferedamountlow = () => {
+          if (isAllDrained()) onDrain();
+        };
+      });
 
-      // Fallback polling interval in case browser misses the low event
       const pollInterval = setInterval(() => {
-        if (
-          !activeSession ||
-          !activeSession.dc ||
-          activeSession.dc.readyState !== 'open' ||
-          activeSession.dc.bufferedAmount === 0
-        ) {
+        if (!activeSession || isAllDrained()) {
           onDrain();
         }
       }, 50);
@@ -1265,36 +1602,71 @@
       if (!activeSession || activeSession.isCancelled || activeSession.isComplete) return;
 
       while (offset < totalSize && !activeSession.isCancelled) {
-        if (dc.bufferedAmount > BUFFER_HIGH_WATERMARK) {
+        const openChannels = (activeSession.channels || [activeSession.dc]).filter(
+          (ch) => ch && ch.readyState === 'open'
+        );
+        if (openChannels.length === 0) return;
+
+        // Striping: select channel with lowest bufferedAmount
+        let bestDc = openChannels[0];
+        for (let i = 1; i < openChannels.length; i++) {
+          if (openChannels[i].bufferedAmount < bestDc.bufferedAmount) {
+            bestDc = openChannels[i];
+          }
+        }
+
+        // Apply backpressure if the best available channel is congested
+        if (bestDc.bufferedAmount > BUFFER_HIGH_WATERMARK) {
           try {
-            dc.bufferedAmountLowThreshold = BUFFER_LOW_WATERMARK;
+            bestDc.bufferedAmountLowThreshold = BUFFER_LOW_WATERMARK;
           } catch (e) {}
-          dc.onbufferedamountlow = () => {
-            dc.onbufferedamountlow = null;
+          bestDc.onbufferedamountlow = () => {
+            bestDc.onbufferedamountlow = null;
             sendNextChunks();
           };
           return;
         }
 
-        const chunkEnd = Math.min(offset + CHUNK_SIZE, totalSize);
+        const chunkEnd = Math.min(offset + effectiveChunkSize, totalSize);
         const slice = file.slice(offset, chunkEnd);
 
+        let sliceBuf;
         try {
-          const arrayBuffer = await slice.arrayBuffer();
+          sliceBuf = await slice.arrayBuffer();
           if (!activeSession || activeSession.isCancelled) return;
-
-          dc.send(arrayBuffer);
-          offset += arrayBuffer.byteLength;
-          activeSession.transferredBytes = offset;
-
-          updateProgressUI(offset, totalSize);
         } catch (err) {
           console.error('Error reading slice from disk:', err);
           cancelTransfer('เกิดข้อผิดพลาดในการอ่านไฟล์: ' + err.message);
           return;
         }
 
-        if (offset % (CHUNK_SIZE * 32) === 0) {
+        const payloadLen = sliceBuf.byteLength;
+        const totalPacketLen = HEADER_SIZE + payloadLen;
+
+        // Recycle packet buffer from pool to eliminate GC allocations
+        const packet = packetPool[packetPoolIndex % PACKET_POOL_SIZE];
+        packetPoolIndex++;
+
+        // Header: [8 bytes BigUint64 uncompressed byteOffset]
+        const view = new DataView(packet.buffer, packet.byteOffset, HEADER_SIZE);
+        view.setBigUint64(0, BigInt(offset), false);
+        packet.set(new Uint8Array(sliceBuf), HEADER_SIZE);
+
+        try {
+          bestDc.send(packet.subarray(0, totalPacketLen));
+        } catch (sendErr) {
+          console.error('DataChannel send error:', sendErr);
+          cancelTransfer('เกิดข้อผิดพลาดในการส่งข้อมูลผ่าน DataChannel: ' + sendErr.message);
+          return;
+        }
+
+        offset += sliceBuf.byteLength;
+        activeSession.transferredBytes = offset;
+
+        updateProgressUI(offset, totalSize);
+
+        // Yield to event loop periodically to prevent blocking UI
+        if (offset % (effectiveChunkSize * 16) === 0) {
           setTimeout(sendNextChunks, 0);
           return;
         }
@@ -1302,11 +1674,12 @@
 
       if (offset >= totalSize && !activeSession.isCancelled) {
         if (dom.statusText) dom.statusText.textContent = 'ส่งข้อมูลครบแล้ว กำลังรอผู้รับบันทึกไฟล์ลงดิสก์...';
-        waitForBufferDrain(() => {
+        waitForAllChannelsDrain(() => {
           if (!activeSession || activeSession.isCancelled || activeSession.isComplete) return;
           try {
-            if (activeSession.dc && activeSession.dc.readyState === 'open') {
-              activeSession.dc.send(JSON.stringify({ header: 'file_end' }));
+            const primary = (activeSession.channels && activeSession.channels[0]) || activeSession.dc;
+            if (primary && primary.readyState === 'open') {
+              primary.send(JSON.stringify({ header: 'file_end' }));
             }
           } catch (e) {
             console.error('Error sending file_end:', e);
@@ -1344,7 +1717,7 @@
       updateCardButtonState(activeSession.targetUid, 'default');
     }
 
-    updateProgressUI(activeSession.totalBytes, activeSession.totalBytes);
+    updateProgressUI(activeSession.totalBytes, activeSession.totalBytes, true);
     showCompletionUI(
       '🎉 ส่งไฟล์สำเร็จ 100%!',
       `ส่งไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) ให้ ${activeSession.targetUsername} เรียบร้อยแล้ว`
@@ -1356,6 +1729,42 @@
     }
 
     // Delay connection cleanup so both sides close gracefully
+    setTimeout(() => {
+      cleanupConnections();
+    }, 2000);
+  }
+
+  function handleTcpTransferComplete() {
+    if (!activeSession || activeSession.isComplete) return;
+    activeSession.isComplete = true;
+    stopStatsMonitor();
+
+    if (activeSession.targetUid) {
+      updateCardButtonState(activeSession.targetUid, 'default');
+    }
+
+    updateProgressUI(activeSession.totalBytes, activeSession.totalBytes, true);
+
+    if (activeSession.role === 'sender') {
+      showCompletionUI(
+        '🎉 ส่งไฟล์สำเร็จ 100%!',
+        `ส่งไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) ให้ ${activeSession.targetUsername} เรียบร้อยแล้ว (Native Turbo)`
+      );
+      if (config.showToast) {
+        config.showToast(
+          `✅ ส่งไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) ให้ ${activeSession.targetUsername} สำเร็จ!`
+        );
+      }
+    } else {
+      showCompletionUI(
+        '🎉 บันทึกไฟล์สำเร็จ 100%!',
+        `รับไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) เรียบร้อยแล้ว (Native Turbo)`
+      );
+      if (config.showToast) {
+        config.showToast(`✅ รับไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) สำเร็จเรียบร้อย!`);
+      }
+    }
+
     setTimeout(() => {
       cleanupConnections();
     }, 2000);
@@ -1377,7 +1786,10 @@
         activeSession.lastSpeedCheckTime = now;
         activeSession.lastSpeedCheckBytes = activeSession.transferredBytes;
 
-        if (dom.speedBadge) dom.speedBadge.textContent = `⚡ ${formatBytes(currentSpeed)}/s`;
+        const openChCount = (activeSession.channels ? activeSession.channels.filter((c) => c.readyState === 'open').length : 1) || 1;
+        if (dom.speedBadge) {
+          dom.speedBadge.textContent = `⚡ ${formatBytes(currentSpeed)}/s (${openChCount}x P2P)`;
+        }
 
         const remainingBytes = activeSession.totalBytes - activeSession.transferredBytes;
         if (dom.etaBadge) {
@@ -1399,9 +1811,14 @@
     }
   }
 
-  // --- UI Progress Updates ---
-  function updateProgressUI(transferred, total) {
+  // --- Throttled UI Progress Updates ---
+  let lastUiUpdateTime = 0;
+  function updateProgressUI(transferred, total, force = false) {
     if (!dom.progressBar) return;
+    const now = performance.now();
+    if (!force && now - lastUiUpdateTime < 75) return; // Cap DOM update to ~13 FPS
+    lastUiUpdateTime = now;
+
     const pct = total > 0 ? Math.min(100, (transferred / total) * 100) : 0;
 
     dom.progressBar.style.width = `${pct.toFixed(1)}%`;
@@ -1433,7 +1850,7 @@
     if (dom.progressBar) dom.progressBar.style.width = '0%';
     if (dom.progressPercent) dom.progressPercent.textContent = '0%';
     if (dom.bytesTransferred) dom.bytesTransferred.textContent = `0 B / ${formatBytes(file.size)}`;
-    if (dom.speedBadge) dom.speedBadge.textContent = '⚡ 0 B/s';
+    if (dom.speedBadge) dom.speedBadge.textContent = '⚡ 0 B/s (8x P2P)';
     if (dom.etaBadge) dom.etaBadge.textContent = '⏳ กำลังเชื่อมต่อ...';
     if (dom.statusText) dom.statusText.textContent = 'กำลังเตรียมท่อส่ง...';
   }
@@ -1465,11 +1882,34 @@
     activeSession.isCancelled = true;
     stopStatsMonitor();
 
+    if (activeSession.ackTimeout) {
+      clearTimeout(activeSession.ackTimeout);
+      activeSession.ackTimeout = null;
+    }
+
     const targetUid = activeSession.targetUid;
 
-    if (notifyRemote && activeSession.dc && activeSession.dc.readyState === 'open') {
+    if (activeSession.isNativeTcp && window.electronAPI) {
       try {
-        activeSession.dc.send(JSON.stringify({ header: 'file_cancel', reason }));
+        window.electronAPI.cancelTcpTransfer(activeSession.transferId);
+      } catch (e) {}
+      if (activeSession.tcpUnbinds) {
+        activeSession.tcpUnbinds.forEach((fn) => fn());
+        activeSession.tcpUnbinds = [];
+      }
+      if (notifyRemote && targetUid) {
+        sendPacketToPeer(targetUid, {
+          type: 'p2p_file_cancel_transfer',
+          transferId: activeSession.transferId,
+          reason
+        });
+      }
+    }
+
+    const primaryDc = (activeSession.channels && activeSession.channels[0]) || activeSession.dc;
+    if (notifyRemote && primaryDc && primaryDc.readyState === 'open') {
+      try {
+        primaryDc.send(JSON.stringify({ header: 'file_cancel', reason }));
       } catch (e) {}
     }
 
@@ -1491,8 +1931,27 @@
   function cleanupConnections() {
     stopRequestRetryLoop();
     if (!activeSession) return;
+    if (activeSession.ackTimeout) {
+      clearTimeout(activeSession.ackTimeout);
+      activeSession.ackTimeout = null;
+    }
     if (activeSession.targetUid) {
       updateCardButtonState(activeSession.targetUid, 'default');
+    }
+    if (activeSession.isNativeTcp && window.electronAPI) {
+      try {
+        window.electronAPI.cancelTcpTransfer(activeSession.transferId);
+      } catch (e) {}
+      if (activeSession.tcpUnbinds) {
+        activeSession.tcpUnbinds.forEach((fn) => fn());
+        activeSession.tcpUnbinds = [];
+      }
+    }
+    if (activeSession.channels) {
+      activeSession.channels.forEach((ch) => {
+        try { ch.close(); } catch (e) {}
+      });
+      activeSession.channels = [];
     }
     if (activeSession.dc) {
       try { activeSession.dc.close(); } catch (e) {}
@@ -1560,6 +2019,12 @@
           if (config.showToast) {
             config.showToast(`ℹ️ ผู้ส่งยกเลิกคำขอ (${data.reason || 'ไม่มีการตอบสนอง'})`);
           }
+        }
+        return true;
+      }
+      if (data.type === 'p2p_file_cancel_transfer') {
+        if (activeSession && activeSession.transferId === data.transferId) {
+          cancelTransfer(data.reason || 'อีกฝ่ายยกเลิกการถ่ายโอน', false);
         }
         return true;
       }

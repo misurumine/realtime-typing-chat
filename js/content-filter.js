@@ -225,12 +225,7 @@
     return modelLoadPromise;
   }
 
-  // Auto-start AI model load in background when script loads
-  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-    window.addEventListener('DOMContentLoaded', () => {
-      setTimeout(() => initAiModel(), 800);
-    });
-  }
+  // Model is lazy-loaded on-demand only when a user selects a custom avatar image to classify
 
   /**
    * Classify image using Deep Learning CNN

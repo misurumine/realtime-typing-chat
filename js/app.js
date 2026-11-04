@@ -4791,7 +4791,8 @@
     refreshCardTranslationBox(uid);
 
     try {
-      const res = await fetch('/api/translate', {
+      const apiPrefix = window.location.protocol === 'file:' ? 'http://localhost:3000' : '';
+      const res = await fetch(`${apiPrefix}/api/translate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -6220,6 +6221,62 @@
     deferredInstallPrompt = null;
     btnInstallPwa.classList.add('hidden');
   });
+
+  // Desktop App detection
+  if (window.electronAPI && window.electronAPI.isElectron) {
+    const brandBadge = document.querySelector('.brand-badge');
+    if (brandBadge) {
+      brandBadge.textContent = '⚡ Desktop Turbo (Native TCP)';
+      brandBadge.style.background = 'rgba(16, 185, 129, 0.2)';
+      brandBadge.style.color = '#10b981';
+      brandBadge.style.border = '1px solid rgba(16, 185, 129, 0.4)';
+    }
+    if (btnInstallPwa) {
+      btnInstallPwa.classList.add('hidden');
+    }
+    const btnDlDesktop = document.getElementById('btnDownloadDesktopApp');
+    if (btnDlDesktop) btnDlDesktop.classList.add('hidden');
+    const dlBanner = document.getElementById('desktopDownloadBanner');
+    if (dlBanner) dlBanner.classList.add('hidden');
+    const tip1 = document.getElementById('p2pDesktopTip');
+    if (tip1) tip1.classList.add('hidden');
+    const tip2 = document.getElementById('p2pReceiveDesktopTip');
+    if (tip2) tip2.classList.add('hidden');
+  }
+
+  // Smart Desktop App Download URL (Local Express server vs GitHub Releases on GitHub Pages)
+  const GITHUB_REPO = 'misurumine/realtime-typing-chat';
+  const GITHUB_RELEASE_DOWNLOAD_URL = `https://github.com/${GITHUB_REPO}/releases/latest/download/RealtimeChat-Setup.exe`;
+
+  function setupDesktopDownloadLinks() {
+    if (window.electronAPI && window.electronAPI.isElectron) return;
+
+    const isLocalServer = ['localhost', '127.0.0.1'].includes(window.location.hostname) ||
+      window.location.hostname.startsWith('192.168.') ||
+      window.location.hostname.startsWith('10.') ||
+      window.location.protocol === 'file:';
+
+    const targetUrl = isLocalServer ? '/download/desktop-app' : GITHUB_RELEASE_DOWNLOAD_URL;
+
+    const dlButtons = [
+      document.getElementById('btnDownloadDesktopApp'),
+      document.querySelector('#desktopDownloadBanner a.btn-desktop-dl'),
+      document.querySelector('#p2pDesktopTip a'),
+      document.querySelector('#p2pReceiveDesktopTip a')
+    ];
+
+    dlButtons.forEach((btn) => {
+      if (btn) {
+        btn.href = targetUrl;
+        if (!isLocalServer) {
+          btn.target = '_blank';
+          btn.rel = 'noopener noreferrer';
+        }
+      }
+    });
+  }
+
+  setupDesktopDownloadLinks();
 
   // --- Initial Boot ---
   if (currentUser) {
