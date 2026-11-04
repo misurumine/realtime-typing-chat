@@ -859,6 +859,7 @@
       dc: null,
       pendingCandidates: [],
       writableStream,
+      writeQueue: Promise.resolve(),
       fallbackChunks: writableStream ? null : [],
       transferredBytes: 0,
       totalBytes: req.file.size,
@@ -949,33 +950,55 @@
         }
       } else {
         const chunk = event.data;
-        try {
-          if (activeSession.writableStream) {
-            await activeSession.writableStream.write(chunk);
-          } else if (activeSession.fallbackChunks) {
-            activeSession.fallbackChunks.push(chunk);
-          }
-          activeSession.transferredBytes += chunk.byteLength;
-          updateProgressUI(activeSession.transferredBytes, activeSession.totalBytes);
-        } catch (err) {
-          console.error('Error writing chunk to disk:', err);
-          cancelTransfer('เกิดข้อผิดพลาดในการเขียนไฟล์ลงฮาร์ดดิสก์: ' + err.message);
+        activeSession.transferredBytes += chunk.byteLength;
+        updateProgressUI(activeSession.transferredBytes, activeSession.totalBytes);
+
+        if (activeSession.writableStream) {
+          // Strictly sequential write queue to avoid concurrent write collisions in FileSystemWritableFileStream
+          activeSession.writeQueue = activeSession.writeQueue
+            .then(async () => {
+              if (activeSession && !activeSession.isCancelled && activeSession.writableStream) {
+                await activeSession.writableStream.write(new Uint8Array(chunk));
+              }
+            })
+            .catch((err) => {
+              console.error('Error writing chunk to disk:', err);
+              if (activeSession && !activeSession.isCancelled) {
+                cancelTransfer('เกิดข้อผิดพลาดในการเขียนไฟล์ลงฮาร์ดดิสก์: ' + err.message);
+              }
+            });
+        } else if (activeSession.fallbackChunks) {
+          activeSession.fallbackChunks.push(chunk);
         }
       }
     };
   }
 
   async function finishReceivingFile() {
-    if (!activeSession) return;
+    if (!activeSession || activeSession.isComplete || activeSession.isCancelled) return;
     activeSession.isComplete = true;
     stopStatsMonitor();
 
+    if (dom.statusText) dom.statusText.textContent = 'กำลังบันทึกและปิดไฟล์...';
+
+    // 1. Wait for all queued chunk writes to finish writing to disk
+    if (activeSession.writeQueue) {
+      try {
+        await activeSession.writeQueue;
+      } catch (err) {
+        console.error('Write queue settling error:', err);
+      }
+    }
+
+    // 2. Commit and close the writable stream so Chrome moves .crswap to the target file
     if (activeSession.writableStream) {
       try {
         await activeSession.writableStream.close();
         activeSession.writableStream = null;
       } catch (e) {
         console.error('Error closing writable stream:', e);
+        cancelTransfer('ไม่สามารถบันทึกไฟล์ได้: ' + e.message);
+        return;
       }
     } else if (activeSession.fallbackChunks) {
       try {
@@ -994,9 +1017,26 @@
       }
     }
 
-    showCompletionUI('🎉 บันทึกไฟล์สำเร็จ 100%!', `รับไฟล์ "${activeSession.file.name}" เรียบร้อยแล้ว`);
-    if (config.showToast) config.showToast(`✅ รับไฟล์ "${activeSession.file.name}" สำเร็จเรียบร้อย!`);
-    cleanupConnections();
+    // 3. Send acknowledgment to sender so sender knows disk write is 100% complete
+    if (activeSession.dc && activeSession.dc.readyState === 'open') {
+      try {
+        activeSession.dc.send(JSON.stringify({ header: 'file_ack' }));
+      } catch (e) {}
+    }
+
+    updateProgressUI(activeSession.totalBytes, activeSession.totalBytes);
+    showCompletionUI(
+      '🎉 บันทึกไฟล์สำเร็จ 100%!',
+      `รับไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) เรียบร้อยแล้ว`
+    );
+    if (config.showToast) {
+      config.showToast(`✅ รับไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) สำเร็จเรียบร้อย!`);
+    }
+
+    // Delay connection cleanup so ACK packet is delivered cleanly
+    setTimeout(() => {
+      cleanupConnections();
+    }, 2000);
   }
 
   // --- Sender WebRTC & Chunk Streaming Flow ---
@@ -1093,6 +1133,8 @@
         const msg = JSON.parse(event.data);
         if (msg.header === 'file_cancel') {
           cancelTransfer(msg.reason || 'ผู้รับได้ยกเลิกการรับไฟล์', false);
+        } else if (msg.header === 'file_ack') {
+          finishSendingFile();
         }
       } catch (e) {}
     };
@@ -1166,6 +1208,10 @@
     const dc = activeSession.dc;
     let offset = 0;
 
+    try {
+      dc.bufferedAmountLowThreshold = BUFFER_LOW_WATERMARK;
+    } catch (e) {}
+
     dc.send(
       JSON.stringify({
         header: 'file_start',
@@ -1176,11 +1222,53 @@
       })
     );
 
+    function waitForBufferDrain(callback) {
+      if (!activeSession || !activeSession.dc || activeSession.dc.readyState !== 'open') {
+        return callback();
+      }
+
+      if (activeSession.dc.bufferedAmount === 0) {
+        return callback();
+      }
+
+      try {
+        activeSession.dc.bufferedAmountLowThreshold = 0;
+      } catch (e) {}
+
+      let done = false;
+      const onDrain = () => {
+        if (done) return;
+        done = true;
+        if (activeSession && activeSession.dc) {
+          activeSession.dc.onbufferedamountlow = null;
+        }
+        clearInterval(pollInterval);
+        callback();
+      };
+
+      activeSession.dc.onbufferedamountlow = onDrain;
+
+      // Fallback polling interval in case browser misses the low event
+      const pollInterval = setInterval(() => {
+        if (
+          !activeSession ||
+          !activeSession.dc ||
+          activeSession.dc.readyState !== 'open' ||
+          activeSession.dc.bufferedAmount === 0
+        ) {
+          onDrain();
+        }
+      }, 50);
+    }
+
     async function sendNextChunks() {
       if (!activeSession || activeSession.isCancelled || activeSession.isComplete) return;
 
       while (offset < totalSize && !activeSession.isCancelled) {
         if (dc.bufferedAmount > BUFFER_HIGH_WATERMARK) {
+          try {
+            dc.bufferedAmountLowThreshold = BUFFER_LOW_WATERMARK;
+          } catch (e) {}
           dc.onbufferedamountlow = () => {
             dc.onbufferedamountlow = null;
             sendNextChunks();
@@ -1213,38 +1301,64 @@
       }
 
       if (offset >= totalSize && !activeSession.isCancelled) {
-        if (dc.bufferedAmount > 0) {
-          dc.onbufferedamountlow = () => {
-            dc.onbufferedamountlow = null;
-            finishSendingFile();
-          };
-        } else {
-          finishSendingFile();
-        }
+        if (dom.statusText) dom.statusText.textContent = 'ส่งข้อมูลครบแล้ว กำลังรอผู้รับบันทึกไฟล์ลงดิสก์...';
+        waitForBufferDrain(() => {
+          if (!activeSession || activeSession.isCancelled || activeSession.isComplete) return;
+          try {
+            if (activeSession.dc && activeSession.dc.readyState === 'open') {
+              activeSession.dc.send(JSON.stringify({ header: 'file_end' }));
+            }
+          } catch (e) {
+            console.error('Error sending file_end:', e);
+          }
+          waitForReceiverAck();
+        });
       }
     }
 
     sendNextChunks();
   }
 
+  function waitForReceiverAck() {
+    if (!activeSession) return;
+    if (activeSession.ackTimeout) clearTimeout(activeSession.ackTimeout);
+    // Safety fallback: if receiver ACK doesn't arrive within 10s, finish anyway
+    activeSession.ackTimeout = setTimeout(() => {
+      if (activeSession && activeSession.role === 'sender' && !activeSession.isComplete) {
+        console.log('Receiver ACK timeout fallback - completing sender transfer');
+        finishSendingFile();
+      }
+    }, 10000);
+  }
+
   function finishSendingFile() {
-    if (!activeSession || activeSession.role !== 'sender') return;
+    if (!activeSession || activeSession.role !== 'sender' || activeSession.isComplete) return;
     activeSession.isComplete = true;
+    if (activeSession.ackTimeout) {
+      clearTimeout(activeSession.ackTimeout);
+      activeSession.ackTimeout = null;
+    }
     stopStatsMonitor();
 
     if (activeSession.targetUid) {
       updateCardButtonState(activeSession.targetUid, 'default');
     }
 
-    if (activeSession.dc && activeSession.dc.readyState === 'open') {
-      try {
-        activeSession.dc.send(JSON.stringify({ header: 'file_end' }));
-      } catch (e) {}
+    updateProgressUI(activeSession.totalBytes, activeSession.totalBytes);
+    showCompletionUI(
+      '🎉 ส่งไฟล์สำเร็จ 100%!',
+      `ส่งไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) ให้ ${activeSession.targetUsername} เรียบร้อยแล้ว`
+    );
+    if (config.showToast) {
+      config.showToast(
+        `✅ ส่งไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) ให้ ${activeSession.targetUsername} สำเร็จ!`
+      );
     }
 
-    showCompletionUI('🎉 ส่งไฟล์สำเร็จ 100%!', `ส่งไฟล์ "${activeSession.file.name}" ให้ ${activeSession.targetUsername} เรียบร้อยแล้ว`);
-    if (config.showToast) config.showToast(`✅ ส่งไฟล์ "${activeSession.file.name}" ให้ ${activeSession.targetUsername} สำเร็จ!`);
-    cleanupConnections();
+    // Delay connection cleanup so both sides close gracefully
+    setTimeout(() => {
+      cleanupConnections();
+    }, 2000);
   }
 
   // --- Speedometer & ETA Calculator ---
