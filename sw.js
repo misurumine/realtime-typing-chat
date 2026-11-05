@@ -1,4 +1,4 @@
-const CACHE_NAME = 'livetype-pwa-v22';
+const CACHE_NAME = 'livetype-pwa-v23';
 const ASSETS = [
   './',
   './index.html',

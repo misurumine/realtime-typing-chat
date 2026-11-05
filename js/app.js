@@ -964,11 +964,13 @@
   let brokerIndex = 0;
   let heartbeatTimer = null;
 
-  // Room Heartbeat & Automatic Host Takeover State (5s Ping / 14s Timeout)
-  const ROOM_HEARTBEAT_INTERVAL_MS = 5000;
-  const ROOM_MEMBER_TIMEOUT_MS = 14000;
+  // Room Heartbeat & Automatic Host Takeover State (4s Ping / 11s Timeout)
+  const ROOM_HEARTBEAT_INTERVAL_MS = 4000;
+  const ROOM_MEMBER_TIMEOUT_MS = 11000;
   let roomHeartbeatTimer = null;
   let hostWatchdogTimer = null;
+  let hostDiscoveryTimer = null;
+  let hostHeartbeatGraceUntil = 0;
   let lastHostHeartbeatReceivedAt = 0;
   let lastHeartbeatTickAt = 0;
 
@@ -2258,7 +2260,9 @@
     if (data.type === 'room_heartbeat_pong') {
       const cleanSender = sanitizeUid(data.uid || (data.from && data.from.uid) || senderUid || '');
       if (activeRoomCode && data.roomCode === activeRoomCode && cleanSender && roomMembers.has(cleanSender)) {
-        roomMembers.get(cleanSender).lastPongAt = Date.now();
+        const m = roomMembers.get(cleanSender);
+        m.lastPongAt = Date.now();
+        m.missedPings = 0;
       }
       return;
     }
@@ -2576,16 +2580,43 @@
     // Room Heartbeat Ping (From Room Host to all members)
     if (data.type === 'room_heartbeat_ping') {
       const senderHost = sanitizeUid(data.hostUid || data.uid || cleanSenderUid);
-      if (senderHost) {
+      if (!senderHost) return;
+
+      const isMeHost = Boolean(currentUser && activeRoomHostUid && activeRoomHostUid === currentUser.uid);
+
+      if (isMeHost && senderHost !== currentUser.uid) {
+        // Split-brain resolution: compare joinedAt timestamps (earliest join wins)
+        const myJoinedAt = roomMembers.get(currentUser.uid)?.joinedAt || 0;
+        const senderMember = roomMembers.get(senderHost);
+        const senderJoinedAt = (senderMember && senderMember.joinedAt) || (data.joinedAt || Infinity);
+
+        if (senderJoinedAt < myJoinedAt) {
+          // Sender legitimately joined earlier: surrender host gracefully
+          activeRoomHostUid = senderHost;
+          lastHostHeartbeatReceivedAt = Date.now();
+          updateRoomHostUi();
+        } else {
+          // We joined earlier: stay host and reassert authority immediately
+          publishJson(topicRoom(activeRoomCode), {
+            type: 'room_heartbeat_ping',
+            uid: currentUser.uid,
+            hostUid: currentUser.uid,
+            joinedAt: myJoinedAt,
+            ts: Date.now()
+          });
+          return;
+        }
+      } else if (!isMeHost) {
         lastHostHeartbeatReceivedAt = Date.now();
-        if (!activeRoomHostUid || activeRoomHostUid !== senderHost) {
+        if (activeRoomHostUid !== senderHost) {
           activeRoomHostUid = senderHost;
           updateRoomHostUi();
         }
       }
+
       if (currentUser && currentUser.uid !== activeRoomHostUid) {
-        // Fast, snappy jitter (50ms to 350ms) to prevent packet storm
-        const jitterMs = Math.floor(Math.random() * 300) + 50;
+        // Fast, snappy jitter (40ms to 240ms) to prevent packet storm
+        const jitterMs = Math.floor(Math.random() * 200) + 40;
         setTimeout(() => {
           if (!activeRoomCode || !currentUser || !activeRoomHostUid) return;
           // 1. Broadcast Pong directly to room topic so host & room peers receive it reliably!
@@ -2613,16 +2644,32 @@
       if (pongSender && roomMembers.has(pongSender)) {
         const m = roomMembers.get(pongSender);
         m.lastPongAt = Date.now();
+        m.missedPings = 0;
       }
       return;
     }
 
-    // Host kicking inactive/stuck ghost member after 25s timeout
+    // Host kicking inactive/stuck ghost member after ping timeouts
     if (data.type === 'member_timeout_kick') {
+      // Security Check: ONLY accept kick commands from the recognized room host!
+      if (cleanSenderUid !== activeRoomHostUid) return;
+
       const kickUid = sanitizeUid(data.targetUid);
       if (kickUid) {
         if (currentUser && kickUid === currentUser.uid) {
-          showToast('⚠️ คุณถูกตัดการเชื่อมต่อจากห้องเนื่องจากไม่ตอบสนองสัญญาณ Ping', 6000);
+          // If we were recently active (typing or interacting in the last 8 seconds), reject kick & re-pong!
+          const myMem = roomMembers.get(currentUser.uid);
+          const wasRecentlyActive = myMem && (Date.now() - Math.max(myMem.lastActiveAt || 0, myMem.lastTypingAt || 0) < 8000);
+          if (wasRecentlyActive) {
+            publishJson(topicRoom(activeRoomCode), {
+              type: 'room_heartbeat_pong',
+              uid: currentUser.uid,
+              roomCode: activeRoomCode,
+              ts: Date.now()
+            });
+            return;
+          }
+          showToast('⚠️ คุณถูกตัดการเชื่อมต่อจากห้องเนื่องจากไม่ตอบสนองสัญญาณ Ping', 5000);
           leaveCurrentRoomSilent();
         } else {
           removeMemberFromRoom(kickUid, 'timeout');
@@ -2642,6 +2689,11 @@
       if (newHost) {
         activeRoomHostUid = newHost;
         lastHostHeartbeatReceivedAt = Date.now();
+        hostHeartbeatGraceUntil = Date.now() + ROOM_MEMBER_TIMEOUT_MS;
+        roomMembers.forEach((m) => {
+          m.missedPings = 0;
+          m.lastPongAt = Date.now();
+        });
         updateRoomHostUi();
         reorderLiveCards();
         renderAllLiveCards();
@@ -2658,6 +2710,11 @@
     }
 
     if (data.type === 'member_join') {
+      if (hostDiscoveryTimer) {
+        clearTimeout(hostDiscoveryTimer);
+        hostDiscoveryTimer = null;
+      }
+
       const isNew = !roomMembers.has(cleanSenderUid);
       const prev = roomMembers.get(cleanSenderUid);
       const cleanName = sanitizeUsername(data.username || cleanSenderUid, cleanSenderUid);
@@ -2667,13 +2724,19 @@
       const now = Date.now();
       const joinedAt = data.joinedAt || (prev ? prev.joinedAt : now);
 
-      if (data.hostUid) {
-        activeRoomHostUid = sanitizeUid(data.hostUid);
-      } else if (data.isHost) {
-        activeRoomHostUid = cleanSenderUid;
+      // Host election & usurpation guard:
+      // If WE are already the host, we NEVER surrender host status to a newcomer!
+      if (activeRoomHostUid && activeRoomHostUid === currentUser.uid) {
+        // Keep activeRoomHostUid = currentUser.uid
       } else if (!activeRoomHostUid) {
-        // Incumbent member already in room is host over newcomer
-        activeRoomHostUid = currentUser.uid;
+        if (data.isHost && data.hostUid) {
+          activeRoomHostUid = sanitizeUid(data.hostUid);
+        } else {
+          // Incumbent member already in room is host over newcomer
+          activeRoomHostUid = currentUser.uid;
+          hostHeartbeatGraceUntil = Date.now() + ROOM_MEMBER_TIMEOUT_MS;
+        }
+        updateRoomHostUi();
       }
       if (data.sortMode && ['activity', 'length', 'length_1s', 'stable'].includes(data.sortMode)) {
         activeRoomSortMode = data.sortMode;
@@ -2692,7 +2755,8 @@
         lastActiveAt: safeText ? now : 0,
         lastTypingAt: 0,
         lastEmoteAt: 0,
-        lastEmote: null
+        lastEmote: null,
+        missedPings: 0
       });
       renderAllLiveCards();
       if (isNew) {
@@ -2718,6 +2782,7 @@
       // If we are host, broadcast authoritative card order to newcomer immediately!
       if (activeRoomHostUid === currentUser.uid) {
         syncHostRoomOrder();
+        broadcastActiveRoomToDirectory();
       }
 
       // If we are currently streaming screen, announce to newcomer immediately!
@@ -2730,12 +2795,15 @@
           streamerAvatar: currentUser.avatar
         });
       }
-
-      broadcastActiveRoomToDirectory();
       return;
     }
 
     if (data.type === 'member_sync') {
+      if (hostDiscoveryTimer) {
+        clearTimeout(hostDiscoveryTimer);
+        hostDiscoveryTimer = null;
+      }
+
       const existed = roomMembers.has(cleanSenderUid);
       const prev = roomMembers.get(cleanSenderUid);
       const cleanName = sanitizeUsername(data.username || cleanSenderUid, cleanSenderUid);
@@ -2748,11 +2816,18 @@
       const joinedAt = data.joinedAt || (prev ? prev.joinedAt : now);
 
       if (data.hostUid) {
-        activeRoomHostUid = sanitizeUid(data.hostUid);
-        updateRoomHostUi();
-      } else if (data.isHost) {
-        activeRoomHostUid = cleanSenderUid;
-        updateRoomHostUi();
+        const syncHostUid = sanitizeUid(data.hostUid);
+        if (!activeRoomHostUid) {
+          activeRoomHostUid = syncHostUid;
+          updateRoomHostUi();
+        } else if (activeRoomHostUid === currentUser.uid && syncHostUid !== currentUser.uid) {
+          // Split-brain tie break: earliest joinedAt wins
+          const myJoinedAt = roomMembers.get(currentUser.uid)?.joinedAt || now;
+          if (data.joinedAt && data.joinedAt < myJoinedAt) {
+            activeRoomHostUid = syncHostUid;
+            updateRoomHostUi();
+          }
+        }
       }
       if (cleanSenderUid === activeRoomHostUid) {
         lastHostHeartbeatReceivedAt = now;
@@ -2775,11 +2850,14 @@
         lastActiveAt: hasContent ? now : (prev ? prev.lastActiveAt : 0),
         lastTypingAt: prev ? prev.lastTypingAt : 0,
         lastEmoteAt: prev ? prev.lastEmoteAt : 0,
-        lastEmote: prev ? prev.lastEmote : null
+        lastEmote: prev ? prev.lastEmote : null,
+        missedPings: 0
       });
       if (!existed) {
         renderAllLiveCards();
-        broadcastActiveRoomToDirectory();
+        if (activeRoomHostUid === currentUser.uid) {
+          broadcastActiveRoomToDirectory();
+        }
       } else {
         updateSingleCardContent(cleanSenderUid, safeText, safeImage);
       }
@@ -2790,7 +2868,7 @@
       const newMode = data.sortMode;
       if (['activity', 'length', 'length_1s', 'stable'].includes(newMode)) {
         activeRoomSortMode = newMode;
-        if (data.hostUid) {
+        if (data.hostUid && !activeRoomHostUid) {
           activeRoomHostUid = sanitizeUid(data.hostUid);
         }
         updateRoomHostUi();
@@ -2841,25 +2919,34 @@
 
     if (data.type === 'member_leave') {
       const leavingUid = cleanSenderUid;
+      const wasRoomHost = Boolean(leavingUid === activeRoomHostUid || data.wasHost);
       removeMemberFromRoom(leavingUid, 'leave');
 
       // Immediate Host Handoff if departing member was host
-      if (data.wasHost && data.newHostUid) {
-        const newHost = sanitizeUid(data.newHostUid);
-        if (newHost) {
-          activeRoomHostUid = newHost;
+      if (wasRoomHost) {
+        const designatedNextHost = data.newHostUid ? sanitizeUid(data.newHostUid) : null;
+        if (designatedNextHost && roomMembers.has(designatedNextHost)) {
+          activeRoomHostUid = designatedNextHost;
           lastHostHeartbeatReceivedAt = Date.now();
+          hostHeartbeatGraceUntil = Date.now() + ROOM_MEMBER_TIMEOUT_MS;
+          roomMembers.forEach((m) => {
+            m.missedPings = 0;
+            m.lastPongAt = Date.now();
+          });
           updateRoomHostUi();
           reorderLiveCards();
           renderAllLiveCards();
-          if (currentUser && newHost === currentUser.uid) {
+          if (currentUser && designatedNextHost === currentUser.uid) {
             showToast('👑 หัวห้องเดิมออกจากห้อง สิทธิ์หัวห้องถูกส่งต่อมายังคุณแล้ว');
             syncHostRoomOrder();
             broadcastActiveRoomToDirectory();
           } else {
-            const hName = sanitizeUsername(data.newHostName || newHost, newHost);
+            const hName = sanitizeUsername(data.newHostName || designatedNextHost, designatedNextHost);
             showToast(`👑 หัวห้องเดิมออกจากห้อง สิทธิ์หัวห้องถูกส่งต่อไปยัง ${hName}`);
           }
+        } else {
+          // If no designated next host or not in room, elect immediately via takeover
+          handleHostTimeoutTakeover();
         }
       }
       return;
@@ -2929,9 +3016,14 @@
         m.lastActiveAt = 0;
         m.lastEmoteAt = 0;
         m.updatedAt = Date.now();
+        m.lastPongAt = Date.now();
+        m.missedPings = 0;
         updateSingleCardContent(cleanSenderUid, '', null);
         flashClearCard(cleanSenderUid);
         reorderLiveCards();
+      }
+      if (cleanSenderUid === activeRoomHostUid) {
+        lastHostHeartbeatReceivedAt = Date.now();
       }
       return;
     }
@@ -2945,6 +3037,11 @@
         m.lastEmoteAt = Date.now();
         m.lastEmote = safeEmote;
         m.lastActiveAt = Date.now();
+        m.lastPongAt = Date.now();
+        m.missedPings = 0;
+      }
+      if (cleanSenderUid === activeRoomHostUid) {
+        lastHostHeartbeatReceivedAt = Date.now();
       }
       spawnEmoteBubbleOnCard(cleanSenderUid, safeEmote);
       reorderLiveCards();
@@ -4092,6 +4189,14 @@
     if (document.visibilityState === 'visible' && activeRoomCode && currentUser) {
       lastHostHeartbeatReceivedAt = Date.now();
       lastHeartbeatTickAt = Date.now();
+      hostHeartbeatGraceUntil = Date.now() + ROOM_MEMBER_TIMEOUT_MS;
+
+      // Reset member missed pings and pong timestamps when waking up so returning host never kicks alive members!
+      roomMembers.forEach((m) => {
+        m.missedPings = 0;
+        m.lastPongAt = Date.now();
+      });
+
       const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
 
       if (isHost) {
@@ -4478,6 +4583,7 @@
   function broadcastRoomJoin() {
     if (!currentUser || !activeRoomCode) return;
     const myMember = roomMembers.get(currentUser.uid);
+    const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
     publishJson(topicRoom(activeRoomCode), {
       type: 'member_join',
       uid: currentUser.uid,
@@ -4486,13 +4592,17 @@
       tags: Array.from(selectedTags),
       currentText: myMember ? myMember.currentText : '',
       joinedAt: myMember ? myMember.joinedAt : Date.now(),
-      isHost: Boolean(activeRoomHostUid === currentUser.uid),
-      hostUid: activeRoomHostUid
+      isHost: isHost,
+      hostUid: isHost ? currentUser.uid : null
     });
   }
 
   function leaveCurrentRoomSilent() {
     stopTypingSound();
+    if (hostDiscoveryTimer) {
+      clearTimeout(hostDiscoveryTimer);
+      hostDiscoveryTimer = null;
+    }
     if (!activeRoomCode || !currentUser) return;
     const oldCode = activeRoomCode;
     if (window.P2PFileTransfer) {
@@ -4520,13 +4630,19 @@
       }
     }
 
-    publishJson(topicRoom(oldCode), {
+    const leavePayload = {
       type: 'member_leave',
       uid: currentUser.uid,
       wasHost: isHost,
       newHostUid: nextHostUid,
       newHostName: nextHostName
-    });
+    };
+
+    publishJson(topicRoom(oldCode), leavePayload);
+    // Redundant burst after 40ms to guarantee packet delivery before teardown
+    setTimeout(() => {
+      publishJson(topicRoom(oldCode), leavePayload);
+    }, 40);
 
     if (roomMembers.size === 0) {
       broadcastRoomClosedToDirectory(oldCode);
@@ -4540,7 +4656,7 @@
             mqttClient.unsubscribe(topicRoom(oldCode));
           }
         } catch (e) {}
-      }, 150);
+      }, 250);
     }
     activeRoomCode = null;
     activeRoomHostUid = null;
@@ -4560,12 +4676,12 @@
       leaveCurrentRoomSilent();
     }
 
-    activeRoomCode = clean;
-    // If explicitly creator, or room is currently empty, current user is initially host
-    if (isCreator || roomMembers.size === 0 || !activeRoomHostUid) {
-      activeRoomHostUid = currentUser.uid;
-      activeRoomSortMode = 'activity';
+    if (hostDiscoveryTimer) {
+      clearTimeout(hostDiscoveryTimer);
+      hostDiscoveryTimer = null;
     }
+
+    activeRoomCode = clean;
     roomMembers.clear();
     currentImage = null;
     hideInputImagePreview();
@@ -4584,8 +4700,31 @@
       lastActiveAt: 0,
       lastTypingAt: 0,
       lastEmoteAt: 0,
-      lastEmote: null
+      lastEmote: null,
+      missedPings: 0
     });
+
+    if (isCreator) {
+      activeRoomHostUid = currentUser.uid;
+      activeRoomSortMode = 'activity';
+      hostHeartbeatGraceUntil = Date.now() + ROOM_MEMBER_TIMEOUT_MS;
+      updateRoomHostUi();
+    } else {
+      activeRoomHostUid = null;
+      updateRoomHostUi();
+      // Start discovery timer for joining via direct link/code to an empty room
+      hostDiscoveryTimer = setTimeout(() => {
+        hostDiscoveryTimer = null;
+        if (!activeRoomHostUid && roomMembers.size <= 1 && activeRoomCode === clean) {
+          activeRoomHostUid = currentUser.uid;
+          activeRoomSortMode = 'activity';
+          hostHeartbeatGraceUntil = Date.now() + ROOM_MEMBER_TIMEOUT_MS;
+          updateRoomHostUi();
+          broadcastActiveRoomToDirectory();
+          syncHostRoomOrder();
+        }
+      }, 1500);
+    }
 
     liveTypingInput.value = '';
     charCounter.textContent = `0 / 250 ตัวอักษร`;
@@ -4593,7 +4732,15 @@
     if (mqttClient && mqttClient.connected) {
       mqttClient.subscribe(topicRoom(activeRoomCode), { qos: 0 }, () => {
         broadcastRoomJoin();
-        broadcastActiveRoomToDirectory();
+        // Double burst join after 300ms for reliability on free brokers
+        setTimeout(() => {
+          if (activeRoomCode === clean && (!activeRoomHostUid || activeRoomHostUid !== currentUser.uid)) {
+            broadcastRoomJoin();
+          }
+        }, 300);
+        if (isCreator) {
+          broadcastActiveRoomToDirectory();
+        }
       });
     }
 
@@ -5067,6 +5214,7 @@
     const remaining = Array.from(roomMembers.values());
     if (remaining.length === 0) {
       activeRoomHostUid = currentUser.uid;
+      hostHeartbeatGraceUntil = Date.now() + ROOM_MEMBER_TIMEOUT_MS;
       updateRoomHostUi();
       return;
     }
@@ -5076,6 +5224,15 @@
     const nextHost = remaining[0];
     activeRoomHostUid = nextHost.uid;
     lastHostHeartbeatReceivedAt = Date.now();
+    hostHeartbeatGraceUntil = Date.now() + ROOM_MEMBER_TIMEOUT_MS;
+
+    // CRITICAL: Reset missed pings & refresh lastPongAt for ALL remaining members!
+    // This PREVENTS the catastrophic room explosion bug where new host kicks everyone!
+    roomMembers.forEach((m) => {
+      m.missedPings = 0;
+      m.lastPongAt = Date.now();
+    });
+
     updateRoomHostUi();
     reorderLiveCards();
     renderAllLiveCards();
@@ -5103,8 +5260,9 @@
 
     lastHostHeartbeatReceivedAt = Date.now();
     lastHeartbeatTickAt = Date.now();
+    hostHeartbeatGraceUntil = Date.now() + ROOM_MEMBER_TIMEOUT_MS;
 
-    // 1. Host Ping & Stale Member Timeout Checker (runs every 5s)
+    // 1. Host Ping & Stale Member Timeout Checker (runs every 4s)
     roomHeartbeatTimer = setInterval(() => {
       if (!activeRoomCode || !currentUser) return;
       const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
@@ -5114,6 +5272,26 @@
         const tickGap = now - lastHeartbeatTickAt;
         lastHeartbeatTickAt = now;
 
+        // Anti-Explosion Protection: If the timer gap was unusually long (e.g. > 7s, meaning
+        // the host's browser tab was frozen/asleep in background or device locked),
+        // grant grace period and DO NOT kick members on this tick!
+        if (tickGap > ROOM_HEARTBEAT_INTERVAL_MS * 1.75) {
+          hostHeartbeatGraceUntil = now + ROOM_MEMBER_TIMEOUT_MS;
+          roomMembers.forEach((m) => {
+            m.missedPings = 0;
+            m.lastPongAt = now;
+          });
+          lastHostHeartbeatReceivedAt = now;
+          // Ping room immediately so members pong
+          publishJson(topicRoom(activeRoomCode), {
+            type: 'room_heartbeat_ping',
+            uid: currentUser.uid,
+            hostUid: currentUser.uid,
+            ts: now
+          });
+          return;
+        }
+
         // Send heartbeat ping to room
         publishJson(topicRoom(activeRoomCode), {
           type: 'room_heartbeat_ping',
@@ -5122,47 +5300,48 @@
           ts: now
         });
 
-        // Anti-Explosion Protection: If the timer gap was unusually long (e.g. > 12s, meaning
-        // the host's browser tab was frozen/asleep in background or device locked),
-        // DO NOT kick members on this tick! Give all members a fresh ping opportunity to reply.
-        if (tickGap > ROOM_HEARTBEAT_INTERVAL_MS * 2.4) {
-          lastHostHeartbeatReceivedAt = now;
-          return;
-        }
-
-        // Check if any member has not responded within timeout
-        const timedOutUids = [];
+        // Increment missed pings for all other members
         roomMembers.forEach((m, uid) => {
-          if (uid === currentUser.uid) return;
-          const lastSeen = Math.max(m.lastPongAt || 0, m.lastActiveAt || 0, m.lastTypingAt || 0, m.updatedAt || 0, m.joinedAt || 0);
-          if (now - lastSeen > ROOM_MEMBER_TIMEOUT_MS) {
-            timedOutUids.push(uid);
+          if (uid !== currentUser.uid) {
+            m.missedPings = (m.missedPings || 0) + 1;
           }
         });
 
-        timedOutUids.forEach((staleUid) => {
-          removeMemberFromRoom(staleUid, 'timeout');
-          publishJson(topicRoom(activeRoomCode), {
-            type: 'member_timeout_kick',
-            uid: currentUser.uid,
-            targetUid: staleUid,
-            hostUid: currentUser.uid
+        // Check if any member has not responded within timeout (ONLY if outside grace period!)
+        if (now > hostHeartbeatGraceUntil) {
+          const timedOutUids = [];
+          roomMembers.forEach((m, uid) => {
+            if (uid === currentUser.uid) return;
+            const lastSeen = Math.max(m.lastPongAt || 0, m.lastActiveAt || 0, m.lastTypingAt || 0, m.updatedAt || 0, m.joinedAt || 0);
+            if (now - lastSeen > ROOM_MEMBER_TIMEOUT_MS && (m.missedPings || 0) >= 2) {
+              timedOutUids.push(uid);
+            }
           });
-        });
+
+          timedOutUids.forEach((staleUid) => {
+            removeMemberFromRoom(staleUid, 'timeout');
+            publishJson(topicRoom(activeRoomCode), {
+              type: 'member_timeout_kick',
+              uid: currentUser.uid,
+              targetUid: staleUid,
+              hostUid: currentUser.uid
+            });
+          });
+        }
       }
     }, ROOM_HEARTBEAT_INTERVAL_MS);
 
-    // 2. Non-host Member Watchdog: checks if host disappeared (> 18s)
+    // 2. Non-host Member Watchdog: checks if host disappeared (> 13.5s)
     hostWatchdogTimer = setInterval(() => {
       if (!activeRoomCode || !currentUser) return;
       const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
       if (isHost) return;
 
       const now = Date.now();
-      if (now - lastHostHeartbeatReceivedAt > (ROOM_MEMBER_TIMEOUT_MS + 4000)) {
+      if (now - lastHostHeartbeatReceivedAt > (ROOM_MEMBER_TIMEOUT_MS + 2500)) {
         handleHostTimeoutTakeover();
       }
-    }, 4000);
+    }, 2500);
   }
 
   function stopRoomHeartbeat() {
