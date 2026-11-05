@@ -20,10 +20,11 @@
   const ACTION_COOLDOWN_MS = 1000;
   const lastActionTimestamps = new Map();
 
-  function canExecuteAction(actionKey, showWarning = true) {
+  function canExecuteAction(actionKey, showWarning = true, customCooldownMs = null) {
     const now = Date.now();
+    const cooldown = customCooldownMs !== null ? customCooldownMs : ACTION_COOLDOWN_MS;
     const lastTime = lastActionTimestamps.get(actionKey) || 0;
-    if (now - lastTime < ACTION_COOLDOWN_MS) {
+    if (now - lastTime < cooldown) {
       if (showWarning) {
         showToast('⏳ กรุณารอสักครู่ (ป้องกันการกดรัว/สแปม)');
       }
@@ -45,6 +46,10 @@
       if (e.target.closest('#formSetup') || e.target.closest('#viewSetup')) {
         return;
       }
+      // Never block or throttle clear / send button so user can clear text smoothly
+      if (e.target.closest('#btnClearEnter') || e.target.closest('.btn-clear-enter')) {
+        return;
+      }
       // Never block or throttle emote clicking so user can spam emotes freely!
       if (e.target.closest('.btn-emote-item') || e.target.closest('#emotePickerGrid')) {
         return;
@@ -64,7 +69,6 @@
       }
       const clickable = e.target.closest('button, .tag-chip, .btn-sidebar-pill, .btn-picker-tab, .discord-cat-tile, .btn-preset-theme');
       if (clickable) {
-        // Exclude clear enter button from double suppression if user pressed Enter key
         const actionId = clickable.id || clickable.className || 'generic_btn';
         if (!canExecuteAction(`click_${actionId}`, false)) {
           e.preventDefault();
@@ -960,12 +964,13 @@
   let brokerIndex = 0;
   let heartbeatTimer = null;
 
-  // Room Heartbeat & Automatic Host Takeover State (10s Ping / 35s Timeout)
-  const ROOM_HEARTBEAT_INTERVAL_MS = 10000;
-  const ROOM_MEMBER_TIMEOUT_MS = 35000;
+  // Room Heartbeat & Automatic Host Takeover State (5s Ping / 14s Timeout)
+  const ROOM_HEARTBEAT_INTERVAL_MS = 5000;
+  const ROOM_MEMBER_TIMEOUT_MS = 14000;
   let roomHeartbeatTimer = null;
   let hostWatchdogTimer = null;
   let lastHostHeartbeatReceivedAt = 0;
+  let lastHeartbeatTickAt = 0;
 
   // Realtime Live Translation State
   const TRANSLATION_DEBOUNCE_MS = 2000; // 2 seconds debounce as requested
@@ -1675,8 +1680,8 @@
       syncP2PTransferEngine();
     });
 
-    mqttClient.on('error', () => {
-      brokerIndex = (brokerIndex + 1) % BROKER_URLS.length;
+    mqttClient.on('error', (err) => {
+      console.warn('MQTT Connection notice:', err ? err.message : err);
     });
 
     mqttClient.on('offline', () => {
@@ -1706,7 +1711,7 @@
       }
     });
 
-    // Periodic heartbeat so friends & room radar know we're still online
+    // Periodic heartbeat so friends & room radar know we're still online (every 10s)
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = setInterval(() => {
       if (mqttClient && mqttClient.connected && currentUser) {
@@ -1715,11 +1720,11 @@
           broadcastActiveRoomToDirectory();
         }
       }
-      // Mark friends offline if no heartbeat for 75s
+      // Mark friends offline if no heartbeat for 60s
       const now = Date.now();
       let changed = false;
       friendsMap.forEach((f) => {
-        if (f.online && f.lastSeen && now - f.lastSeen > 75000) {
+        if (f.online && f.lastSeen && now - f.lastSeen > 60000) {
           f.online = false;
           f.inRoom = false;
           f.roomCode = null;
@@ -1728,16 +1733,16 @@
       });
       if (changed) renderFriendsList();
 
-      // Clean up stale discovered rooms older than 65s
+      // Clean up stale discovered rooms older than 35s
       let roomsChanged = false;
       discoveredRooms.forEach((r, code) => {
-        if (now - r.updatedAt > 65000) {
+        if (now - r.updatedAt > 35000) {
           discoveredRooms.delete(code);
           roomsChanged = true;
         }
       });
       if (roomsChanged && !activeRoomCode) renderDiscoveredRooms();
-    }, 22000);
+    }, 10000);
   }
 
   function publishJson(topic, payload) {
@@ -1804,6 +1809,12 @@
   function broadcastActiveRoomToDirectory() {
     if (!currentUser || !activeRoomCode || !isRoomPublic) return;
 
+    // If host is not yet marked but we are alone in the room, claim host role
+    if (!activeRoomHostUid && roomMembers.size <= 1) {
+      activeRoomHostUid = currentUser.uid;
+      updateRoomHostUi();
+    }
+
     // Strict Host Rule: ONLY the room host may announce room information to the directory!
     const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
     if (!isHost) {
@@ -1861,23 +1872,15 @@
       const announceHostUid = sanitizeUid(data.hostUid);
       const existing = discoveredRooms.get(cleanCode);
 
-      // Lock to room host: If this room is already tracked and host is established,
-      // prevent any non-host announcement from swapping hostName or hostAvatar
       let finalHostUid = announceHostUid;
       let finalHostName = sanitizeUsername(data.hostName || 'ไม่ระบุชื่อ', 'ไม่ระบุชื่อ');
       let finalHostAvatar = sanitizeAvatarUrl(data.hostAvatar, PRESET_AVATARS[0]);
 
-      if (existing && existing.hostUid && announceHostUid && existing.hostUid !== announceHostUid) {
-        if (activeRoomCode && activeRoomCode === cleanCode && activeRoomHostUid) {
-          const hostInfo = getRoomHostInfo();
-          finalHostUid = hostInfo.hostUid;
-          finalHostName = hostInfo.hostName;
-          finalHostAvatar = hostInfo.hostAvatar;
-        } else {
-          finalHostUid = existing.hostUid;
-          finalHostName = existing.hostName;
-          finalHostAvatar = existing.hostAvatar;
-        }
+      if (activeRoomCode && activeRoomCode === cleanCode && activeRoomHostUid) {
+        const hostInfo = getRoomHostInfo();
+        finalHostUid = hostInfo.hostUid;
+        finalHostName = hostInfo.hostName;
+        finalHostAvatar = hostInfo.hostAvatar;
       }
 
       discoveredRooms.set(cleanCode, {
@@ -2581,11 +2584,18 @@
         }
       }
       if (currentUser && currentUser.uid !== activeRoomHostUid) {
-        // Feature 2: Jitter random delay (0 to 1.2s) to prevent packet storm
-        const jitterMs = Math.floor(Math.random() * 1200);
+        // Fast, snappy jitter (50ms to 350ms) to prevent packet storm
+        const jitterMs = Math.floor(Math.random() * 300) + 50;
         setTimeout(() => {
           if (!activeRoomCode || !currentUser || !activeRoomHostUid) return;
-          // Feature 1: Unicast Pong directly to Host's personal inbox!
+          // 1. Broadcast Pong directly to room topic so host & room peers receive it reliably!
+          publishJson(topicRoom(activeRoomCode), {
+            type: 'room_heartbeat_pong',
+            uid: currentUser.uid,
+            roomCode: activeRoomCode,
+            ts: Date.now()
+          });
+          // 2. Also send directly to host inbox as redundant fallback
           publishJson(topicInbox(activeRoomHostUid), {
             type: 'room_heartbeat_pong',
             uid: currentUser.uid,
@@ -2599,8 +2609,9 @@
 
     // Room Heartbeat Pong (From room member responding to Host)
     if (data.type === 'room_heartbeat_pong') {
-      if (cleanSenderUid && roomMembers.has(cleanSenderUid)) {
-        const m = roomMembers.get(cleanSenderUid);
+      const pongSender = sanitizeUid(data.uid || cleanSenderUid);
+      if (pongSender && roomMembers.has(pongSender)) {
+        const m = roomMembers.get(pongSender);
         m.lastPongAt = Date.now();
       }
       return;
@@ -2661,7 +2672,8 @@
       } else if (data.isHost) {
         activeRoomHostUid = cleanSenderUid;
       } else if (!activeRoomHostUid) {
-        activeRoomHostUid = cleanSenderUid;
+        // Incumbent member already in room is host over newcomer
+        activeRoomHostUid = currentUser.uid;
       }
       if (data.sortMode && ['activity', 'length', 'length_1s', 'stable'].includes(data.sortMode)) {
         activeRoomSortMode = data.sortMode;
@@ -2737,8 +2749,10 @@
 
       if (data.hostUid) {
         activeRoomHostUid = sanitizeUid(data.hostUid);
+        updateRoomHostUi();
       } else if (data.isHost) {
         activeRoomHostUid = cleanSenderUid;
+        updateRoomHostUi();
       }
       if (cleanSenderUid === activeRoomHostUid) {
         lastHostHeartbeatReceivedAt = now;
@@ -2826,7 +2840,28 @@
     }
 
     if (data.type === 'member_leave') {
-      removeMemberFromRoom(cleanSenderUid, 'leave');
+      const leavingUid = cleanSenderUid;
+      removeMemberFromRoom(leavingUid, 'leave');
+
+      // Immediate Host Handoff if departing member was host
+      if (data.wasHost && data.newHostUid) {
+        const newHost = sanitizeUid(data.newHostUid);
+        if (newHost) {
+          activeRoomHostUid = newHost;
+          lastHostHeartbeatReceivedAt = Date.now();
+          updateRoomHostUi();
+          reorderLiveCards();
+          renderAllLiveCards();
+          if (currentUser && newHost === currentUser.uid) {
+            showToast('👑 หัวห้องเดิมออกจากห้อง สิทธิ์หัวห้องถูกส่งต่อมายังคุณแล้ว');
+            syncHostRoomOrder();
+            broadcastActiveRoomToDirectory();
+          } else {
+            const hName = sanitizeUsername(data.newHostName || newHost, newHost);
+            showToast(`👑 หัวห้องเดิมออกจากห้อง สิทธิ์หัวห้องถูกส่งต่อไปยัง ${hName}`);
+          }
+        }
+      }
       return;
     }
 
@@ -4036,8 +4071,8 @@
     });
   }
 
-  // Cleanly notify room & friends if tab is closed
-  window.addEventListener('beforeunload', () => {
+  // Cleanly notify room & friends if tab is closed or navigated away
+  const notifyLeaveOnUnload = () => {
     if (window.P2PFileTransfer) {
       window.P2PFileTransfer.cancelActiveTransfer('ปิดแท็บ การส่งไฟล์ถูกยกเลิก');
     }
@@ -4048,14 +4083,28 @@
       });
     }
     broadcastMyPresence(false);
-  });
+  };
+  window.addEventListener('beforeunload', notifyLeaveOnUnload);
+  window.addEventListener('pagehide', notifyLeaveOnUnload);
 
   // Resume & ping immediately when browser tab or phone screen wakes up
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && activeRoomCode && currentUser) {
       lastHostHeartbeatReceivedAt = Date.now();
-      if (activeRoomHostUid && activeRoomHostUid !== currentUser.uid) {
-        publishJson(topicInbox(activeRoomHostUid), {
+      lastHeartbeatTickAt = Date.now();
+      const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
+
+      if (isHost) {
+        // Host immediately pings room on waking up so members know host is alive
+        publishJson(topicRoom(activeRoomCode), {
+          type: 'room_heartbeat_ping',
+          uid: currentUser.uid,
+          hostUid: currentUser.uid,
+          ts: Date.now()
+        });
+      } else if (activeRoomHostUid) {
+        // Non-host immediately pongs room on waking up
+        publishJson(topicRoom(activeRoomCode), {
           type: 'room_heartbeat_pong',
           uid: currentUser.uid,
           roomCode: activeRoomCode,
@@ -4113,12 +4162,17 @@
     });
   }
 
+  function performRoomDirectoryScan() {
+    requestDirectoryScan();
+    setTimeout(() => requestDirectoryScan(), 300);
+    showToast('📡 กำลังสแกนหาห้องที่มี Tag ตรงกับคุณ...');
+    scheduleRenderDiscoveredRooms();
+    setTimeout(() => renderDiscoveredRooms(), 400);
+    setTimeout(() => renderDiscoveredRooms(), 850);
+  }
+
   if (btnSidebarScanRooms) {
-    btnSidebarScanRooms.addEventListener('click', () => {
-      requestDirectoryScan();
-      renderDiscoveredRooms();
-      showToast('📡 สแกนหาห้องแชทที่เปิดอยู่แล้ว');
-    });
+    btnSidebarScanRooms.addEventListener('click', performRoomDirectoryScan);
   }
 
   // --- Friend Request & Acceptance System ---
@@ -4405,7 +4459,7 @@
   function inviteFriendToChat(targetUid) {
     if (!currentUser) return;
     if (!activeRoomCode) {
-      joinRoomByCode(generateRoomCode());
+      joinRoomByCode(generateRoomCode(), true);
     }
     publishJson(topicInbox(targetUid), {
       type: 'room_invite',
@@ -4450,16 +4504,43 @@
     memberTranslateTimers.forEach((timer) => clearTimeout(timer));
     memberTranslateTimers.clear();
     memberActiveTranslations.clear();
+
+    const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
+    roomMembers.delete(currentUser.uid);
+
+    let nextHostUid = null;
+    let nextHostName = null;
+    if (isHost && roomMembers.size > 0) {
+      const remaining = Array.from(roomMembers.values()).sort(
+        (a, b) => (a.joinedAt || 0) - (b.joinedAt || 0) || a.uid.localeCompare(b.uid)
+      );
+      if (remaining[0]) {
+        nextHostUid = remaining[0].uid;
+        nextHostName = remaining[0].username;
+      }
+    }
+
     publishJson(topicRoom(oldCode), {
       type: 'member_leave',
-      uid: currentUser.uid
+      uid: currentUser.uid,
+      wasHost: isHost,
+      newHostUid: nextHostUid,
+      newHostName: nextHostName
     });
-    if (roomMembers.size <= 1) {
+
+    if (roomMembers.size === 0) {
       broadcastRoomClosedToDirectory(oldCode);
       discoveredRooms.delete(oldCode);
     }
+
     if (mqttClient && mqttClient.connected) {
-      mqttClient.unsubscribe(topicRoom(oldCode));
+      setTimeout(() => {
+        try {
+          if (mqttClient && mqttClient.connected) {
+            mqttClient.unsubscribe(topicRoom(oldCode));
+          }
+        } catch (e) {}
+      }, 150);
     }
     activeRoomCode = null;
     activeRoomHostUid = null;
@@ -4480,7 +4561,8 @@
     }
 
     activeRoomCode = clean;
-    if (isCreator) {
+    // If explicitly creator, or room is currently empty, current user is initially host
+    if (isCreator || roomMembers.size === 0 || !activeRoomHostUid) {
       activeRoomHostUid = currentUser.uid;
       activeRoomSortMode = 'activity';
     }
@@ -4536,11 +4618,7 @@
   btnEmptyCreateRoom.addEventListener('click', createNewRoom);
 
   if (btnScanRooms) {
-    btnScanRooms.addEventListener('click', () => {
-      requestDirectoryScan();
-      renderDiscoveredRooms();
-      showToast('📡 กำลังสแกนหาห้องที่มี Tag ตรงกับคุณ...');
-    });
+    btnScanRooms.addEventListener('click', performRoomDirectoryScan);
   }
 
   if (inputFilterRoomsTag) {
@@ -4550,7 +4628,14 @@
   }
 
   if (btnAutoMatchRoom) {
-    btnAutoMatchRoom.addEventListener('click', () => {
+    btnAutoMatchRoom.addEventListener('click', async () => {
+      // First, trigger a quick scan if discoveredRooms is empty
+      if (discoveredRooms.size === 0) {
+        requestDirectoryScan();
+        showToast('📡 กำลังค้นหาห้องที่มี Tag ตรงกับคุณ...');
+        await new Promise((r) => setTimeout(r, 650));
+      }
+
       const scored = Array.from(discoveredRooms.values())
         .map((r) => ({ ...r, ...calculateTagMatch(r.tags) }))
         .sort((a, b) => b.matchedTags.length - a.matchedTags.length);
@@ -5017,14 +5102,18 @@
     if (!activeRoomCode || !currentUser) return;
 
     lastHostHeartbeatReceivedAt = Date.now();
+    lastHeartbeatTickAt = Date.now();
 
-    // 1. Host Ping & Stale Member Timeout Checker (runs every 10s)
+    // 1. Host Ping & Stale Member Timeout Checker (runs every 5s)
     roomHeartbeatTimer = setInterval(() => {
       if (!activeRoomCode || !currentUser) return;
       const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
 
       if (isHost) {
         const now = Date.now();
+        const tickGap = now - lastHeartbeatTickAt;
+        lastHeartbeatTickAt = now;
+
         // Send heartbeat ping to room
         publishJson(topicRoom(activeRoomCode), {
           type: 'room_heartbeat_ping',
@@ -5032,6 +5121,14 @@
           hostUid: currentUser.uid,
           ts: now
         });
+
+        // Anti-Explosion Protection: If the timer gap was unusually long (e.g. > 12s, meaning
+        // the host's browser tab was frozen/asleep in background or device locked),
+        // DO NOT kick members on this tick! Give all members a fresh ping opportunity to reply.
+        if (tickGap > ROOM_HEARTBEAT_INTERVAL_MS * 2.4) {
+          lastHostHeartbeatReceivedAt = now;
+          return;
+        }
 
         // Check if any member has not responded within timeout
         const timedOutUids = [];
@@ -5055,17 +5152,17 @@
       }
     }, ROOM_HEARTBEAT_INTERVAL_MS);
 
-    // 2. Non-host Member Watchdog: checks if host disappeared (> 35s)
+    // 2. Non-host Member Watchdog: checks if host disappeared (> 18s)
     hostWatchdogTimer = setInterval(() => {
       if (!activeRoomCode || !currentUser) return;
       const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
       if (isHost) return;
 
       const now = Date.now();
-      if (now - lastHostHeartbeatReceivedAt > ROOM_MEMBER_TIMEOUT_MS) {
+      if (now - lastHostHeartbeatReceivedAt > (ROOM_MEMBER_TIMEOUT_MS + 4000)) {
         handleHostTimeoutTakeover();
       }
-    }, 5000);
+    }, 4000);
   }
 
   function stopRoomHeartbeat() {
@@ -5457,18 +5554,43 @@
 
     try {
       const apiPrefix = window.location.protocol === 'file:' ? 'http://localhost:3000' : '';
-      const res = await fetch(`${apiPrefix}/api/translate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: cleanText,
-          target: targetLanguage,
-          source: 'auto'
-        })
-      });
+      let result = null;
+      try {
+        const res = await fetch(`${apiPrefix}/api/translate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: cleanText,
+            target: targetLanguage,
+            source: 'auto'
+          })
+        });
+        if (res.ok) {
+          result = await res.json();
+        }
+      } catch (backendErr) {
+        // Fallback to direct client-side translate endpoint below
+      }
 
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const result = await res.json();
+      // If backend API is not available (e.g. GitHub Pages or static host), fallback directly to Google Translate
+      if (!result || !result.success || !result.translatedText) {
+        const gtxUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(targetLanguage)}&dt=t&q=${encodeURIComponent(cleanText)}`;
+        const gtxRes = await fetch(gtxUrl);
+        if (gtxRes.ok) {
+          const gtxData = await gtxRes.json();
+          const translatedText = Array.isArray(gtxData[0])
+            ? gtxData[0].map((item) => (item && item[0] ? item[0] : '')).join('')
+            : '';
+          const detectedSource = (gtxData[2] && typeof gtxData[2] === 'string') ? gtxData[2] : 'auto';
+          result = {
+            success: true,
+            translatedText,
+            detectedSource,
+            originalText: cleanText,
+            target: targetLanguage
+          };
+        }
+      }
 
       if (result && result.success && result.translatedText) {
         clientTranslationCache.set(cacheKey, result);
@@ -6830,7 +6952,7 @@
 
   function triggerEnterClear() {
     if (!currentUser || !activeRoomCode) return;
-    if (!canExecuteAction('enter_clear', false)) return;
+    if (!canExecuteAction('enter_clear', false, 150)) return;
     stopTypingSound();
     if (typingBroadcastTimer) {
       clearTimeout(typingBroadcastTimer);
@@ -8254,13 +8376,15 @@
     activeStreamerUsername = null;
     updateScreenShareButtonState();
     reorderLiveCards();
-    const myMem = roomMembers.get(currentUser.uid);
-    if (myMem) {
-      updateSingleCardContent(currentUser.uid, myMem.currentText, myMem.image);
+    if (currentUser) {
+      const myMem = roomMembers.get(currentUser.uid);
+      if (myMem) {
+        updateSingleCardContent(currentUser.uid, myMem.currentText, myMem.image);
+      }
     }
     renderAllLiveCards();
 
-    if (wasStreamer && activeRoomCode) {
+    if (wasStreamer && activeRoomCode && currentUser) {
       publishJson(topicRoom(activeRoomCode), {
         type: 'stream_stopped',
         uid: currentUser.uid,
