@@ -951,7 +951,7 @@
   let previousMemberRanks = new Map(); // Map<uid, number> for hysteresis rank tracking
   let roomSortIntervalTimer = null;
   let isRoomPublic = true; // Whether active room is discoverable via Tag Matchmaking
-  let roomMembers = new Map(); // Map<uid, { uid, username, avatar, tags, currentText, image, updatedAt }>
+  let roomMembers = new Map(); // Map<uid, { uid, username, avatar, tags, currentText, image, updatedAt, joinedAt, lastPongAt, lastActiveAt }>
   let discoveredRooms = new Map(); // Map<roomCode, { roomCode, hostName, hostAvatar, memberCount, tags, updatedAt }>
   let currentImage = null; // Base64 data URL for live image typing
   let pendingInviteRoomCode = null;
@@ -959,6 +959,13 @@
   let mqttClient = null;
   let brokerIndex = 0;
   let heartbeatTimer = null;
+
+  // Room Heartbeat & Automatic Host Takeover State (10s Ping / 35s Timeout)
+  const ROOM_HEARTBEAT_INTERVAL_MS = 10000;
+  const ROOM_MEMBER_TIMEOUT_MS = 35000;
+  let roomHeartbeatTimer = null;
+  let hostWatchdogTimer = null;
+  let lastHostHeartbeatReceivedAt = 0;
 
   // Realtime Live Translation State
   const TRANSLATION_DEBOUNCE_MS = 2000; // 2 seconds debounce as requested
@@ -1025,6 +1032,201 @@
   let streamAudioCtx = null;
   let streamGainNode = null;
   let streamAudioSourceNode = null;
+
+  // =========================================================================
+  // --- Live Typing & Notification Sound Effects Engine (Web Audio API) ---
+  // =========================================================================
+  const STORAGE_KEY_SOUND_GLOBAL = 'livetype_sound_global_v1';
+  const STORAGE_KEY_MUTED_MEMBERS = 'livetype_muted_members_v1';
+
+  let isGlobalSoundEnabled = localStorage.getItem(STORAGE_KEY_SOUND_GLOBAL) !== 'false';
+  const mutedMemberUids = new Set(
+    (() => {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY_MUTED_MEMBERS);
+        return saved ? JSON.parse(saved) : [];
+      } catch (e) {
+        return [];
+      }
+    })()
+  );
+
+  function saveMutedMembers() {
+    try {
+      localStorage.setItem(STORAGE_KEY_MUTED_MEMBERS, JSON.stringify(Array.from(mutedMemberUids)));
+    } catch (e) {}
+  }
+
+  let sfxAudioCtx = null;
+  function getSfxAudioCtx() {
+    if (!sfxAudioCtx) {
+      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtxClass) {
+        sfxAudioCtx = new AudioCtxClass();
+      }
+    }
+    if (sfxAudioCtx && sfxAudioCtx.state === 'suspended') {
+      sfxAudioCtx.resume().catch(() => {});
+    }
+    return sfxAudioCtx;
+  }
+
+  // --- Keyboard Typing Sound File Engine (Looped playback with idle auto-stop) ---
+  const TYPING_SOUND_SRC = './sound/keyboard-typing-sound-effect.mp3';
+  let typingAudio = null;
+  let typingStopTimer = null;
+  let isTypingAudioPlaying = false;
+
+  function initTypingAudio() {
+    if (!typingAudio) {
+      typingAudio = new Audio(TYPING_SOUND_SRC);
+      typingAudio.loop = true;
+      typingAudio.preload = 'auto';
+    }
+    return typingAudio;
+  }
+
+  function startTypingSound(senderUid) {
+    if (!isGlobalSoundEnabled) return;
+    if (senderUid && mutedMemberUids.has(senderUid)) return;
+
+    const audio = initTypingAudio();
+
+    // Reset auto-stop timer because user is still actively typing!
+    if (typingStopTimer) {
+      clearTimeout(typingStopTimer);
+      typingStopTimer = null;
+    }
+
+    // If not currently playing, start fresh from the very beginning (0s)
+    if (!isTypingAudioPlaying) {
+      audio.currentTime = 0;
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            isTypingAudioPlaying = true;
+          })
+          .catch(() => {
+            isTypingAudioPlaying = false;
+          });
+      } else {
+        isTypingAudioPlaying = true;
+      }
+    }
+
+    // Auto-stop when typing pauses for > 420ms
+    typingStopTimer = setTimeout(() => {
+      stopTypingSound();
+    }, 420);
+  }
+
+  function stopTypingSound() {
+    if (typingStopTimer) {
+      clearTimeout(typingStopTimer);
+      typingStopTimer = null;
+    }
+    if (typingAudio && isTypingAudioPlaying) {
+      try {
+        typingAudio.pause();
+        typingAudio.currentTime = 0;
+      } catch (e) {}
+      isTypingAudioPlaying = false;
+    }
+  }
+
+  // --- Audio Effects Engine (File download & Live stream notifications) ---
+  const SOUND_FILE_REQUEST_SRC = './sound/download-notification-sound.mp3';
+  const SOUND_LIVE_STREAM_SRC = './sound/live-sound-notification.mp3';
+
+  let fileRequestAudio = null;
+  function getFileRequestAudio() {
+    if (!fileRequestAudio) {
+      fileRequestAudio = new Audio(SOUND_FILE_REQUEST_SRC);
+      fileRequestAudio.preload = 'auto';
+    }
+    return fileRequestAudio;
+  }
+
+  let liveStreamAudio = null;
+  function getLiveStreamAudio() {
+    if (!liveStreamAudio) {
+      liveStreamAudio = new Audio(SOUND_LIVE_STREAM_SRC);
+      liveStreamAudio.preload = 'auto';
+    }
+    return liveStreamAudio;
+  }
+
+  // Preload audio files as soon as user interacts or page starts
+  function preloadAllSoundEffects() {
+    try {
+      initTypingAudio();
+      getFileRequestAudio();
+      getLiveStreamAudio();
+    } catch (e) {}
+  }
+  window.addEventListener('pointerdown', preloadAllSoundEffects, { once: true });
+  window.addEventListener('keydown', preloadAllSoundEffects, { once: true });
+
+  // Notification sound handler (File download, Live stream, and Media/Emote chime)
+  let lastNotificationSoundTime = 0;
+  function playNotificationSound(type = 'general', senderUid = null) {
+    if (!isGlobalSoundEnabled) return;
+    if (senderUid && mutedMemberUids.has(senderUid)) return;
+
+    if (type === 'file') {
+      try {
+        const audio = getFileRequestAudio();
+        audio.currentTime = 0;
+        const playPromise = audio.play();
+        if (playPromise !== undefined) playPromise.catch(() => {});
+      } catch (e) {}
+      return;
+    }
+
+    if (type === 'live') {
+      try {
+        const audio = getLiveStreamAudio();
+        audio.currentTime = 0;
+        const playPromise = audio.play();
+        if (playPromise !== undefined) playPromise.catch(() => {});
+      } catch (e) {}
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastNotificationSoundTime < 300) return;
+    lastNotificationSoundTime = now;
+
+    try {
+      const ctx = getSfxAudioCtx();
+      if (!ctx) return;
+      const t = ctx.currentTime;
+
+      // Playful pop for GIF/Emote
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+
+      osc1.type = 'sine';
+      osc2.type = 'triangle';
+      osc1.frequency.setValueAtTime(440, t); // A4
+      osc1.frequency.exponentialRampToValueAtTime(880, t + 0.08); // A5
+      osc2.frequency.setValueAtTime(659.25, t); // E5
+
+      gainNode.gain.setValueAtTime(0.2, t);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+
+      osc1.connect(gainNode);
+      osc2.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      osc1.start(t);
+      osc2.start(t);
+      osc1.stop(t + 0.18);
+      osc2.stop(t + 0.18);
+    } catch (e) {}
+  }
 
   const RTC_CONFIG = {
     iceServers: [
@@ -1192,6 +1394,11 @@
   const btnAcceptInvite = document.getElementById('btnAcceptInvite');
   const btnDeclineInvite = document.getElementById('btnDeclineInvite');
   const toastContainer = document.getElementById('toastContainer');
+
+  // Global Sound Toggle Elements
+  const btnToggleGlobalSound = document.getElementById('btnToggleGlobalSound');
+  const globalSoundIcon = document.getElementById('globalSoundIcon');
+  const globalSoundText = document.getElementById('globalSoundText');
 
   // Theme Customizer Elements
   const btnOpenTheme = document.getElementById('btnOpenTheme');
@@ -1390,6 +1597,7 @@
           }
         },
         showToast,
+        playNotificationSound,
         rtcConfig: RTC_CONFIG
       });
     }
@@ -1597,7 +1805,7 @@
     if (!currentUser || !activeRoomCode || !isRoomPublic) return;
 
     // Strict Host Rule: ONLY the room host may announce room information to the directory!
-    const isHost = Boolean(!activeRoomHostUid || activeRoomHostUid === currentUser.uid);
+    const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
     if (!isHost) {
       // Non-host members must NEVER broadcast directory announcements, preventing room name swap flickers!
       return;
@@ -1638,7 +1846,7 @@
     // 1. Someone is scanning for active rooms -> ONLY room host replies
     if (data.type === 'room_query') {
       const fromUid = sanitizeUid(data.fromUid);
-      const isHost = Boolean(!activeRoomHostUid || activeRoomHostUid === currentUser?.uid);
+      const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser?.uid);
       if (activeRoomCode && isRoomPublic && isHost && currentUser && fromUid !== currentUser.uid) {
         broadcastActiveRoomToDirectory();
       }
@@ -1681,7 +1889,7 @@
         tags: Array.isArray(data.tags) ? data.tags.slice(0, 8).map(sanitizeTag).filter(Boolean) : (existing ? existing.tags : []),
         updatedAt: Date.now()
       });
-      renderDiscoveredRooms();
+      scheduleRenderDiscoveredRooms();
       return;
     }
 
@@ -1690,9 +1898,18 @@
       const cleanCode = sanitizeRoomCode(data.roomCode);
       if (cleanCode && discoveredRooms.has(cleanCode)) {
         discoveredRooms.delete(cleanCode);
-        renderDiscoveredRooms();
+        scheduleRenderDiscoveredRooms();
       }
     }
+  }
+
+  let renderDiscoveredRoomsDebounceTimer = null;
+  function scheduleRenderDiscoveredRooms() {
+    if (renderDiscoveredRoomsDebounceTimer) clearTimeout(renderDiscoveredRoomsDebounceTimer);
+    renderDiscoveredRoomsDebounceTimer = setTimeout(() => {
+      renderDiscoveredRoomsDebounceTimer = null;
+      renderDiscoveredRooms();
+    }, 120);
   }
 
   function calculateTagMatch(roomTags) {
@@ -1717,7 +1934,6 @@
 
   function renderDiscoveredRooms() {
     if (!discoverRoomsList) return;
-    discoverRoomsList.innerHTML = '';
 
     const filterKeyword = (inputFilterRoomsTag && inputFilterRoomsTag.value || '').trim().toLowerCase();
     const myTagsLower = new Set(Array.from(selectedTags).map((t) => t.toLowerCase()));
@@ -1740,19 +1956,36 @@
       });
 
     if (scoredRooms.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'friend-empty';
-      empty.innerHTML =
-        'ยังไม่มีห้องสาธารณะที่เปิดอยู่ตอนนี้ หรือไม่มีห้องที่ตรงกับคำค้นหา<br>กด <strong>"✨ สร้างห้องแชททันที"</strong> เพื่อเปิดห้องด้วย Tag ของคุณให้คนอื่นเข้ามาคุยได้เลย!';
-      discoverRoomsList.appendChild(empty);
+      discoverRoomsList.innerHTML = `
+        <div class="friend-empty">
+          ยังไม่มีห้องสาธารณะที่เปิดอยู่ตอนนี้ หรือไม่มีห้องที่ตรงกับคำค้นหา<br>
+          กด <strong>"✨ สร้างห้องแชททันที"</strong> เพื่อเปิดห้องด้วย Tag ของคุณให้คนอื่นเข้ามาคุยได้เลย!
+        </div>
+      `;
       renderSidebarChatRoomsList([]);
       return;
     }
 
-    scoredRooms.forEach((room) => {
-      const card = document.createElement('div');
-      card.className = `discover-room-card ${room.matchCount > 0 ? 'high-match' : ''}`;
+    // Remove empty placeholder if present
+    const emptyPlaceholder = discoverRoomsList.querySelector('.friend-empty');
+    if (emptyPlaceholder) {
+      emptyPlaceholder.remove();
+    }
 
+    const currentRoomCodes = new Set(scoredRooms.map((r) => r.roomCode));
+
+    // Remove cards for rooms that are no longer in directory
+    discoverRoomsList.querySelectorAll('.discover-room-card').forEach((card) => {
+      const code = card.getAttribute('data-room-code');
+      if (!currentRoomCodes.has(code)) {
+        card.remove();
+      }
+    });
+
+    let newCardStaggerIndex = 0;
+
+    scoredRooms.forEach((room, index) => {
+      const safeRoomCode = escapeHtml(sanitizeRoomCode(room.roomCode));
       let currentHostName = room.hostName;
       let currentHostAvatar = room.hostAvatar;
       if (activeRoomCode && room.roomCode === activeRoomCode) {
@@ -1760,46 +1993,85 @@
         currentHostName = hostInfo.hostName;
         currentHostAvatar = hostInfo.hostAvatar;
       }
-
-      const matchBadgeHtml =
-        room.matchCount > 0
-          ? `<span class="match-score-pill">🎯 ตรงกับคุณ ${Number(room.matchCount) || 0} Tag (${Number(room.score) || 0}%)</span>`
-          : `<span class="typing-status-pill">ห้องทั่วไป</span>`;
-
-      const tagsHtml =
-        room.tags && room.tags.length > 0
-          ? room.tags
-              .map((t) => {
-                const isMatch = myTagsLower.has(String(t).toLowerCase());
-                return `<span class="tag-badge-mini ${isMatch ? 'matched' : ''}">${isMatch ? '✓ ' : ''}${escapeHtml(t)}</span>`;
-              })
-              .join('')
-          : '<span class="tag-badge-mini">ไม่มี Tag</span>';
-
       const safeHostAvatar = escapeHtml(sanitizeAvatarUrl(currentHostAvatar, PRESET_AVATARS[0]));
-      const safeRoomCode = escapeHtml(sanitizeRoomCode(room.roomCode));
       const safeMemberCount = Math.max(1, parseInt(room.memberCount, 10) || 1);
 
-      card.innerHTML = `
-        <div class="discover-room-info">
-          <div class="discover-room-top">
-            <img src="${safeHostAvatar}" alt="Host" class="avatar-xs" />
-            <span class="discover-room-title">ห้องของ <span class="host-name-text"></span></span>
-            <span class="mono" style="font-size:0.75rem; color:#a5b4fc;">#${safeRoomCode}</span>
-            <span class="member-count-badge" style="font-size:0.7rem; padding:2px 8px;">👥 ${safeMemberCount} คน</span>
-            ${matchBadgeHtml}
+      // Check if this room card ALREADY exists in the list
+      let card = discoverRoomsList.querySelector(`.discover-room-card[data-room-code="${safeRoomCode}"]`);
+
+      if (card) {
+        // --- IN-PLACE UPDATE (No animation replay, zero stutter!) ---
+        card.classList.remove('stagger-in');
+        card.style.animationDelay = '';
+
+        const memberBadge = card.querySelector('.member-count-badge');
+        if (memberBadge) {
+          const newText = `👥 ${safeMemberCount} คน`;
+          if (memberBadge.textContent !== newText) {
+            memberBadge.textContent = newText;
+          }
+        }
+
+        const hostNameText = card.querySelector('.host-name-text');
+        if (hostNameText && hostNameText.textContent !== currentHostName) {
+          hostNameText.textContent = currentHostName;
+        }
+
+        const avatarImg = card.querySelector('.discover-room-top img');
+        if (avatarImg && avatarImg.getAttribute('src') !== safeHostAvatar) {
+          avatarImg.src = safeHostAvatar;
+        }
+
+        // Keep DOM order synchronized
+        const currentChildAtPos = discoverRoomsList.children[index];
+        if (currentChildAtPos !== card) {
+          discoverRoomsList.insertBefore(card, currentChildAtPos || null);
+        }
+      } else {
+        // --- BRAND NEW ROOM (Play smooth staggered pop-in animation!) ---
+        card = document.createElement('div');
+        card.setAttribute('data-room-code', safeRoomCode);
+        card.className = `discover-room-card ${room.matchCount > 0 ? 'high-match' : ''} stagger-in`;
+        card.style.animationDelay = `${(newCardStaggerIndex * 0.1).toFixed(2)}s`;
+        newCardStaggerIndex++;
+
+        const matchBadgeHtml =
+          room.matchCount > 0
+            ? `<span class="match-score-pill">🎯 ตรงกับคุณ ${Number(room.matchCount) || 0} Tag (${Number(room.score) || 0}%)</span>`
+            : `<span class="typing-status-pill">ห้องทั่วไป</span>`;
+
+        const tagsHtml =
+          room.tags && room.tags.length > 0
+            ? room.tags
+                .map((t) => {
+                  const isMatch = myTagsLower.has(String(t).toLowerCase());
+                  return `<span class="tag-badge-mini ${isMatch ? 'matched' : ''}">${isMatch ? '✓ ' : ''}${escapeHtml(t)}</span>`;
+                })
+                .join('')
+            : '<span class="tag-badge-mini">ไม่มี Tag</span>';
+
+        card.innerHTML = `
+          <div class="discover-room-info">
+            <div class="discover-room-top">
+              <img src="${safeHostAvatar}" alt="Host" class="avatar-xs" />
+              <span class="discover-room-title">ห้องของ <span class="host-name-text"></span></span>
+              <span class="mono" style="font-size:0.75rem; color:#a5b4fc;">#${safeRoomCode}</span>
+              <span class="member-count-badge" style="font-size:0.7rem; padding:2px 8px;">👥 ${safeMemberCount} คน</span>
+              ${matchBadgeHtml}
+            </div>
+            <div class="discover-room-tags">${tagsHtml}</div>
           </div>
-          <div class="discover-room-tags">${tagsHtml}</div>
-        </div>
-        <button type="button" class="btn btn-primary btn-sm btn-join-discovered">เข้าร่วม</button>
-      `;
+          <button type="button" class="btn btn-primary btn-sm btn-join-discovered">เข้าร่วม</button>
+        `;
 
-      card.querySelector('.host-name-text').textContent = currentHostName;
-      card.querySelector('.btn-join-discovered').addEventListener('click', () => {
-        joinRoomByCode(room.roomCode);
-      });
+        card.querySelector('.host-name-text').textContent = currentHostName;
+        card.querySelector('.btn-join-discovered').addEventListener('click', () => {
+          joinRoomByCode(room.roomCode);
+        });
 
-      discoverRoomsList.appendChild(card);
+        const currentChildAtPos = discoverRoomsList.children[index];
+        discoverRoomsList.insertBefore(card, currentChildAtPos || null);
+      }
     });
 
     renderSidebarChatRoomsList(scoredRooms);
@@ -1807,7 +2079,6 @@
 
   function renderSidebarChatRoomsList(scoredRooms) {
     if (!sidebarRoomsList) return;
-    sidebarRoomsList.innerHTML = '';
 
     const list =
       scoredRooms ||
@@ -1824,11 +2095,26 @@
       return;
     }
 
-    list.forEach((room) => {
-      const isCurrent = activeRoomCode && room.roomCode === activeRoomCode;
-      const item = document.createElement('div');
-      item.className = 'friend-item';
+    const emptyPlaceholder = sidebarRoomsList.querySelector('.friend-empty');
+    if (emptyPlaceholder) {
+      emptyPlaceholder.remove();
+    }
 
+    const currentRoomCodes = new Set(list.map((r) => r.roomCode));
+
+    // Remove old items
+    sidebarRoomsList.querySelectorAll('.friend-item[data-room-code]').forEach((item) => {
+      const code = item.getAttribute('data-room-code');
+      if (!currentRoomCodes.has(code)) {
+        item.remove();
+      }
+    });
+
+    let newSidebarStaggerIndex = 0;
+
+    list.forEach((room, index) => {
+      const safeRoomCode = escapeHtml(sanitizeRoomCode(room.roomCode));
+      const isCurrent = activeRoomCode && room.roomCode === activeRoomCode;
       let currentHostName = room.hostName;
       let currentHostAvatar = room.hostAvatar;
       if (isCurrent && activeRoomCode) {
@@ -1838,36 +2124,89 @@
       }
 
       const safeHostAvatar = escapeHtml(sanitizeAvatarUrl(currentHostAvatar, PRESET_AVATARS[0]));
-      const safeRoomCode = escapeHtml(sanitizeRoomCode(room.roomCode));
       const safeMemberCount = Math.max(1, parseInt(room.memberCount, 10) || 1);
       const safeMatchCount = Number(room.matchCount) || 0;
 
-      item.innerHTML = `
-        <div class="friend-left">
-          <img src="${safeHostAvatar}" alt="Host" class="avatar-sm" />
-          <div class="friend-info">
-            <div class="friend-name"></div>
-            <div class="friend-meta mono">#${safeRoomCode} • 👥 ${safeMemberCount} คน ${
-        safeMatchCount > 0 ? `• 🎯 ตรง ${safeMatchCount} Tag` : ''
-      }</div>
+      let item = sidebarRoomsList.querySelector(`.friend-item[data-room-code="${safeRoomCode}"]`);
+
+      if (item) {
+        // In-place update: no animation replay
+        item.classList.remove('stagger-in');
+        item.style.animationDelay = '';
+
+        const metaEl = item.querySelector('.friend-meta');
+        if (metaEl) {
+          const newMeta = `#${safeRoomCode} • 👥 ${safeMemberCount} คน ${safeMatchCount > 0 ? `• 🎯 ตรง ${safeMatchCount} Tag` : ''}`;
+          if (metaEl.textContent !== newMeta) {
+            metaEl.textContent = newMeta;
+          }
+        }
+
+        const nameEl = item.querySelector('.friend-name');
+        if (nameEl && nameEl.textContent !== `ห้องของ ${currentHostName}`) {
+          nameEl.textContent = `ห้องของ ${currentHostName}`;
+        }
+
+        const avatarImg = item.querySelector('img.avatar-sm');
+        if (avatarImg && avatarImg.getAttribute('src') !== safeHostAvatar) {
+          avatarImg.src = safeHostAvatar;
+        }
+
+        const joinBtn = item.querySelector('.btn-side-join');
+        if (joinBtn) {
+          if (isCurrent) {
+            joinBtn.className = 'btn btn-secondary btn-sm btn-side-join';
+            joinBtn.disabled = true;
+            joinBtn.textContent = 'อยู่ในห้องนี้';
+          } else {
+            joinBtn.className = 'btn btn-primary btn-sm btn-side-join';
+            joinBtn.disabled = false;
+            joinBtn.textContent = 'เข้าห้อง';
+          }
+        }
+
+        const currentChildAtPos = sidebarRoomsList.children[index];
+        if (currentChildAtPos !== item) {
+          sidebarRoomsList.insertBefore(item, currentChildAtPos || null);
+        }
+      } else {
+        // New item: play stagger animation
+        item = document.createElement('div');
+        item.setAttribute('data-room-code', safeRoomCode);
+        item.className = 'friend-item room-stagger-item stagger-in';
+        item.style.animationDelay = `${(newSidebarStaggerIndex * 0.08).toFixed(2)}s`;
+        newSidebarStaggerIndex++;
+
+        item.innerHTML = `
+          <div class="friend-left">
+            <img src="${safeHostAvatar}" alt="Host" class="avatar-sm" />
+            <div class="friend-info">
+              <div class="friend-name"></div>
+              <div class="friend-meta mono">#${safeRoomCode} • 👥 ${safeMemberCount} คน ${
+          safeMatchCount > 0 ? `• 🎯 ตรง ${safeMatchCount} Tag` : ''
+        }</div>
+            </div>
           </div>
-        </div>
-        <div class="friend-actions">
-          <button type="button" class="btn ${isCurrent ? 'btn-secondary' : 'btn-primary'} btn-sm btn-side-join" ${
-        isCurrent ? 'disabled' : ''
-      }>
-            ${isCurrent ? 'อยู่ในห้องนี้' : 'เข้าห้อง'}
-          </button>
-        </div>
-      `;
-      item.querySelector('.friend-name').textContent = `ห้องของ ${currentHostName}`;
-      const joinBtn = item.querySelector('.btn-side-join');
-      if (!isCurrent) {
-        joinBtn.addEventListener('click', () => {
-          joinRoomByCode(room.roomCode);
-        });
+          <div class="friend-actions">
+            <button type="button" class="btn ${isCurrent ? 'btn-secondary' : 'btn-primary'} btn-sm btn-side-join" ${
+          isCurrent ? 'disabled' : ''
+        }>
+              ${isCurrent ? 'อยู่ในห้องนี้' : 'เข้าห้อง'}
+            </button>
+          </div>
+        `;
+
+        item.querySelector('.friend-name').textContent = `ห้องของ ${currentHostName}`;
+        const joinBtn = item.querySelector('.btn-side-join');
+        if (!isCurrent) {
+          joinBtn.addEventListener('click', () => {
+            joinRoomByCode(room.roomCode);
+          });
+        }
+
+        const currentChildAtPos = sidebarRoomsList.children[index];
+        sidebarRoomsList.insertBefore(item, currentChildAtPos || null);
       }
-      sidebarRoomsList.appendChild(item);
     });
   }
 
@@ -1909,6 +2248,15 @@
 
     if (data.type === 'ack' && data.ackId) {
       markAckReceived(String(data.ackId).slice(0, 64));
+      return;
+    }
+
+    // Unicast Room Heartbeat Pong (Host receives pong directly in personal inbox!)
+    if (data.type === 'room_heartbeat_pong') {
+      const cleanSender = sanitizeUid(data.uid || (data.from && data.from.uid) || senderUid || '');
+      if (activeRoomCode && data.roomCode === activeRoomCode && cleanSender && roomMembers.has(cleanSender)) {
+        roomMembers.get(cleanSender).lastPongAt = Date.now();
+      }
       return;
     }
 
@@ -2087,7 +2435,7 @@
   function handleRoomMessage(data) {
     if (!currentUser || !activeRoomCode) return;
     if (!data) return;
-    const cleanSenderUid = data.uid ? sanitizeUid(data.uid) : '';
+    const cleanSenderUid = sanitizeUid(data.uid || data.hostUid || data.newHostUid || data.fromUid || (data.from && data.from.uid) || '');
 
     // Direct room-level P2P file transfer signaling fallback (instant delivery inside room)
     if (
@@ -2185,6 +2533,7 @@
         renderAllLiveCards();
 
         if (data.type === 'stream_started') {
+          playNotificationSound('live', cleanStreamerUid);
           showToast(`📺 ${activeStreamerUsername} เริ่มต้นไลฟ์สดหน้าจอแล้ว! (คลิกปุ่มดูไลฟ์ที่การ์ดเพื่อรับชม)`);
         }
       }
@@ -2213,12 +2562,99 @@
     // Ignore our own echo for typing/clear since we already update locally immediately
     if (cleanSenderUid === currentUser.uid) return;
 
+    // Refresh member activity and host heartbeat on ANY legitimate message received
+    if (roomMembers.has(cleanSenderUid)) {
+      roomMembers.get(cleanSenderUid).lastPongAt = Date.now();
+    }
+    if (activeRoomHostUid && cleanSenderUid === activeRoomHostUid) {
+      lastHostHeartbeatReceivedAt = Date.now();
+    }
+
+    // Room Heartbeat Ping (From Room Host to all members)
+    if (data.type === 'room_heartbeat_ping') {
+      const senderHost = sanitizeUid(data.hostUid || data.uid || cleanSenderUid);
+      if (senderHost) {
+        lastHostHeartbeatReceivedAt = Date.now();
+        if (!activeRoomHostUid || activeRoomHostUid !== senderHost) {
+          activeRoomHostUid = senderHost;
+          updateRoomHostUi();
+        }
+      }
+      if (currentUser && currentUser.uid !== activeRoomHostUid) {
+        // Feature 2: Jitter random delay (0 to 1.2s) to prevent packet storm
+        const jitterMs = Math.floor(Math.random() * 1200);
+        setTimeout(() => {
+          if (!activeRoomCode || !currentUser || !activeRoomHostUid) return;
+          // Feature 1: Unicast Pong directly to Host's personal inbox!
+          publishJson(topicInbox(activeRoomHostUid), {
+            type: 'room_heartbeat_pong',
+            uid: currentUser.uid,
+            roomCode: activeRoomCode,
+            ts: Date.now()
+          });
+        }, jitterMs);
+      }
+      return;
+    }
+
+    // Room Heartbeat Pong (From room member responding to Host)
+    if (data.type === 'room_heartbeat_pong') {
+      if (cleanSenderUid && roomMembers.has(cleanSenderUid)) {
+        const m = roomMembers.get(cleanSenderUid);
+        m.lastPongAt = Date.now();
+      }
+      return;
+    }
+
+    // Host kicking inactive/stuck ghost member after 25s timeout
+    if (data.type === 'member_timeout_kick') {
+      const kickUid = sanitizeUid(data.targetUid);
+      if (kickUid) {
+        if (currentUser && kickUid === currentUser.uid) {
+          showToast('⚠️ คุณถูกตัดการเชื่อมต่อจากห้องเนื่องจากไม่ตอบสนองสัญญาณ Ping', 6000);
+          leaveCurrentRoomSilent();
+        } else {
+          removeMemberFromRoom(kickUid, 'timeout');
+        }
+      }
+      return;
+    }
+
+    // Host Takeover sync when host disconnects / disappears
+    if (data.type === 'host_takeover') {
+      const newHost = sanitizeUid(data.newHostUid);
+      const oldHost = sanitizeUid(data.oldHostUid);
+      if (oldHost && roomMembers.has(oldHost)) {
+        clearMemberTranslation(oldHost);
+        roomMembers.delete(oldHost);
+      }
+      if (newHost) {
+        activeRoomHostUid = newHost;
+        lastHostHeartbeatReceivedAt = Date.now();
+        updateRoomHostUi();
+        reorderLiveCards();
+        renderAllLiveCards();
+        if (currentUser && newHost === currentUser.uid) {
+          showToast('👑 คุณได้รับการแต่งตั้งเป็นหัวห้องคนใหม่');
+          syncHostRoomOrder();
+          broadcastActiveRoomToDirectory();
+        } else {
+          const hostName = sanitizeUsername(data.newHostName || newHost, newHost);
+          showToast(`👑 หัวห้องเดิมหลุด สิทธิ์หัวห้องถูกส่งต่อไปยัง ${hostName}`);
+        }
+      }
+      return;
+    }
+
     if (data.type === 'member_join') {
       const isNew = !roomMembers.has(cleanSenderUid);
+      const prev = roomMembers.get(cleanSenderUid);
       const cleanName = sanitizeUsername(data.username || cleanSenderUid, cleanSenderUid);
       const cleanAvatar = sanitizeAvatarUrl(data.avatar, PRESET_AVATARS[0]);
       const cleanTags = Array.isArray(data.tags) ? data.tags.slice(0, 8).map(sanitizeTag).filter(Boolean) : [];
       const safeText = String(data.currentText || '').slice(0, 250);
+      const now = Date.now();
+      const joinedAt = data.joinedAt || (prev ? prev.joinedAt : now);
 
       if (data.hostUid) {
         activeRoomHostUid = sanitizeUid(data.hostUid);
@@ -2238,8 +2674,10 @@
         tags: cleanTags,
         currentText: safeText,
         image: null,
-        updatedAt: Date.now(),
-        lastActiveAt: safeText ? Date.now() : 0,
+        joinedAt: joinedAt,
+        lastPongAt: now,
+        updatedAt: now,
+        lastActiveAt: safeText ? now : 0,
         lastTypingAt: 0,
         lastEmoteAt: 0,
         lastEmote: null
@@ -2259,6 +2697,7 @@
         tags: Array.from(selectedTags),
         currentText: myMember ? myMember.currentText : liveTypingInput.value,
         image: myMember ? myMember.image : currentImage,
+        joinedAt: myMember ? myMember.joinedAt : Date.now(),
         isHost: Boolean(activeRoomHostUid === currentUser.uid),
         hostUid: activeRoomHostUid,
         sortMode: activeRoomSortMode || 'activity'
@@ -2293,11 +2732,16 @@
       const safeText = String(data.currentText || '').slice(0, 250);
       const safeImage = data.image ? sanitizeChatMediaUrl(data.image) : null;
       const hasContent = Boolean(safeText.length > 0 || safeImage);
+      const now = Date.now();
+      const joinedAt = data.joinedAt || (prev ? prev.joinedAt : now);
 
       if (data.hostUid) {
         activeRoomHostUid = sanitizeUid(data.hostUid);
       } else if (data.isHost) {
         activeRoomHostUid = cleanSenderUid;
+      }
+      if (cleanSenderUid === activeRoomHostUid) {
+        lastHostHeartbeatReceivedAt = now;
       }
       if (data.sortMode && ['activity', 'length', 'length_1s', 'stable'].includes(data.sortMode)) {
         activeRoomSortMode = data.sortMode;
@@ -2311,8 +2755,10 @@
         tags: cleanTags,
         currentText: safeText,
         image: safeImage,
-        updatedAt: Date.now(),
-        lastActiveAt: hasContent ? Date.now() : (prev ? prev.lastActiveAt : 0),
+        joinedAt: joinedAt,
+        lastPongAt: now,
+        updatedAt: now,
+        lastActiveAt: hasContent ? now : (prev ? prev.lastActiveAt : 0),
         lastTypingAt: prev ? prev.lastTypingAt : 0,
         lastEmoteAt: prev ? prev.lastEmoteAt : 0,
         lastEmote: prev ? prev.lastEmote : null
@@ -2345,6 +2791,7 @@
     if (data.type === 'room_order_sync' && Array.isArray(data.order)) {
       const hostUid = sanitizeUid(data.hostUid);
       if (hostUid) {
+        lastHostHeartbeatReceivedAt = Date.now();
         if (!activeRoomHostUid || activeRoomHostUid === hostUid) {
           activeRoomHostUid = hostUid;
           updateRoomHostUi();
@@ -2379,36 +2826,14 @@
     }
 
     if (data.type === 'member_leave') {
-      clearMemberTranslation(cleanSenderUid);
-      if (roomMembers.has(cleanSenderUid)) {
-        const leftUser = roomMembers.get(cleanSenderUid);
-        roomMembers.delete(cleanSenderUid);
-        if (cleanSenderUid === activeRoomHostUid) {
-          const remainingUids = Array.from(roomMembers.keys());
-          activeRoomHostUid = remainingUids.length > 0 ? remainingUids[0] : null;
-          updateRoomHostUi();
-          if (currentUser && activeRoomHostUid === currentUser.uid) {
-            showToast('👑 คุณได้รับการแต่งตั้งเป็นหัวห้องคนใหม่');
-          }
-        }
-        renderAllLiveCards();
-        showToast(`🚪 ${leftUser.username} ออกจากห้อง`);
-      }
-      if (cleanSenderUid === activeStreamerUid) {
-        if (isWatching) stopWatchingStream();
-        activeStreamerUid = null;
-        activeStreamerUsername = null;
-        if (floatingStreamWindow) floatingStreamWindow.classList.add('hidden');
-        updateScreenShareButtonState();
-        reorderLiveCards();
-        showToast('ℹ️ ผู้ไลฟ์สดออกจากห้อง การไลฟ์สิ้นสุดลง');
-      }
+      removeMemberFromRoom(cleanSenderUid, 'leave');
       return;
     }
 
     if (data.type === 'typing_update') {
       const safeText = String(data.text || '').slice(0, 250);
       const safeImage = data.image !== undefined ? (data.image ? sanitizeChatMediaUrl(data.image) : null) : undefined;
+      const now = Date.now();
       if (!roomMembers.has(cleanSenderUid)) {
         const hasContent = Boolean(safeText.trim().length > 0 || safeImage);
         // Auto-register member if they typed before join packet arrived
@@ -2418,33 +2843,49 @@
           avatar: sanitizeAvatarUrl(data.avatar, PRESET_AVATARS[0]),
           currentText: safeText,
           image: safeImage || null,
-          updatedAt: Date.now(),
-          lastActiveAt: hasContent ? Date.now() : 0,
-          lastTypingAt: hasContent ? Date.now() : 0,
+          joinedAt: now,
+          lastPongAt: now,
+          updatedAt: now,
+          lastActiveAt: hasContent ? now : 0,
+          lastTypingAt: hasContent ? now : 0,
           lastEmoteAt: 0,
           lastEmote: null
         });
         renderAllLiveCards();
       } else {
         const m = roomMembers.get(cleanSenderUid);
+        const prevText = m.currentText || '';
+        const prevImage = m.image || null;
         m.currentText = safeText;
         if (safeImage !== undefined) {
           m.image = safeImage;
         }
         const hasContent = Boolean(safeText.trim().length > 0 || m.image);
-        m.updatedAt = Date.now();
+        m.updatedAt = now;
+        m.lastPongAt = now;
         if (hasContent) {
-          m.lastActiveAt = Date.now();
-          m.lastTypingAt = Date.now();
+          m.lastActiveAt = now;
+          m.lastTypingAt = now;
         } else {
           m.lastActiveAt = 0;
         }
         updateSingleCardContent(cleanSenderUid, m.currentText, m.image);
+
+        // Play sounds for incoming typing or GIF/Image
+        if (m.image && m.image !== prevImage) {
+          playNotificationSound('media', cleanSenderUid);
+        } else if (safeText !== prevText && safeText.trim().length > 0) {
+          startTypingSound(cleanSenderUid);
+        }
+      }
+      if (cleanSenderUid === activeRoomHostUid) {
+        lastHostHeartbeatReceivedAt = now;
       }
       return;
     }
 
     if (data.type === 'typing_clear') {
+      stopTypingSound();
       clearMemberTranslation(cleanSenderUid);
       if (roomMembers.has(cleanSenderUid)) {
         const m = roomMembers.get(cleanSenderUid);
@@ -2463,6 +2904,7 @@
     if (data.type === 'emote_bubble' && data.emote) {
       const safeEmote = String(data.emote).replace(/[\x00-\x1F\x7F<>"'`]/g, '').trim().slice(0, 16);
       if (!safeEmote) return;
+      playNotificationSound('emote', cleanSenderUid);
       if (roomMembers.has(cleanSenderUid)) {
         const m = roomMembers.get(cleanSenderUid);
         m.lastEmoteAt = Date.now();
@@ -3596,6 +4038,9 @@
 
   // Cleanly notify room & friends if tab is closed
   window.addEventListener('beforeunload', () => {
+    if (window.P2PFileTransfer) {
+      window.P2PFileTransfer.cancelActiveTransfer('ปิดแท็บ การส่งไฟล์ถูกยกเลิก');
+    }
     if (activeRoomCode && currentUser) {
       publishJson(topicRoom(activeRoomCode), {
         type: 'member_leave',
@@ -3603,6 +4048,21 @@
       });
     }
     broadcastMyPresence(false);
+  });
+
+  // Resume & ping immediately when browser tab or phone screen wakes up
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && activeRoomCode && currentUser) {
+      lastHostHeartbeatReceivedAt = Date.now();
+      if (activeRoomHostUid && activeRoomHostUid !== currentUser.uid) {
+        publishJson(topicInbox(activeRoomHostUid), {
+          type: 'room_heartbeat_pong',
+          uid: currentUser.uid,
+          roomCode: activeRoomCode,
+          ts: Date.now()
+        });
+      }
+    }
   });
 
   // --- Copy UID (Click on Top-Right Profile Chip) ---
@@ -3970,13 +4430,21 @@
       username: currentUser.username,
       avatar: currentUser.avatar,
       tags: Array.from(selectedTags),
-      currentText: myMember ? myMember.currentText : ''
+      currentText: myMember ? myMember.currentText : '',
+      joinedAt: myMember ? myMember.joinedAt : Date.now(),
+      isHost: Boolean(activeRoomHostUid === currentUser.uid),
+      hostUid: activeRoomHostUid
     });
   }
 
   function leaveCurrentRoomSilent() {
+    stopTypingSound();
     if (!activeRoomCode || !currentUser) return;
     const oldCode = activeRoomCode;
+    if (window.P2PFileTransfer) {
+      window.P2PFileTransfer.cancelActiveTransfer('คุณออกจากห้อง การส่งไฟล์ถูกยกเลิก');
+    }
+    stopRoomHeartbeat();
     stopRoomSortInterval();
     cleanupStreamState();
     memberTranslateTimers.forEach((timer) => clearTimeout(timer));
@@ -4020,6 +4488,7 @@
     currentImage = null;
     hideInputImagePreview();
 
+    const joinTs = Date.now();
     roomMembers.set(currentUser.uid, {
       uid: currentUser.uid,
       username: currentUser.username,
@@ -4027,7 +4496,9 @@
       tags: Array.from(selectedTags),
       currentText: '',
       image: null,
-      updatedAt: Date.now(),
+      joinedAt: joinTs,
+      lastPongAt: joinTs,
+      updatedAt: joinTs,
       lastActiveAt: 0,
       lastTypingAt: 0,
       lastEmoteAt: 0,
@@ -4045,6 +4516,7 @@
     }
 
     startRoomSortInterval();
+    startRoomHeartbeat();
     broadcastMyPresence(true);
     renderAllLiveCards();
     updateRoomViewUI();
@@ -4443,11 +4915,175 @@
     return mode || '⚡ ตามกิจกรรมล่าสุด';
   }
 
+  // =========================================================================
+  // --- Room Heartbeat, Stale Member Cleanup & Auto-Host Takeover Engine ---
+  // =========================================================================
+  function removeMemberFromRoom(cleanUid, reason = 'leave') {
+    if (!cleanUid) return;
+    clearMemberTranslation(cleanUid);
+    if (roomMembers.has(cleanUid)) {
+      const leftUser = roomMembers.get(cleanUid);
+      roomMembers.delete(cleanUid);
+
+      // Auto-cancel any active or pending P2P file transfers with the departing member
+      if (window.P2PFileTransfer) {
+        window.P2PFileTransfer.cancelIfTargetMatches(
+          cleanUid,
+          `⚠️ ${leftUser.username || cleanUid} ออกจากห้อง การส่งไฟล์ถูกยกเลิกอัตโนมัติ`
+        );
+      }
+
+      const isLeftHost = Boolean(cleanUid === activeRoomHostUid);
+
+      if (cleanUid === activeStreamerUid) {
+        if (isWatching) stopWatchingStream();
+        activeStreamerUid = null;
+        activeStreamerUsername = null;
+        if (floatingStreamWindow) floatingStreamWindow.classList.add('hidden');
+        updateScreenShareButtonState();
+      }
+
+      if (isLeftHost) {
+        handleHostTimeoutTakeover();
+      } else {
+        reorderLiveCards();
+        renderAllLiveCards();
+      }
+
+      if (reason === 'timeout') {
+        showToast(`⏱️ ${leftUser.username || cleanUid} ไม่ตอบสนอง (หลุด/ปิดเว็บ) ถูกนำออกจากห้อง`);
+      } else if (reason === 'host_timeout') {
+        // Notification handled in handleHostTimeoutTakeover
+      } else {
+        showToast(`🚪 ${leftUser.username || cleanUid} ออกจากห้อง`);
+      }
+    }
+  }
+
+  function handleHostTimeoutTakeover() {
+    if (!activeRoomCode || !currentUser) return;
+    const oldHostUid = activeRoomHostUid;
+    const oldHostMember = oldHostUid ? roomMembers.get(oldHostUid) : null;
+    const oldHostName = oldHostMember ? (oldHostMember.username || oldHostUid) : 'หัวห้องเดิม';
+
+    // Remove old host if still in roomMembers
+    if (oldHostUid && roomMembers.has(oldHostUid)) {
+      clearMemberTranslation(oldHostUid);
+      roomMembers.delete(oldHostUid);
+      if (oldHostUid === activeStreamerUid) {
+        if (isWatching) stopWatchingStream();
+        activeStreamerUid = null;
+        activeStreamerUsername = null;
+        if (floatingStreamWindow) floatingStreamWindow.classList.add('hidden');
+        updateScreenShareButtonState();
+      }
+    }
+
+    const remaining = Array.from(roomMembers.values());
+    if (remaining.length === 0) {
+      activeRoomHostUid = currentUser.uid;
+      updateRoomHostUi();
+      return;
+    }
+
+    // Deterministic election: sort remaining by joinedAt ascending, tie-break by UID
+    remaining.sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0) || a.uid.localeCompare(b.uid));
+    const nextHost = remaining[0];
+    activeRoomHostUid = nextHost.uid;
+    lastHostHeartbeatReceivedAt = Date.now();
+    updateRoomHostUi();
+    reorderLiveCards();
+    renderAllLiveCards();
+
+    if (nextHost.uid === currentUser.uid) {
+      showToast(`👑 ${oldHostName} หลุดออกจากห้อง สิทธิ์หัวห้องถูกโอนมายังคุณแล้ว!`, 5000);
+      publishJson(topicRoom(activeRoomCode), {
+        type: 'host_takeover',
+        uid: currentUser.uid,
+        newHostUid: currentUser.uid,
+        newHostName: currentUser.username,
+        oldHostUid: oldHostUid,
+        ts: Date.now()
+      });
+      syncHostRoomOrder();
+      broadcastActiveRoomToDirectory();
+    } else {
+      showToast(`👑 ${oldHostName} หลุด สิทธิ์หัวห้องถูกส่งต่อไปยัง ${nextHost.username || nextHost.uid}`, 4000);
+    }
+  }
+
+  function startRoomHeartbeat() {
+    stopRoomHeartbeat();
+    if (!activeRoomCode || !currentUser) return;
+
+    lastHostHeartbeatReceivedAt = Date.now();
+
+    // 1. Host Ping & Stale Member Timeout Checker (runs every 10s)
+    roomHeartbeatTimer = setInterval(() => {
+      if (!activeRoomCode || !currentUser) return;
+      const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
+
+      if (isHost) {
+        const now = Date.now();
+        // Send heartbeat ping to room
+        publishJson(topicRoom(activeRoomCode), {
+          type: 'room_heartbeat_ping',
+          uid: currentUser.uid,
+          hostUid: currentUser.uid,
+          ts: now
+        });
+
+        // Check if any member has not responded within timeout
+        const timedOutUids = [];
+        roomMembers.forEach((m, uid) => {
+          if (uid === currentUser.uid) return;
+          const lastSeen = Math.max(m.lastPongAt || 0, m.lastActiveAt || 0, m.lastTypingAt || 0, m.updatedAt || 0, m.joinedAt || 0);
+          if (now - lastSeen > ROOM_MEMBER_TIMEOUT_MS) {
+            timedOutUids.push(uid);
+          }
+        });
+
+        timedOutUids.forEach((staleUid) => {
+          removeMemberFromRoom(staleUid, 'timeout');
+          publishJson(topicRoom(activeRoomCode), {
+            type: 'member_timeout_kick',
+            uid: currentUser.uid,
+            targetUid: staleUid,
+            hostUid: currentUser.uid
+          });
+        });
+      }
+    }, ROOM_HEARTBEAT_INTERVAL_MS);
+
+    // 2. Non-host Member Watchdog: checks if host disappeared (> 35s)
+    hostWatchdogTimer = setInterval(() => {
+      if (!activeRoomCode || !currentUser) return;
+      const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
+      if (isHost) return;
+
+      const now = Date.now();
+      if (now - lastHostHeartbeatReceivedAt > ROOM_MEMBER_TIMEOUT_MS) {
+        handleHostTimeoutTakeover();
+      }
+    }, 5000);
+  }
+
+  function stopRoomHeartbeat() {
+    if (roomHeartbeatTimer) {
+      clearInterval(roomHeartbeatTimer);
+      roomHeartbeatTimer = null;
+    }
+    if (hostWatchdogTimer) {
+      clearInterval(hostWatchdogTimer);
+      hostWatchdogTimer = null;
+    }
+  }
+
   function startRoomSortInterval() {
     if (roomSortIntervalTimer) clearInterval(roomSortIntervalTimer);
     roomSortIntervalTimer = setInterval(() => {
       if (!activeRoomCode) return;
-      const isHost = Boolean(!activeRoomHostUid || activeRoomHostUid === currentUser?.uid);
+      const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser?.uid);
       if (isHost) {
         syncHostRoomOrder();
       }
@@ -4456,7 +5092,7 @@
 
   function syncHostRoomOrder() {
     if (!activeRoomCode || !currentUser) return;
-    const isHost = Boolean(!activeRoomHostUid || activeRoomHostUid === currentUser.uid);
+    const isHost = Boolean(activeRoomHostUid && activeRoomHostUid === currentUser.uid);
     if (!isHost) return;
 
     const members = Array.from(roomMembers.values());
@@ -4471,6 +5107,7 @@
     // Broadcast authoritative order and mode to all room members
     publishJson(topicRoom(activeRoomCode), {
       type: 'room_order_sync',
+      uid: currentUser.uid,
       hostUid: currentUser.uid,
       sortMode: activeRoomSortMode || 'activity',
       order: orderUids,
@@ -4972,6 +5609,7 @@
       let friendActionHtml = '';
       let translateActionHtml = '';
       let sendFileActionHtml = '';
+      let muteMemberActionHtml = '';
       if (!isSelf) {
         if (isAlreadyFriend) {
           friendActionHtml = `<button type="button" class="btn-card-add-friend is-friend" data-action="remove" title="คลิกเพื่อยกเลิกความเป็นเพื่อน"><span class="friend-label-normal">✓ เพื่อน</span><span class="friend-label-hover">✕ ลบเพื่อน</span></button>`;
@@ -4992,6 +5630,10 @@
 
         // P2P Direct File Transfer Button
         sendFileActionHtml = `<button type="button" class="btn-card-send-file" data-uid="${safeMemberUid}" title="ส่งไฟล์ตรงแบบ P2P ให้ ${escapeHtml(member.username)} (ไม่จำกัดขนาด)"><span class="file-btn-icon">📁</span> <span class="file-btn-label">ส่งไฟล์</span></button>`;
+
+        // Per-Member Mute/Unmute Button
+        const isMemberMuted = mutedMemberUids.has(member.uid);
+        muteMemberActionHtml = `<button type="button" class="btn-card-mute-member ${isMemberMuted ? 'is-muted' : ''}" data-uid="${safeMemberUid}" title="${isMemberMuted ? `เปิดเสียง ${escapeHtml(member.username)} (กำลังปิดเสียงอยู่)` : `ปิดเสียง ${escapeHtml(member.username)} (ป้องกันการสแปมเสียง)`}"><span class="mute-btn-icon">${isMemberMuted ? '🔇' : '🔊'}</span> <span class="mute-btn-label">${isMemberMuted ? 'ปิดเสียงอยู่' : 'เสียง'}</span></button>`;
       }
 
       let statusPillHtml = '';
@@ -5042,6 +5684,7 @@
             ${friendActionHtml}
             ${translateActionHtml}
             ${sendFileActionHtml}
+            ${muteMemberActionHtml}
             ${streamBadgeHtml}
             ${statusPillHtml}
           </div>
@@ -5106,6 +5749,25 @@
             window.P2PFileTransfer.openSendForMember(member);
           } else {
             console.error('[P2P] window.P2PFileTransfer is not loaded yet');
+          }
+        });
+      }
+
+      const muteMemberBtn = card.querySelector('.btn-card-mute-member');
+      if (muteMemberBtn) {
+        muteMemberBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const targetUid = member.uid;
+          if (mutedMemberUids.has(targetUid)) {
+            mutedMemberUids.delete(targetUid);
+            saveMutedMembers();
+            renderAllLiveCards();
+            showToast(`🔊 เปิดเสียงสำหรับ ${member.username} แล้ว`);
+          } else {
+            mutedMemberUids.add(targetUid);
+            saveMutedMembers();
+            renderAllLiveCards();
+            showToast(`🔇 ปิดเสียงสำหรับ ${member.username} แล้ว (Muted)`);
           }
         });
       }
@@ -6169,6 +6831,7 @@
   function triggerEnterClear() {
     if (!currentUser || !activeRoomCode) return;
     if (!canExecuteAction('enter_clear', false)) return;
+    stopTypingSound();
     if (typingBroadcastTimer) {
       clearTimeout(typingBroadcastTimer);
       typingBroadcastTimer = null;
@@ -6201,7 +6864,14 @@
       triggerEnterClear();
       return;
     }
+    if (currentUser) {
+      startTypingSound(currentUser.uid);
+    }
     handleLiveInputChange();
+  });
+
+  liveTypingInput.addEventListener('blur', () => {
+    stopTypingSound();
   });
 
   liveTypingInput.addEventListener('keydown', (e) => {
@@ -6283,62 +6953,6 @@
     deferredInstallPrompt = null;
     btnInstallPwa.classList.add('hidden');
   });
-
-  // Desktop App detection
-  if (window.electronAPI && window.electronAPI.isElectron) {
-    const brandBadge = document.querySelector('.brand-badge');
-    if (brandBadge) {
-      brandBadge.textContent = '⚡ Desktop Turbo (Native TCP)';
-      brandBadge.style.background = 'rgba(16, 185, 129, 0.2)';
-      brandBadge.style.color = '#10b981';
-      brandBadge.style.border = '1px solid rgba(16, 185, 129, 0.4)';
-    }
-    if (btnInstallPwa) {
-      btnInstallPwa.classList.add('hidden');
-    }
-    const btnDlDesktop = document.getElementById('btnDownloadDesktopApp');
-    if (btnDlDesktop) btnDlDesktop.classList.add('hidden');
-    const dlBanner = document.getElementById('desktopDownloadBanner');
-    if (dlBanner) dlBanner.classList.add('hidden');
-    const tip1 = document.getElementById('p2pDesktopTip');
-    if (tip1) tip1.classList.add('hidden');
-    const tip2 = document.getElementById('p2pReceiveDesktopTip');
-    if (tip2) tip2.classList.add('hidden');
-  }
-
-  // Smart Desktop App Download URL (Local Express server vs GitHub Releases on GitHub Pages)
-  const GITHUB_REPO = 'misurumine/realtime-typing-chat';
-  const GITHUB_RELEASE_DOWNLOAD_URL = `https://github.com/${GITHUB_REPO}/releases/latest/download/RealtimeChat-Setup.exe`;
-
-  function setupDesktopDownloadLinks() {
-    if (window.electronAPI && window.electronAPI.isElectron) return;
-
-    const isLocalServer = ['localhost', '127.0.0.1'].includes(window.location.hostname) ||
-      window.location.hostname.startsWith('192.168.') ||
-      window.location.hostname.startsWith('10.') ||
-      window.location.protocol === 'file:';
-
-    const targetUrl = isLocalServer ? '/download/desktop-app' : GITHUB_RELEASE_DOWNLOAD_URL;
-
-    const dlButtons = [
-      document.getElementById('btnDownloadDesktopApp'),
-      document.querySelector('#desktopDownloadBanner a.btn-desktop-dl'),
-      document.querySelector('#p2pDesktopTip a'),
-      document.querySelector('#p2pReceiveDesktopTip a')
-    ];
-
-    dlButtons.forEach((btn) => {
-      if (btn) {
-        btn.href = targetUrl;
-        if (!isLocalServer) {
-          btn.target = '_blank';
-          btn.rel = 'noopener noreferrer';
-        }
-      }
-    });
-  }
-
-  setupDesktopDownloadLinks();
 
   // --- Initial Boot ---
   if (currentUser) {
@@ -6606,6 +7220,26 @@
 
   let activeTheme = loadCustomTheme();
   applyTheme(activeTheme);
+
+  function updateGlobalSoundUI() {
+    if (globalSoundIcon) globalSoundIcon.textContent = isGlobalSoundEnabled ? '🔊' : '🔇';
+    if (globalSoundText) globalSoundText.textContent = isGlobalSoundEnabled ? 'เสียง: เปิด' : 'เสียง: ปิด';
+    if (btnToggleGlobalSound) {
+      btnToggleGlobalSound.classList.toggle('active', isGlobalSoundEnabled);
+      btnToggleGlobalSound.classList.toggle('muted', !isGlobalSoundEnabled);
+    }
+  }
+
+  if (btnToggleGlobalSound) {
+    updateGlobalSoundUI();
+    btnToggleGlobalSound.addEventListener('click', () => {
+      isGlobalSoundEnabled = !isGlobalSoundEnabled;
+      localStorage.setItem(STORAGE_KEY_SOUND_GLOBAL, isGlobalSoundEnabled ? 'true' : 'false');
+      updateGlobalSoundUI();
+      getSfxAudioCtx();
+      showToast(isGlobalSoundEnabled ? '🔊 เปิดเสียงระบบทั้งหมดแล้ว' : '🔇 ปิดเสียงระบบทั้งหมดแล้ว (Mute All)');
+    });
+  }
 
   btnOpenTheme.addEventListener('click', () => {
     syncThemeInputsUI(activeTheme);
@@ -7584,6 +8218,7 @@
       streamerAvatar: currentUser.avatar
     });
 
+    playNotificationSound('live');
     showToast('🖥️ เริ่มต้นการไลฟ์สดหน้าจอแล้ว! (เพื่อนในห้องสามารถกดดูได้ทันที)');
   }
 

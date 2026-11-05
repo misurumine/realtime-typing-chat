@@ -778,6 +778,10 @@
 
     pendingIncomingRequest = data;
 
+    if (config.playNotificationSound) {
+      try { config.playNotificationSound('file', data.from.uid); } catch (e) {}
+    }
+
     if (dom.receiveSenderAvatar) dom.receiveSenderAvatar.src = data.from.avatar || './assets/avatars/avatar-1.svg';
     if (dom.receiveSenderName) dom.receiveSenderName.textContent = data.from.username || data.from.uid;
     if (dom.receiveSenderUid) dom.receiveSenderUid.textContent = `UID: ${data.from.uid}`;
@@ -1988,6 +1992,38 @@
 
     syncCardButton: function (uid) {
       syncCardButton(uid);
+    },
+
+    cancelIfTargetMatches: function (targetUid, reason = 'คู่สนทนาออกจากห้อง การส่งไฟล์ถูกยกเลิกอัตโนมัติ') {
+      const cleanTarget = sanitizeUid(targetUid);
+      if (!cleanTarget) return;
+
+      if (pendingIncomingRequest && pendingIncomingRequest.senderUid === cleanTarget) {
+        if (dom.receiveModal) {
+          dom.receiveModal.classList.add('hidden');
+          dom.receiveModal.style.setProperty('display', 'none', 'important');
+        }
+        pendingIncomingRequest = null;
+        if (config.showToast) {
+          config.showToast(`ℹ️ ${reason}`, 4000);
+        }
+      }
+
+      if (activeSession && activeSession.targetUid === cleanTarget && !activeSession.isCompleted && !activeSession.isCancelled) {
+        cancelTransfer(reason, false);
+      }
+    },
+
+    cancelActiveTransfer: function (reason = 'การส่งไฟล์ถูกยกเลิก') {
+      if (activeSession && !activeSession.isCompleted && !activeSession.isCancelled) {
+        cancelTransfer(reason, true);
+      }
+      abortPendingRequest(reason, true);
+      if (dom.receiveModal) {
+        dom.receiveModal.classList.add('hidden');
+        dom.receiveModal.style.setProperty('display', 'none', 'important');
+      }
+      pendingIncomingRequest = null;
     },
 
     handleInboxMessage: function (data) {

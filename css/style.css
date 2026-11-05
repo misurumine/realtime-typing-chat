@@ -531,6 +531,21 @@ body.has-custom-bg .app-custom-bg {
   padding-right: 4px;
 }
 
+@keyframes roomCardPopIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0) scale(0.97);
+  }
+  60% {
+    opacity: 0.95;
+    transform: translate3d(0, -2px, 0) scale(1.005);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
 .discover-room-card {
   display: flex;
   align-items: center;
@@ -540,12 +555,27 @@ body.has-custom-bg .app-custom-bg {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  transition: border-color 0.15s, transform 0.15s;
+  transition: border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.discover-room-card.stagger-in {
+  animation: roomCardPopIn 0.38s cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
 }
 
 .discover-room-card:hover {
   border-color: var(--primary);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+.room-stagger-item {
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.room-stagger-item.stagger-in {
+  animation: roomCardPopIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
 }
 
 .discover-room-card.high-match {
@@ -4262,6 +4292,41 @@ kbd {
   border-color: #6366f1 !important;
   color: #a5b4fc !important;
   cursor: default !important;
+}
+
+.btn-card-mute-member {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-card-mute-member:hover {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.5);
+  color: #fbbf24;
+  transform: translateY(-1px) scale(1.03);
+}
+
+.btn-card-mute-member.is-muted {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: #ef4444;
+  color: #fca5a5;
+  font-weight: 600;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.35);
+}
+
+.btn-card-mute-member * {
+  pointer-events: none;
 }
 
 .countdown-pulse-dot {

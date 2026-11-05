@@ -1,4 +1,4 @@
-const CACHE_NAME = 'livetype-pwa-v12';
+const CACHE_NAME = 'livetype-pwa-v20';
 const ASSETS = [
   './',
   './index.html',
@@ -6,7 +6,10 @@ const ASSETS = [
   './js/p2p-file-transfer.js',
   './js/app.js',
   './manifest.json',
-  './assets/icons/icon.svg'
+  './assets/icons/icon.svg',
+  './sound/keyboard-typing-sound-effect.mp3',
+  './sound/download-notification-sound.mp3',
+  './sound/live-sound-notification.mp3'
 ];
 
 self.addEventListener('install', (event) => {
