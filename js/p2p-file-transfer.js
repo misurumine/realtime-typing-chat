@@ -47,9 +47,9 @@
   let pendingIncomingRequest = null;
   let preparingTransferId = null;
 
-  // Selected Target & File for Send Modal (Sender side)
+  // Selected Target & Files for Send Modal (Sender side)
   let sendTargetMember = null;
-  let selectedFileToSend = null;
+  let selectedFilesToSend = [];
   let autoStartOnNextFilePick = false;
 
   // Track card button states by UID so re-renders preserve state
@@ -61,6 +61,17 @@
   let timeoutResetTimer = null;
   let requestRemainingSec = REQUEST_TIMEOUT_SEC;
   let requestRetryCount = 0;
+
+  // HTML sanitization helper
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
 
   // Formatting Helpers
   function formatBytes(bytes) {
@@ -119,6 +130,12 @@
       dropzone: document.getElementById('p2pSendDropzone'),
       fileInput: document.getElementById('p2pSendFileInput'),
       filePreviewCard: document.getElementById('p2pSendFilePreview'),
+      singleFileView: document.getElementById('p2pSingleFileView'),
+      batchFileView: document.getElementById('p2pBatchFileView'),
+      batchSummaryText: document.getElementById('p2pBatchSummaryText'),
+      batchFileList: document.getElementById('p2pBatchFileList'),
+      btnClearAllBatch: document.getElementById('btnP2PClearAllBatch'),
+      btnAddMoreFiles: document.getElementById('btnP2PAddMoreFiles'),
       fileIcon: document.getElementById('p2pFilePreviewIcon'),
       fileName: document.getElementById('p2pFilePreviewName'),
       fileSize: document.getElementById('p2pFilePreviewSize'),
@@ -142,6 +159,7 @@
       receiveFileName: document.getElementById('p2pReceiveFileName'),
       receiveFileSize: document.getElementById('p2pReceiveFileSize'),
       receiveHugeNotice: document.getElementById('p2pReceiveHugeNotice'),
+      receiveBatchPreview: document.getElementById('p2pReceiveBatchPreview'),
       btnDeclineReceive: document.getElementById('btnP2PDeclineReceive'),
       btnAcceptReceive: document.getElementById('btnP2PAcceptReceive'),
 
@@ -211,10 +229,10 @@
 
       dom.fileInput.addEventListener('change', (e) => {
         if (e.target.files && e.target.files.length > 0) {
-          const pickedFile = e.target.files[0];
+          const files = Array.from(e.target.files);
           const shouldAutoStart = autoStartOnNextFilePick;
           autoStartOnNextFilePick = false;
-          handleFileSelected(pickedFile, shouldAutoStart);
+          handleFilesSelected(files, shouldAutoStart);
         }
       });
 
@@ -238,29 +256,41 @@
       dom.dropzone.addEventListener('drop', (e) => {
         if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
           autoStartOnNextFilePick = false;
-          const dropFile = e.dataTransfer.files[0];
-          if (window.electronAPI && dropFile.path) {
-            handleFileSelected({
-              name: dropFile.name,
-              size: dropFile.size,
-              path: dropFile.path,
-              isNative: true
-            }, false);
-          } else {
-            handleFileSelected(dropFile, false);
-          }
+          const dropFiles = Array.from(e.dataTransfer.files);
+          handleFilesSelected(dropFiles, false);
         }
       });
     }
 
-    // Remove file button
+    // Add more files to batch button
+    if (dom.btnAddMoreFiles && dom.fileInput) {
+      dom.btnAddMoreFiles.addEventListener('click', (e) => {
+        e.stopPropagation();
+        autoStartOnNextFilePick = false;
+        dom.fileInput.value = '';
+        dom.fileInput.click();
+      });
+    }
+
+    // Clear all files button
+    if (dom.btnClearAllBatch) {
+      dom.btnClearAllBatch.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (activeSession && activeSession.role === 'sender' && !activeSession.isAccepted) {
+          abortPendingRequest('ผู้ส่งเปลี่ยนไฟล์', false);
+        }
+        clearSelectedFiles();
+      });
+    }
+
+    // Remove single file button
     if (dom.btnRemoveFile) {
       dom.btnRemoveFile.addEventListener('click', (e) => {
         e.stopPropagation();
         if (activeSession && activeSession.role === 'sender' && !activeSession.isAccepted) {
           abortPendingRequest('ผู้ส่งเปลี่ยนไฟล์', false);
         }
-        clearSelectedFile();
+        clearSelectedFiles();
       });
     }
 
@@ -293,9 +323,9 @@
     // Confirm Send Request button
     if (dom.btnConfirmSend) {
       dom.btnConfirmSend.addEventListener('click', () => {
-        if (!selectedFileToSend || !sendTargetMember) return;
+        if (!selectedFilesToSend || selectedFilesToSend.length === 0 || !sendTargetMember) return;
         if (activeSession && !activeSession.isComplete) return;
-        initiateSendRequest(sendTargetMember, selectedFileToSend);
+        initiateSendRequest(sendTargetMember, selectedFilesToSend);
       });
     }
 
@@ -380,41 +410,113 @@
   }
 
   // --- Sender Logic ---
-  function handleFileSelected(file, autoInitiate = false) {
-    if (!file) return;
-    selectedFileToSend = file;
+  function handleFilesSelected(files, autoInitiate = false) {
+    if (!files) return;
+    const incomingList = Array.isArray(files) ? files : [files];
+    if (incomingList.length === 0) return;
+
+    // Deduplicate against already selected files by name, size, lastModified
+    const existingKeys = new Set(selectedFilesToSend.map((f) => `${f.name}_${f.size}_${f.lastModified || 0}`));
+    for (const f of incomingList) {
+      const key = `${f.name}_${f.size}_${f.lastModified || 0}`;
+      if (!existingKeys.has(key)) {
+        selectedFilesToSend.push(f);
+        existingKeys.add(key);
+      }
+    }
+
+    renderSelectedFilesUI();
+
+    if (autoInitiate && sendTargetMember && selectedFilesToSend.length > 0) {
+      initiateSendRequest(sendTargetMember, selectedFilesToSend);
+    }
+  }
+
+  function removeFileByIndex(index) {
+    if (index >= 0 && index < selectedFilesToSend.length) {
+      selectedFilesToSend.splice(index, 1);
+      renderSelectedFilesUI();
+    }
+  }
+
+  function renderSelectedFilesUI() {
+    if (selectedFilesToSend.length === 0) {
+      clearSelectedFiles();
+      return;
+    }
 
     if (dom.dropzone) dom.dropzone.classList.add('hidden');
     if (dom.filePreviewCard) dom.filePreviewCard.classList.remove('hidden');
 
-    if (dom.fileIcon) dom.fileIcon.textContent = getFileIcon(file.name);
-    if (dom.fileName) dom.fileName.textContent = file.name;
-    if (dom.fileSize) dom.fileSize.textContent = formatBytes(file.size);
+    if (selectedFilesToSend.length === 1) {
+      const file = selectedFilesToSend[0];
+      if (dom.singleFileView) dom.singleFileView.classList.remove('hidden');
+      if (dom.batchFileView) dom.batchFileView.classList.add('hidden');
+      if (dom.btnRemoveFile) dom.btnRemoveFile.classList.remove('hidden');
 
-    if (dom.fileHugeBadge) {
-      if (file.size > 10 * 1024 * 1024 * 1024) {
-        dom.fileHugeBadge.classList.remove('hidden');
-        dom.fileHugeBadge.textContent = `⚡ สตรีมดิสก์ P2P รองรับไฟล์ขนาดใหญ่พิเศษ (${formatBytes(file.size)})`;
-      } else {
-        dom.fileHugeBadge.classList.add('hidden');
+      if (dom.fileIcon) dom.fileIcon.textContent = getFileIcon(file.name);
+      if (dom.fileName) dom.fileName.textContent = file.name;
+      if (dom.fileSize) dom.fileSize.textContent = formatBytes(file.size);
+
+      if (dom.fileHugeBadge) {
+        if (file.size > 10 * 1024 * 1024 * 1024) {
+          dom.fileHugeBadge.classList.remove('hidden');
+          dom.fileHugeBadge.textContent = `⚡ สตรีมดิสก์ P2P รองรับไฟล์ขนาดใหญ่พิเศษ (${formatBytes(file.size)})`;
+        } else {
+          dom.fileHugeBadge.classList.add('hidden');
+        }
       }
-    }
 
-    if (dom.btnConfirmSend) {
-      dom.btnConfirmSend.disabled = false;
-      dom.btnConfirmSend.textContent = '🚀 ส่งคำขอส่งไฟล์';
-    }
+      if (dom.btnConfirmSend) {
+        dom.btnConfirmSend.disabled = false;
+        dom.btnConfirmSend.textContent = '🚀 ส่งคำขอส่งไฟล์';
+      }
+    } else {
+      // Multi-file batch mode
+      if (dom.singleFileView) dom.singleFileView.classList.add('hidden');
+      if (dom.batchFileView) dom.batchFileView.classList.remove('hidden');
+      if (dom.btnRemoveFile) dom.btnRemoveFile.classList.add('hidden');
 
-    if (autoInitiate && sendTargetMember) {
-      initiateSendRequest(sendTargetMember, file);
+      const totalBytes = selectedFilesToSend.reduce((acc, f) => acc + (f.size || 0), 0);
+      if (dom.batchSummaryText) {
+        dom.batchSummaryText.textContent = `📁 เลือกแล้ว ${selectedFilesToSend.length} ไฟล์ (รวม ${formatBytes(totalBytes)})`;
+      }
+
+      if (dom.batchFileList) {
+        dom.batchFileList.innerHTML = selectedFilesToSend.map((file, idx) => `
+          <div class="p2p-batch-file-item">
+            <div class="p2p-batch-file-left">
+              <span>${getFileIcon(file.name)}</span>
+              <span class="p2p-batch-file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
+              <span class="p2p-batch-file-size mono">(${formatBytes(file.size)})</span>
+            </div>
+            <button type="button" class="p2p-btn-remove-batch-item" data-remove-index="${idx}" title="ลบไฟล์นี้">✕</button>
+          </div>
+        `).join('');
+
+        dom.batchFileList.querySelectorAll('.p2p-btn-remove-batch-item').forEach((btn) => {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const idx = parseInt(btn.getAttribute('data-remove-index'), 10);
+            removeFileByIndex(idx);
+          });
+        });
+      }
+
+      if (dom.btnConfirmSend) {
+        dom.btnConfirmSend.disabled = false;
+        dom.btnConfirmSend.textContent = `🚀 ส่งคำขอส่งไฟล์ (${selectedFilesToSend.length} ไฟล์)`;
+      }
     }
   }
 
-  function clearSelectedFile() {
-    selectedFileToSend = null;
+  function clearSelectedFiles() {
+    selectedFilesToSend = [];
     if (dom.fileInput) dom.fileInput.value = '';
     if (dom.dropzone) dom.dropzone.classList.remove('hidden');
     if (dom.filePreviewCard) dom.filePreviewCard.classList.add('hidden');
+    if (dom.singleFileView) dom.singleFileView.classList.remove('hidden');
+    if (dom.batchFileView) dom.batchFileView.classList.add('hidden');
     if (dom.sendFormState) dom.sendFormState.classList.remove('hidden');
     if (dom.sendWaitingState) dom.sendWaitingState.classList.add('hidden');
     if (dom.btnConfirmSend) {
@@ -445,7 +547,7 @@
     }
 
     sendTargetMember = member;
-    clearSelectedFile();
+    clearSelectedFiles();
 
     if (dom.sendTargetAvatar) dom.sendTargetAvatar.src = member.avatar || './assets/avatars/avatar-1.svg';
     if (dom.sendTargetName) dom.sendTargetName.textContent = member.username || member.uid;
@@ -460,16 +562,16 @@
       dom.sendModal.style.setProperty('z-index', '99999', 'important');
     }
 
-    // Trigger native OS file picker immediately on user click so selecting a file immediately starts the 30s request loop
+    // Trigger native OS file picker immediately on user click
     if (window.electronAPI && typeof window.electronAPI.showOpenDialog === 'function') {
       window.electronAPI.showOpenDialog().then((res) => {
         if (!res.canceled && res.filePath) {
-          handleFileSelected({
+          handleFilesSelected([{
             name: res.fileName,
             size: res.fileSize,
             path: res.filePath,
             isNative: true
-          }, true);
+          }], true);
         }
       }).catch((err) => {
         console.error('[P2PFileTransfer] Native file picker error:', err);
@@ -495,7 +597,7 @@
       dom.sendModal.classList.add('hidden');
       dom.sendModal.style.setProperty('display', 'none', 'important');
     }
-    clearSelectedFile();
+    clearSelectedFiles();
     sendTargetMember = null;
   }
 
@@ -614,13 +716,13 @@
         dom.sendModal.classList.add('hidden');
         dom.sendModal.style.setProperty('display', 'none', 'important');
       }
-      clearSelectedFile();
+      clearSelectedFiles();
       sendTargetMember = null;
     } else {
       if (dom.sendFormState) dom.sendFormState.classList.remove('hidden');
       if (dom.sendWaitingState) dom.sendWaitingState.classList.add('hidden');
       if (dom.btnConfirmSend) {
-        dom.btnConfirmSend.disabled = !selectedFileToSend;
+        dom.btnConfirmSend.disabled = !selectedFilesToSend || selectedFilesToSend.length === 0;
         dom.btnConfirmSend.textContent = '🚀 ส่งคำขอส่งไฟล์';
       }
     }
@@ -628,9 +730,11 @@
     if (config.showToast) config.showToast('ยกเลิกคำขอส่งไฟล์เรียบร้อย');
   }
 
-  function initiateSendRequest(targetMember, file) {
+  function initiateSendRequest(targetMember, files) {
     ensureDOM();
-    if (!targetMember || !targetMember.uid || !file) return;
+    if (!targetMember || !targetMember.uid || !files) return;
+    const filesList = Array.isArray(files) ? files.slice() : [files];
+    if (filesList.length === 0) return;
 
     if (timeoutResetTimer) {
       clearTimeout(timeoutResetTimer);
@@ -639,7 +743,10 @@
 
     const transferId = `p2p_ft_${Date.now()}_${Math.random().toString(36).substr(2, 7)}`;
     sendTargetMember = targetMember;
-    selectedFileToSend = file;
+    selectedFilesToSend = filesList;
+
+    const totalBytes = filesList.reduce((acc, f) => acc + (f.size || 0), 0);
+    const firstFile = filesList[0];
 
     // Setup active session
     activeSession = {
@@ -648,12 +755,17 @@
       targetUid: targetMember.uid,
       targetUsername: targetMember.username || targetMember.uid,
       targetAvatar: targetMember.avatar,
-      file,
+      filesList,
+      currentFileIndex: 0,
+      file: firstFile,
+      completedFilesBytes: 0,
       pc: null,
       dc: null,
+      channels: [],
+      openChannelsCount: 0,
       pendingCandidates: [],
       transferredBytes: 0,
-      totalBytes: file.size,
+      totalBytes,
       startTime: 0,
       lastSpeedCheckTime: 0,
       lastSpeedCheckBytes: 0,
@@ -662,7 +774,8 @@
       isPaused: false,
       isCancelled: false,
       isComplete: false,
-      isAccepted: false
+      isAccepted: false,
+      isStreamingStarted: false
     };
 
     // 1. Immediately disable and lock button on the member card with live countdown
@@ -675,9 +788,20 @@
 
     if (dom.dropzone) dom.dropzone.classList.add('hidden');
     if (dom.filePreviewCard) dom.filePreviewCard.classList.remove('hidden');
-    if (dom.fileIcon) dom.fileIcon.textContent = getFileIcon(file.name);
-    if (dom.fileName) dom.fileName.textContent = file.name;
-    if (dom.fileSize) dom.fileSize.textContent = formatBytes(file.size);
+
+    if (filesList.length === 1) {
+      if (dom.singleFileView) dom.singleFileView.classList.remove('hidden');
+      if (dom.batchFileView) dom.batchFileView.classList.add('hidden');
+      if (dom.fileIcon) dom.fileIcon.textContent = getFileIcon(firstFile.name);
+      if (dom.fileName) dom.fileName.textContent = firstFile.name;
+      if (dom.fileSize) dom.fileSize.textContent = formatBytes(firstFile.size);
+    } else {
+      if (dom.singleFileView) dom.singleFileView.classList.add('hidden');
+      if (dom.batchFileView) dom.batchFileView.classList.remove('hidden');
+      if (dom.batchSummaryText) {
+        dom.batchSummaryText.textContent = `📁 กำลังส่ง ${filesList.length} ไฟล์ (รวม ${formatBytes(totalBytes)})`;
+      }
+    }
 
     if (dom.sendFormState) dom.sendFormState.classList.remove('hidden');
     if (dom.sendWaitingState) dom.sendWaitingState.classList.remove('hidden');
@@ -708,10 +832,17 @@
           transferId,
           attempt: requestRetryCount,
           isNativeElectron: Boolean(window.electronAPI && window.electronAPI.isElectron),
+          fileCount: filesList.length,
+          totalBytes,
+          files: filesList.map((f) => ({
+            name: f.name,
+            size: f.size,
+            type: f.type || 'application/octet-stream'
+          })),
           file: {
-            name: file.name,
-            size: file.size,
-            type: file.type || 'application/octet-stream'
+            name: firstFile.name,
+            size: firstFile.size,
+            type: firstFile.type || 'application/octet-stream'
           },
           from: {
             uid: config.currentUser.uid,
@@ -743,15 +874,21 @@
       }
     }, 1000);
 
+    const desc = filesList.length > 1
+      ? `${filesList.length} ไฟล์ (${formatBytes(totalBytes)})`
+      : `ไฟล์ "${firstFile.name}" (${formatBytes(firstFile.size)})`;
+
     if (config.showToast) {
-      config.showToast(`📤 กำลังส่งคำขอไฟล์ "${file.name}" (${formatBytes(file.size)}) ไปหา ${targetMember.username || targetMember.uid}...`);
+      config.showToast(`📤 กำลังส่งคำขอ ${desc} ไปหา ${targetMember.username || targetMember.uid}...`);
     }
   }
 
   // --- Receiver Logic ---
   function handleIncomingRequest(data) {
     ensureDOM();
-    if (!data || !data.transferId || !data.file || !data.from) return;
+    if (!data || !data.transferId || !data.from) return;
+    const file = data.file || (data.files && data.files[0]);
+    if (!file) return;
 
     // Deduplication check: Ignore repeat 1s pings if this transferId is already shown, preparing save location, or active!
     if (
@@ -786,14 +923,48 @@
     if (dom.receiveSenderName) dom.receiveSenderName.textContent = data.from.username || data.from.uid;
     if (dom.receiveSenderUid) dom.receiveSenderUid.textContent = `UID: ${data.from.uid}`;
 
-    if (dom.receiveFileIcon) dom.receiveFileIcon.textContent = getFileIcon(data.file.name);
-    if (dom.receiveFileName) dom.receiveFileName.textContent = data.file.name;
-    if (dom.receiveFileSize) dom.receiveFileSize.textContent = formatBytes(data.file.size);
+    const filesList = Array.isArray(data.files) && data.files.length > 0 ? data.files : [file];
+    const totalBytes = data.totalBytes || filesList.reduce((acc, f) => acc + (f.size || 0), 0);
+
+    if (filesList.length > 1) {
+      if (dom.receiveFileIcon) dom.receiveFileIcon.textContent = '📦';
+      if (dom.receiveFileName) dom.receiveFileName.textContent = `${filesList.length} ไฟล์ (ขนาดรวม ${formatBytes(totalBytes)})`;
+      if (dom.receiveFileSize) dom.receiveFileSize.textContent = `ส่งมาพร้อมกัน ${filesList.length} รายการ`;
+
+      if (dom.receiveBatchPreview) {
+        dom.receiveBatchPreview.classList.remove('hidden');
+        dom.receiveBatchPreview.innerHTML = filesList.map((f) => `
+          <div class="p2p-batch-file-item">
+            <div class="p2p-batch-file-left">
+              <span>${getFileIcon(f.name)}</span>
+              <span class="p2p-batch-file-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+              <span class="p2p-batch-file-size mono">(${formatBytes(f.size)})</span>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      if (dom.btnAcceptReceive) {
+        dom.btnAcceptReceive.textContent = `💾 ยอมรับและเลือกโฟลเดอร์บันทึก (${filesList.length} ไฟล์)`;
+      }
+    } else {
+      if (dom.receiveFileIcon) dom.receiveFileIcon.textContent = getFileIcon(file.name);
+      if (dom.receiveFileName) dom.receiveFileName.textContent = file.name;
+      if (dom.receiveFileSize) dom.receiveFileSize.textContent = formatBytes(file.size);
+
+      if (dom.receiveBatchPreview) {
+        dom.receiveBatchPreview.classList.add('hidden');
+      }
+
+      if (dom.btnAcceptReceive) {
+        dom.btnAcceptReceive.textContent = '💾 ยอมรับและเลือกที่บันทึกไฟล์';
+      }
+    }
 
     if (dom.receiveHugeNotice) {
-      if (data.file.size > 10 * 1024 * 1024 * 1024) {
+      if (totalBytes > 10 * 1024 * 1024 * 1024) {
         dom.receiveHugeNotice.classList.remove('hidden');
-        dom.receiveHugeNotice.textContent = `💡 ไฟล์ขนาดใหญ่ (${formatBytes(data.file.size)}) ระบบจะเขียนลงฮาร์ดดิสก์ทันทีโดยไม่เปลือง RAM`;
+        dom.receiveHugeNotice.textContent = `💡 ไฟล์ขนาดใหญ่ (${formatBytes(totalBytes)}) ระบบจะเขียนลงฮาร์ดดิสก์ทันทีโดยไม่เปลือง RAM`;
       } else {
         dom.receiveHugeNotice.classList.add('hidden');
       }
@@ -805,7 +976,11 @@
       dom.receiveModal.style.setProperty('z-index', '99999', 'important');
     }
 
-    if (config.showToast) config.showToast(`📥 มีคำขอส่งไฟล์ "${data.file.name}" จาก ${data.from.username || data.from.uid}`);
+    const toastDesc = filesList.length > 1
+      ? `${filesList.length} ไฟล์ (${formatBytes(totalBytes)})`
+      : `ไฟล์ "${file.name}"`;
+
+    if (config.showToast) config.showToast(`📥 มีคำขอส่ง ${toastDesc} จาก ${data.from.username || data.from.uid}`);
   }
 
   function rejectIncomingRequest(req, reason = 'ผู้รับปฏิเสธคำขอ') {
@@ -972,51 +1147,90 @@
     }
 
     let writableStream = null;
+    let dirHandle = null;
 
-    // Check File System Access API support for streaming directly to disk
-    if (window.showSaveFilePicker) {
-      try {
-        const fileHandle = await window.showSaveFilePicker({
-          suggestedName: req.file.name
-        });
-        writableStream = await fileHandle.createWritable();
-      } catch (err) {
-        preparingTransferId = null;
-        if (err.name === 'AbortError') {
+    const filesList = Array.isArray(req.files) && req.files.length > 0 ? req.files : [req.file];
+    const totalBytes = req.totalBytes || filesList.reduce((acc, f) => acc + (f.size || 0), 0);
+    const firstFile = filesList[0];
+
+    if (filesList.length > 1) {
+      // Multiple files: prompt user to pick destination directory once
+      if (window.showDirectoryPicker) {
+        try {
+          dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+        } catch (err) {
+          preparingTransferId = null;
+          if (err.name === 'AbortError') {
+            if (config.currentUser) {
+              sendPacketToPeer(req.from.uid, {
+                type: 'p2p_file_response',
+                transferId: req.transferId,
+                accepted: false,
+                reason: 'ผู้รับยกเลิกการเลือกโฟลเดอร์บันทึกไฟล์',
+                from: { uid: config.currentUser.uid, username: config.currentUser.username }
+              });
+            }
+            if (config.showToast) config.showToast('ยกเลิกการเลือกโฟลเดอร์');
+            return;
+          }
+          console.error('Directory picker error:', err);
+        }
+      }
+
+      if (dirHandle) {
+        try {
+          const firstHandle = await dirHandle.getFileHandle(firstFile.name, { create: true });
+          writableStream = await firstHandle.createWritable();
+        } catch (e) {
+          console.error('Error creating first file stream in directory:', e);
+        }
+      }
+    } else {
+      // Single file
+      if (window.showSaveFilePicker) {
+        try {
+          const fileHandle = await window.showSaveFilePicker({
+            suggestedName: firstFile.name
+          });
+          writableStream = await fileHandle.createWritable();
+        } catch (err) {
+          preparingTransferId = null;
+          if (err.name === 'AbortError') {
+            if (config.currentUser) {
+              sendPacketToPeer(req.from.uid, {
+                type: 'p2p_file_response',
+                transferId: req.transferId,
+                accepted: false,
+                reason: 'ผู้รับยกเลิกการเลือกที่บันทึกไฟล์',
+                from: { uid: config.currentUser.uid, username: config.currentUser.username }
+              });
+            }
+            if (config.showToast) config.showToast('ยกเลิกการบันทึกไฟล์');
+            return;
+          }
+          console.error('Error opening save file stream:', err);
+          if (config.showToast) config.showToast('⚠️ ไม่สามารถเปิดที่บันทึกไฟล์ได้: ' + err.message);
+          return;
+        }
+      } else {
+        if (firstFile.size > 1.5 * 1024 * 1024 * 1024) {
+          preparingTransferId = null;
+          alert(
+            `เบราว์เซอร์นี้ไม่รองรับ File System Access API สำหรับไฟล์ขนาดใหญ่ (${formatBytes(firstFile.size)})\nกรุณาใช้ Google Chrome หรือ Microsoft Edge เพื่อรับไฟล์ขนาดใหญ่ระดับหลาย GB โดยไม่เกิดปัญหาหน่วยความจำ`
+          );
           if (config.currentUser) {
             sendPacketToPeer(req.from.uid, {
               type: 'p2p_file_response',
               transferId: req.transferId,
               accepted: false,
-              reason: 'ผู้รับยกเลิกการเลือกที่บันทึกไฟล์',
+              reason: 'เบราว์เซอร์ผู้รับไม่รองรับการเขียนไฟล์ขนาดใหญ่ลงดิสก์โดยตรง',
               from: { uid: config.currentUser.uid, username: config.currentUser.username }
             });
           }
-          if (config.showToast) config.showToast('ยกเลิกการบันทึกไฟล์');
           return;
         }
-        console.error('Error opening save file stream:', err);
-        if (config.showToast) config.showToast('⚠️ ไม่สามารถเปิดที่บันทึกไฟล์ได้: ' + err.message);
-        return;
+        if (config.showToast) config.showToast('⚠️ กำลังใช้โหมดสำรองในหน่วยความจำ (แนะนำ Chrome/Edge สำหรับไฟล์ใหญ่)');
       }
-    } else {
-      if (req.file.size > 1.5 * 1024 * 1024 * 1024) {
-        preparingTransferId = null;
-        alert(
-          `เบราว์เซอร์นี้ไม่รองรับ File System Access API สำหรับไฟล์ขนาดใหญ่ (${formatBytes(req.file.size)})\nกรุณาใช้ Google Chrome หรือ Microsoft Edge เพื่อรับไฟล์ขนาดใหญ่ระดับหลาย GB โดยไม่เกิดปัญหาหน่วยความจำ`
-        );
-        if (config.currentUser) {
-          sendPacketToPeer(req.from.uid, {
-            type: 'p2p_file_response',
-            transferId: req.transferId,
-            accepted: false,
-            reason: 'เบราว์เซอร์ผู้รับไม่รองรับการเขียนไฟล์ขนาดใหญ่ลงดิสก์โดยตรง',
-            from: { uid: config.currentUser.uid, username: config.currentUser.username }
-          });
-        }
-        return;
-      }
-      if (config.showToast) config.showToast('⚠️ กำลังใช้โหมดสำรองในหน่วยความจำ (แนะนำ Chrome/Edge สำหรับไฟล์ใหญ่)');
     }
 
     // Setup active session for receiver
@@ -1026,19 +1240,24 @@
       targetUid: req.from.uid,
       targetUsername: req.from.username || req.from.uid,
       targetAvatar: req.from.avatar,
-      file: req.file,
+      filesList,
+      currentFileIndex: 0,
+      file: firstFile,
+      dirHandle,
+      writableStream,
+      completedFilesBytes: 0,
+      currentFileTransferredBytes: 0,
       pc: null,
       dc: null,
       channels: [],
       pendingCandidates: [],
-      writableStream,
       receivedChunks: new Map(), // byteOffset -> Uint8Array
       nextWriteOffset: 0,
       bufferedBytesInBatch: 0,
       writeQueue: Promise.resolve(),
-      fallbackChunks: writableStream ? null : [],
+      fallbackChunks: (writableStream || dirHandle) ? null : [],
       transferredBytes: 0,
-      totalBytes: req.file.size,
+      totalBytes,
       startTime: 0,
       lastSpeedCheckTime: 0,
       lastSpeedCheckBytes: 0,
@@ -1055,7 +1274,7 @@
     setupReceiverPeerConnection();
 
     // Open Floating Progress Widget
-    openWidget('receiver', req.file, req.from);
+    openWidget('receiver', firstFile, req.from, filesList.length, totalBytes);
 
     // Reply accept to sender
     if (config.currentUser) {
@@ -1122,8 +1341,12 @@
       if (typeof event.data === 'string') {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.header === 'file_end') {
-            await finishReceivingFile();
+          if (msg.header === 'file_start') {
+            await handleReceiverFileStart(msg);
+          } else if (msg.header === 'file_end') {
+            await finishReceivingCurrentFile(msg);
+          } else if (msg.header === 'batch_complete') {
+            finishReceivingBatch();
           } else if (msg.header === 'file_cancel') {
             cancelTransfer(msg.reason || 'ผู้ส่งยกเลิกการส่งไฟล์', false);
           }
@@ -1145,12 +1368,60 @@
     };
   }
 
+  async function handleReceiverFileStart(msg) {
+    if (!activeSession || activeSession.role !== 'receiver' || activeSession.isCancelled) return;
+
+    activeSession.currentFileIndex = msg.fileIndex || 0;
+    activeSession.file = {
+      name: msg.name,
+      size: msg.size,
+      type: msg.type
+    };
+
+    activeSession.receivedChunks = new Map();
+    activeSession.nextWriteOffset = 0;
+    activeSession.bufferedBytesInBatch = 0;
+    activeSession.writeQueue = Promise.resolve();
+    activeSession.currentFileTransferredBytes = 0;
+    activeSession.fallbackChunks = activeSession.dirHandle ? null : [];
+
+    if (activeSession.dirHandle) {
+      try {
+        const fileHandle = await activeSession.dirHandle.getFileHandle(msg.name, { create: true });
+        activeSession.writableStream = await fileHandle.createWritable();
+      } catch (err) {
+        console.error('Error creating writable stream in directory:', err);
+      }
+    }
+
+    const fileList = activeSession.filesList || [activeSession.file];
+    const totalFiles = fileList.length;
+
+    if (dom.widgetFileName) {
+      dom.widgetFileName.textContent = totalFiles > 1
+        ? `(${activeSession.currentFileIndex + 1}/${totalFiles}) ${msg.name}`
+        : msg.name;
+    }
+    if (dom.widgetFileIcon) {
+      dom.widgetFileIcon.textContent = getFileIcon(msg.name);
+    }
+    if (dom.statusText) {
+      dom.statusText.textContent = totalFiles > 1
+        ? `กำลังรับไฟล์ (${activeSession.currentFileIndex + 1}/${totalFiles}): ${msg.name}...`
+        : `กำลังรับไฟล์: ${msg.name}...`;
+    }
+  }
+
   function handleIncomingChunk(offset, payload) {
     if (!activeSession || activeSession.isCancelled) return;
 
     activeSession.receivedChunks.set(offset, payload);
     activeSession.bufferedBytesInBatch += payload.byteLength;
-    activeSession.transferredBytes += payload.byteLength;
+    activeSession.currentFileTransferredBytes = (activeSession.currentFileTransferredBytes || 0) + payload.byteLength;
+
+    const overallTransferred = (activeSession.completedFilesBytes || 0) + activeSession.currentFileTransferredBytes;
+    activeSession.transferredBytes = overallTransferred;
+
     updateProgressUI(activeSession.transferredBytes, activeSession.totalBytes);
 
     tryFlushBatch(false);
@@ -1212,10 +1483,8 @@
     }
   }
 
-  async function finishReceivingFile() {
-    if (!activeSession || activeSession.isComplete || activeSession.isCancelled) return;
-    activeSession.isComplete = true;
-    stopStatsMonitor();
+  async function finishReceivingCurrentFile(msg) {
+    if (!activeSession || activeSession.isCancelled) return;
 
     if (dom.statusText) dom.statusText.textContent = 'กำลังบันทึกและปิดไฟล์...';
 
@@ -1260,21 +1529,44 @@
       }
     }
 
+    const fileList = activeSession.filesList || [activeSession.file];
+    const currentFile = fileList[activeSession.currentFileIndex];
+    if (currentFile) {
+      activeSession.completedFilesBytes = (activeSession.completedFilesBytes || 0) + currentFile.size;
+    }
+
     // 4. Send acknowledgment to sender so sender knows disk write is 100% complete
     const primaryDc = (activeSession.channels && activeSession.channels[0]) || activeSession.dc;
     if (primaryDc && primaryDc.readyState === 'open') {
       try {
-        primaryDc.send(JSON.stringify({ header: 'file_ack' }));
+        primaryDc.send(JSON.stringify({ header: 'file_ack', fileIndex: activeSession.currentFileIndex }));
       } catch (e) {}
     }
 
+    // If this was the last file in the batch (or single file), finish receiver batch
+    if (activeSession.currentFileIndex + 1 >= fileList.length) {
+      finishReceivingBatch();
+    }
+  }
+
+  function finishReceivingBatch() {
+    if (!activeSession || activeSession.isComplete) return;
+    activeSession.isComplete = true;
+    stopStatsMonitor();
+
     updateProgressUI(activeSession.totalBytes, activeSession.totalBytes, true);
-    showCompletionUI(
-      '🎉 บันทึกไฟล์สำเร็จ 100%!',
-      `รับไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) เรียบร้อยแล้ว`
-    );
+
+    const fileList = activeSession.filesList || [activeSession.file];
+    const totalFiles = fileList.length;
+    const title = '🎉 บันทึกไฟล์สำเร็จ 100%!';
+    const sub = totalFiles > 1
+      ? `รับครบทั้ง ${totalFiles} ไฟล์ (${formatBytes(activeSession.totalBytes)}) เรียบร้อยแล้ว`
+      : `รับไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) เรียบร้อยแล้ว`;
+
+    showCompletionUI(title, sub);
+
     if (config.showToast) {
-      config.showToast(`✅ รับไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) สำเร็จเรียบร้อย!`);
+      config.showToast(`✅ ${sub}`);
     }
 
     // Delay connection cleanup so ACK packet is delivered cleanly
@@ -1329,10 +1621,11 @@
       dom.sendModal.style.setProperty('display', 'none', 'important');
     }
 
+    const fileCount = activeSession.filesList ? activeSession.filesList.length : 1;
     openWidget('sender', activeSession.file, {
       username: activeSession.targetUsername,
       avatar: activeSession.targetAvatar
-    });
+    }, fileCount, activeSession.totalBytes);
 
     // --- High-Speed Desktop App Branch (Raw TCP Direct Streaming) ---
     if (data.isNativeTcp && window.electronAPI && activeSession.file && activeSession.file.path) {
@@ -1449,7 +1742,7 @@
           if (msg.header === 'file_cancel') {
             cancelTransfer(msg.reason || 'ผู้รับได้ยกเลิกการรับไฟล์', false);
           } else if (msg.header === 'file_ack') {
-            finishSendingFile();
+            handleSenderFileAck(msg);
           }
         } catch (e) {}
       };
@@ -1527,10 +1820,36 @@
   // --- High-Performance Multi-Channel Turbo File Streaming Engine ---
   function startStreamingFile() {
     if (!activeSession || activeSession.role !== 'sender') return;
+    activeSession.currentFileIndex = 0;
+    activeSession.completedFilesBytes = 0;
+    streamCurrentBatchFile();
+  }
 
-    const file = activeSession.file;
+  function streamCurrentBatchFile() {
+    if (!activeSession || activeSession.role !== 'sender' || activeSession.isCancelled) return;
+
+    const fileList = activeSession.filesList || [activeSession.file];
+    const file = fileList[activeSession.currentFileIndex];
+    if (!file) return;
+
+    activeSession.file = file;
     const totalSize = file.size;
     let offset = 0;
+    const totalFiles = fileList.length;
+
+    if (dom.statusText) {
+      dom.statusText.textContent = totalFiles > 1
+        ? `กำลังส่ง (${activeSession.currentFileIndex + 1}/${totalFiles}): ${file.name}...`
+        : `กำลังส่ง: ${file.name}...`;
+    }
+    if (dom.widgetFileName) {
+      dom.widgetFileName.textContent = totalFiles > 1
+        ? `(${activeSession.currentFileIndex + 1}/${totalFiles}) ${file.name}`
+        : file.name;
+    }
+    if (dom.widgetFileIcon) {
+      dom.widgetFileIcon.textContent = getFileIcon(file.name);
+    }
 
     const primaryDc = (activeSession.channels && activeSession.channels[0]) || activeSession.dc;
     if (primaryDc && primaryDc.readyState === 'open') {
@@ -1538,6 +1857,7 @@
         primaryDc.send(
           JSON.stringify({
             header: 'file_start',
+            fileIndex: activeSession.currentFileIndex,
             name: file.name,
             size: totalSize,
             type: file.type,
@@ -1665,9 +1985,10 @@
         }
 
         offset += sliceBuf.byteLength;
-        activeSession.transferredBytes = offset;
+        const overall = (activeSession.completedFilesBytes || 0) + offset;
+        activeSession.transferredBytes = overall;
 
-        updateProgressUI(offset, totalSize);
+        updateProgressUI(overall, activeSession.totalBytes);
 
         // Yield to event loop periodically to prevent blocking UI
         if (offset % (effectiveChunkSize * 16) === 0) {
@@ -1677,13 +1998,17 @@
       }
 
       if (offset >= totalSize && !activeSession.isCancelled) {
-        if (dom.statusText) dom.statusText.textContent = 'ส่งข้อมูลครบแล้ว กำลังรอผู้รับบันทึกไฟล์ลงดิสก์...';
+        if (dom.statusText) {
+          dom.statusText.textContent = totalFiles > 1
+            ? `ส่งไฟล์ (${activeSession.currentFileIndex + 1}/${totalFiles}) ครบแล้ว กำลังรอผู้รับบันทึก...`
+            : 'ส่งข้อมูลครบแล้ว กำลังรอผู้รับบันทึกไฟล์ลงดิสก์...';
+        }
         waitForAllChannelsDrain(() => {
           if (!activeSession || activeSession.isCancelled || activeSession.isComplete) return;
           try {
             const primary = (activeSession.channels && activeSession.channels[0]) || activeSession.dc;
             if (primary && primary.readyState === 'open') {
-              primary.send(JSON.stringify({ header: 'file_end' }));
+              primary.send(JSON.stringify({ header: 'file_end', fileIndex: activeSession.currentFileIndex }));
             }
           } catch (e) {
             console.error('Error sending file_end:', e);
@@ -1696,6 +2021,36 @@
     sendNextChunks();
   }
 
+  function handleSenderFileAck(msg) {
+    if (!activeSession || activeSession.role !== 'sender' || activeSession.isCancelled) return;
+
+    if (activeSession.ackTimeout) {
+      clearTimeout(activeSession.ackTimeout);
+      activeSession.ackTimeout = null;
+    }
+
+    const fileList = activeSession.filesList || [activeSession.file];
+    const currentFile = fileList[activeSession.currentFileIndex];
+    if (currentFile) {
+      activeSession.completedFilesBytes = (activeSession.completedFilesBytes || 0) + currentFile.size;
+    }
+    activeSession.currentFileIndex++;
+
+    if (activeSession.currentFileIndex < fileList.length) {
+      // Send next file in batch!
+      streamCurrentBatchFile();
+    } else {
+      // All files sent!
+      const primaryDc = (activeSession.channels && activeSession.channels[0]) || activeSession.dc;
+      if (primaryDc && primaryDc.readyState === 'open') {
+        try {
+          primaryDc.send(JSON.stringify({ header: 'batch_complete' }));
+        } catch (e) {}
+      }
+      finishSendingBatch();
+    }
+  }
+
   function waitForReceiverAck() {
     if (!activeSession) return;
     if (activeSession.ackTimeout) clearTimeout(activeSession.ackTimeout);
@@ -1703,12 +2058,17 @@
     activeSession.ackTimeout = setTimeout(() => {
       if (activeSession && activeSession.role === 'sender' && !activeSession.isComplete) {
         console.log('Receiver ACK timeout fallback - completing sender transfer');
-        finishSendingFile();
+        const fileList = activeSession.filesList || [activeSession.file];
+        if (activeSession.currentFileIndex + 1 >= fileList.length) {
+          finishSendingBatch();
+        } else {
+          handleSenderFileAck({ header: 'file_ack' });
+        }
       }
     }, 10000);
   }
 
-  function finishSendingFile() {
+  function finishSendingBatch() {
     if (!activeSession || activeSession.role !== 'sender' || activeSession.isComplete) return;
     activeSession.isComplete = true;
     if (activeSession.ackTimeout) {
@@ -1722,14 +2082,17 @@
     }
 
     updateProgressUI(activeSession.totalBytes, activeSession.totalBytes, true);
-    showCompletionUI(
-      '🎉 ส่งไฟล์สำเร็จ 100%!',
-      `ส่งไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) ให้ ${activeSession.targetUsername} เรียบร้อยแล้ว`
-    );
+
+    const fileList = activeSession.filesList || [activeSession.file];
+    const totalFiles = fileList.length;
+    const title = '🎉 ส่งไฟล์สำเร็จ 100%!';
+    const sub = totalFiles > 1
+      ? `ส่งครบทั้ง ${totalFiles} ไฟล์ (${formatBytes(activeSession.totalBytes)}) ให้ ${activeSession.targetUsername} เรียบร้อยแล้ว`
+      : `ส่งไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) ให้ ${activeSession.targetUsername} เรียบร้อยแล้ว`;
+
+    showCompletionUI(title, sub);
     if (config.showToast) {
-      config.showToast(
-        `✅ ส่งไฟล์ "${activeSession.file.name}" (${formatBytes(activeSession.totalBytes)}) ให้ ${activeSession.targetUsername} สำเร็จ!`
-      );
+      config.showToast(`✅ ${sub}`);
     }
 
     // Delay connection cleanup so both sides close gracefully
@@ -1737,6 +2100,8 @@
       cleanupConnections();
     }, 2000);
   }
+
+  const finishSendingFile = finishSendingBatch;
 
   function handleTcpTransferComplete() {
     if (!activeSession || activeSession.isComplete) return;
@@ -1823,14 +2188,16 @@
     if (!force && now - lastUiUpdateTime < 75) return; // Cap DOM update to ~13 FPS
     lastUiUpdateTime = now;
 
-    const pct = total > 0 ? Math.min(100, (transferred / total) * 100) : 0;
+    const overallTransferred = (activeSession ? (activeSession.completedFilesBytes || 0) : 0) + (activeSession ? (activeSession.currentFileTransferred || activeSession.currentFileTransferredBytes || 0) : transferred);
+    const overallTotal = (activeSession ? activeSession.totalBytes : total) || 1;
+    const pct = Math.min(100, (overallTransferred / overallTotal) * 100);
 
     dom.progressBar.style.width = `${pct.toFixed(1)}%`;
     if (dom.progressPercent) dom.progressPercent.textContent = `${pct.toFixed(1)}%`;
-    if (dom.bytesTransferred) dom.bytesTransferred.textContent = `${formatBytes(transferred)} / ${formatBytes(total)}`;
+    if (dom.bytesTransferred) dom.bytesTransferred.textContent = `${formatBytes(overallTransferred)} / ${formatBytes(overallTotal)}`;
   }
 
-  function openWidget(role, file, peer) {
+  function openWidget(role, file, peer, fileCount = 1, totalBytes = 0) {
     ensureDOM();
     if (dom.widget) {
       dom.widget.classList.remove('hidden', 'minimized');
@@ -1846,14 +2213,16 @@
       dom.widgetDirectionBadge.className = `p2p-direction-badge ${isSender ? 'out' : 'in'}`;
     }
 
+    const effectiveTotal = totalBytes > 0 ? totalBytes : (file ? file.size : 0);
+
     if (dom.widgetPeerName) dom.widgetPeerName.textContent = peer.username || peer.uid || 'เพื่อน';
-    if (dom.widgetFileIcon) dom.widgetFileIcon.textContent = getFileIcon(file.name);
-    if (dom.widgetFileName) dom.widgetFileName.textContent = file.name;
-    if (dom.widgetFileSize) dom.widgetFileSize.textContent = formatBytes(file.size);
+    if (dom.widgetFileIcon) dom.widgetFileIcon.textContent = fileCount > 1 ? '📦' : getFileIcon(file ? file.name : '');
+    if (dom.widgetFileName) dom.widgetFileName.textContent = fileCount > 1 ? `(1/${fileCount}) ${file ? file.name : ''}` : (file ? file.name : '');
+    if (dom.widgetFileSize) dom.widgetFileSize.textContent = fileCount > 1 ? `${formatBytes(effectiveTotal)} (${fileCount} ไฟล์)` : formatBytes(file ? file.size : 0);
 
     if (dom.progressBar) dom.progressBar.style.width = '0%';
     if (dom.progressPercent) dom.progressPercent.textContent = '0%';
-    if (dom.bytesTransferred) dom.bytesTransferred.textContent = `0 B / ${formatBytes(file.size)}`;
+    if (dom.bytesTransferred) dom.bytesTransferred.textContent = `0 B / ${formatBytes(effectiveTotal)}`;
     if (dom.speedBadge) dom.speedBadge.textContent = '⚡ 0 B/s (8x P2P)';
     if (dom.etaBadge) dom.etaBadge.textContent = '⏳ กำลังเชื่อมต่อ...';
     if (dom.statusText) dom.statusText.textContent = 'กำลังเตรียมท่อส่ง...';

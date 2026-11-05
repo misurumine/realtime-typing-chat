@@ -4558,6 +4558,118 @@ kbd {
   background: rgba(239, 68, 68, 0.16);
 }
 
+/* Multi-file batch list styles */
+.p2p-batch-view {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.p2p-batch-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 8px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--primary-text);
+}
+
+.p2p-batch-file-list {
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding-right: 4px;
+}
+
+.p2p-batch-file-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.p2p-batch-file-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+}
+
+.p2p-batch-file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+}
+
+.p2p-batch-file-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.p2p-batch-file-name {
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+.p2p-batch-file-size {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+.p2p-btn-remove-batch-item {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 3px 7px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  transition: all 0.15s ease;
+  line-height: 1;
+}
+
+.p2p-btn-remove-batch-item:hover {
+  color: var(--danger);
+  background: rgba(239, 68, 68, 0.18);
+}
+
+.p2p-add-more-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 0.82rem;
+  color: var(--primary-text);
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px dashed rgba(99, 102, 241, 0.45);
+  border-radius: var(--radius-sm);
+  padding: 7px 14px;
+  cursor: pointer;
+  width: 100%;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.p2p-add-more-btn:hover {
+  background: rgba(99, 102, 241, 0.22);
+  border-color: var(--primary);
+  color: #fff;
+}
+
 /* Waiting State */
 .p2p-waiting-state {
   display: flex;

@@ -1092,15 +1092,16 @@
         <div id="p2pSendFormState" class="p2p-form-state">
           <!-- Dropzone -->
           <div id="p2pSendDropzone" class="p2p-dropzone" title="คลิกเพื่อเลือกไฟล์ หรือลากไฟล์มาวางที่นี่">
-            <input type="file" id="p2pSendFileInput" class="hidden" />
+            <input type="file" id="p2pSendFileInput" class="hidden" multiple />
             <div class="p2p-dropzone-icon">📥</div>
             <div class="p2p-dropzone-text"><strong>คลิกเลือกไฟล์</strong> หรือลากไฟล์มาวางที่นี่</div>
-            <div class="p2p-dropzone-hint">รองรับไฟล์ทุกประเภท ทุกขนาด (เช่น วิดีโอ 51GB, ZIP, ISO ฯลฯ)</div>
+            <div class="p2p-dropzone-hint">รองรับเลือกพร้อมกันหลายไฟล์ ทุกประเภท ทุกขนาด (วิดีโอ, ZIP, ISO ฯลฯ)</div>
           </div>
 
           <!-- Selected File Preview Card (Hidden initially) -->
           <div id="p2pSendFilePreview" class="p2p-file-preview-card hidden">
-            <div class="p2p-file-preview-left">
+            <!-- Single File Mode Container -->
+            <div id="p2pSingleFileView" class="p2p-file-preview-left">
               <span id="p2pFilePreviewIcon" class="p2p-file-icon">🎬</span>
               <div class="p2p-file-details">
                 <div id="p2pFilePreviewName" class="p2p-file-name">video.mp4</div>
@@ -1108,6 +1109,17 @@
                 <div id="p2pFileHugeBadge" class="p2p-file-huge-badge hidden">⚡ สตรีมดิสก์ P2P รองรับไฟล์ขนาดใหญ่พิเศษ</div>
               </div>
             </div>
+
+            <!-- Multi-File Batch Mode Container -->
+            <div id="p2pBatchFileView" class="p2p-batch-view hidden">
+              <div class="p2p-batch-summary-header">
+                <span id="p2pBatchSummaryText">📁 เลือกแล้ว 0 ไฟล์ (รวม 0 B)</span>
+                <button type="button" id="btnP2PClearAllBatch" class="btn-icon p2p-btn-remove" title="ล้างรายการทั้งหมด">✕ ล้างทั้งหมด</button>
+              </div>
+              <div id="p2pBatchFileList" class="p2p-batch-file-list"></div>
+              <button type="button" id="btnP2PAddMoreFiles" class="p2p-add-more-btn">➕ เลือกไฟล์เพิ่ม</button>
+            </div>
+
             <button type="button" id="btnP2PRemoveFile" class="btn-icon p2p-btn-remove" title="เปลี่ยนไฟล์">✕</button>
           </div>
         </div>
@@ -1165,6 +1177,9 @@
             </div>
           </div>
         </div>
+
+        <!-- Incoming Multi-file List Preview (shown when multiple files are sent) -->
+        <div id="p2pReceiveBatchPreview" class="p2p-batch-file-list hidden" style="margin-bottom: 12px; max-height: 140px;"></div>
 
         <div class="p2p-security-note">
           🔒 ข้อมูลจะวิ่งตรงสู่เครื่องคุณเท่านั้น ไม่มีการอัปโหลดขึ้นเซิร์ฟเวอร์ใด ๆ ทั้งสิ้น
