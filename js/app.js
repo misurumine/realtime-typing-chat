@@ -967,6 +967,11 @@
   // Room Heartbeat & Automatic Host Takeover State (4s Ping / 11s Timeout)
   const ROOM_HEARTBEAT_INTERVAL_MS = 4000;
   const ROOM_MEMBER_TIMEOUT_MS = 11000;
+  const DISCOVERED_ROOM_STALE_MS = 70000;
+  const ROSTER_SYNC_MIN_GAP_MS = 2000;
+  let lastRosterSyncRequestAt = 0;
+  let memberSyncReplyTimer = null;
+  let joinRetryTimers = [];
   let roomHeartbeatTimer = null;
   let hostWatchdogTimer = null;
   let hostDiscoveryTimer = null;
@@ -1670,11 +1675,17 @@
         mqttClient.subscribe(topicRoom(activeRoomCode), { qos: 0 });
         broadcastRoomJoin();
         broadcastActiveRoomToDirectory();
+        // We may have missed joins/leaves while disconnected -> re-sync roster
+        lastRosterSyncRequestAt = 0;
+        requestRosterSync();
       }
 
       // 5. Broadcast our online status, query public rooms & ping all friends
       broadcastMyPresence(true);
+      // QoS 0 query can be dropped: send a short burst so the room list fills quickly
       requestDirectoryScan();
+      setTimeout(requestDirectoryScan, 700);
+      setTimeout(requestDirectoryScan, 2000);
       pingAllFriends();
       checkUrlRoomInvite();
 
@@ -1735,10 +1746,12 @@
       });
       if (changed) renderFriendsList();
 
-      // Clean up stale discovered rooms older than 35s
+      // Clean up stale discovered rooms older than 70s
+      // (background host tabs get timers throttled to ~1/min, so 35s made live rooms flicker away;
+      // explicitly closed rooms are still removed instantly via 'room_closed')
       let roomsChanged = false;
       discoveredRooms.forEach((r, code) => {
-        if (now - r.updatedAt > 35000) {
+        if (now - r.updatedAt > DISCOVERED_ROOM_STALE_MS) {
           discoveredRooms.delete(code);
           roomsChanged = true;
         }
@@ -2569,6 +2582,19 @@
     // Ignore our own echo for typing/clear since we already update locally immediately
     if (cleanSenderUid === currentUser.uid) return;
 
+    // Roster self-healing: a packet from someone we don't know means we missed their join/sync
+    // (QoS 0 on public brokers drops packets). Ask the whole room to re-sync instead of waiting
+    // until that person happens to type.
+    if (
+      !roomMembers.has(cleanSenderUid) &&
+      data.type !== 'member_join' &&
+      data.type !== 'member_sync' &&
+      data.type !== 'member_leave' &&
+      data.type !== 'member_timeout_kick'
+    ) {
+      requestRosterSync();
+    }
+
     // Refresh member activity and host heartbeat on ANY legitimate message received
     if (roomMembers.has(cleanSenderUid)) {
       roomMembers.get(cleanSenderUid).lastPongAt = Date.now();
@@ -2588,7 +2614,7 @@
         // Split-brain resolution: compare joinedAt timestamps (earliest join wins)
         const myJoinedAt = roomMembers.get(currentUser.uid)?.joinedAt || 0;
         const senderMember = roomMembers.get(senderHost);
-        const senderJoinedAt = (senderMember && senderMember.joinedAt) || (data.joinedAt || Infinity);
+        const senderJoinedAt = (data.joinedAt && Number(data.joinedAt)) || (senderMember && senderMember.joinedAt) || Infinity;
 
         if (senderJoinedAt < myJoinedAt) {
           // Sender legitimately joined earlier: surrender host gracefully
@@ -2764,20 +2790,7 @@
       }
 
       // Reply with our own member state + current live text so the newcomer sees everyone immediately!
-      const myMember = roomMembers.get(currentUser.uid);
-      publishJson(topicRoom(activeRoomCode), {
-        type: 'member_sync',
-        uid: currentUser.uid,
-        username: currentUser.username,
-        avatar: currentUser.avatar,
-        tags: Array.from(selectedTags),
-        currentText: myMember ? myMember.currentText : liveTypingInput.value,
-        image: myMember ? myMember.image : currentImage,
-        joinedAt: myMember ? myMember.joinedAt : Date.now(),
-        isHost: Boolean(activeRoomHostUid === currentUser.uid),
-        hostUid: activeRoomHostUid,
-        sortMode: activeRoomSortMode || 'activity'
-      });
+      publishJson(topicRoom(activeRoomCode), buildMyMemberSyncPayload());
 
       // If we are host, broadcast authoritative card order to newcomer immediately!
       if (activeRoomHostUid === currentUser.uid) {
@@ -2861,6 +2874,11 @@
       } else {
         updateSingleCardContent(cleanSenderUid, safeText, safeImage);
       }
+
+      // Sender is missing part of the roster -> reply with our own state (jittered, coalesced)
+      if (data.requestReply) {
+        scheduleMemberSyncReply();
+      }
       return;
     }
 
@@ -2895,6 +2913,14 @@
           activeRoomSortMode = data.sortMode;
           updateRoomHostUi();
         }
+      }
+
+      // Host lists members we have never heard of -> we missed their sync, request roster
+      if (data.order.some((uid) => {
+        const cleanUid = sanitizeUid(uid);
+        return cleanUid && cleanUid !== currentUser.uid && !roomMembers.has(cleanUid);
+      })) {
+        requestRosterSync();
       }
 
       // Non-host members apply the host's authoritative order directly!
@@ -4205,6 +4231,7 @@
           type: 'room_heartbeat_ping',
           uid: currentUser.uid,
           hostUid: currentUser.uid,
+          joinedAt: roomMembers.get(currentUser.uid)?.joinedAt || Date.now(),
           ts: Date.now()
         });
       } else if (activeRoomHostUid) {
@@ -4579,6 +4606,65 @@
     showToast(`ส่งคำเชิญเข้าห้อง ${activeRoomCode} ให้เพื่อนแล้ว!`);
   }
 
+  // --- Room Roster Self-Healing (recover from dropped QoS 0 join/sync packets) ---
+  function buildMyMemberSyncPayload(extra) {
+    const myMember = currentUser ? roomMembers.get(currentUser.uid) : null;
+    return {
+      type: 'member_sync',
+      uid: currentUser.uid,
+      username: currentUser.username,
+      avatar: currentUser.avatar,
+      tags: Array.from(selectedTags),
+      currentText: myMember ? myMember.currentText : liveTypingInput.value,
+      image: myMember ? myMember.image : currentImage,
+      joinedAt: myMember ? myMember.joinedAt : Date.now(),
+      isHost: Boolean(activeRoomHostUid === currentUser.uid),
+      hostUid: activeRoomHostUid,
+      sortMode: activeRoomSortMode || 'activity',
+      ...(extra || {})
+    };
+  }
+
+  // Broadcast our state and ask every member to answer with theirs (rate-limited)
+  function requestRosterSync() {
+    if (!currentUser || !activeRoomCode) return;
+    const now = Date.now();
+    if (now - lastRosterSyncRequestAt < ROSTER_SYNC_MIN_GAP_MS) return;
+    lastRosterSyncRequestAt = now;
+    publishJson(topicRoom(activeRoomCode), buildMyMemberSyncPayload({ requestReply: true }));
+  }
+
+  // Coalesce many roster requests into a single jittered reply to avoid packet storms
+  function scheduleMemberSyncReply() {
+    if (memberSyncReplyTimer) return;
+    const code = activeRoomCode;
+    const jitterMs = Math.floor(Math.random() * 220) + 40;
+    memberSyncReplyTimer = setTimeout(() => {
+      memberSyncReplyTimer = null;
+      if (!currentUser || !activeRoomCode || activeRoomCode !== code) return;
+      publishJson(topicRoom(activeRoomCode), buildMyMemberSyncPayload());
+    }, jitterMs);
+  }
+
+  function clearJoinRetryTimers() {
+    joinRetryTimers.forEach((t) => clearTimeout(t));
+    joinRetryTimers = [];
+  }
+
+  // Re-announce join while we still see nobody else in the room
+  function scheduleJoinRetries(code) {
+    clearJoinRetryTimers();
+    [1000, 2500, 5000, 9000].forEach((delay) => {
+      joinRetryTimers.push(setTimeout(() => {
+        if (!currentUser || activeRoomCode !== code) return;
+        if (roomMembers.size > 1) return;
+        broadcastRoomJoin();
+        lastRosterSyncRequestAt = 0;
+        requestRosterSync();
+      }, delay));
+    });
+  }
+
   // --- Room Create / Join / Leave (Serverless Pub/Sub) ---
   function broadcastRoomJoin() {
     if (!currentUser || !activeRoomCode) return;
@@ -4599,6 +4685,11 @@
 
   function leaveCurrentRoomSilent() {
     stopTypingSound();
+    clearJoinRetryTimers();
+    if (memberSyncReplyTimer) {
+      clearTimeout(memberSyncReplyTimer);
+      memberSyncReplyTimer = null;
+    }
     if (hostDiscoveryTimer) {
       clearTimeout(hostDiscoveryTimer);
       hostDiscoveryTimer = null;
@@ -4723,8 +4814,11 @@
           broadcastActiveRoomToDirectory();
           syncHostRoomOrder();
         }
-      }, 1500);
+      }, 3000); // Public brokers can take >1.5s to round-trip; claiming host too early causes split-brain
     }
+
+    lastRosterSyncRequestAt = 0;
+    scheduleJoinRetries(clean);
 
     liveTypingInput.value = '';
     charCounter.textContent = `0 / 250 ตัวอักษร`;
@@ -4756,6 +4850,12 @@
   }
 
   function createNewRoom() {
+    // New rooms start public; a previous room's private setting must not hide this one from discovery
+    isRoomPublic = true;
+    if (btnToggleRoomPublic) {
+      btnToggleRoomPublic.classList.add('public');
+      btnToggleRoomPublic.textContent = '🌐 ห้องสาธารณะ (ค้นหาเจอด้วย Tag)';
+    }
     activeRoomHostUid = currentUser ? currentUser.uid : null;
     activeRoomSortMode = 'activity';
     joinRoomByCode(generateRoomCode(), true);
@@ -4777,10 +4877,25 @@
   if (btnAutoMatchRoom) {
     btnAutoMatchRoom.addEventListener('click', async () => {
       // First, trigger a quick scan if discoveredRooms is empty
+      // Wait up to ~2.2s (re-querying in case a QoS 0 packet drops), exit early once a room answers
+      const roomBeforeScan = activeRoomCode;
       if (discoveredRooms.size === 0) {
         requestDirectoryScan();
         showToast('📡 กำลังค้นหาห้องที่มี Tag ตรงกับคุณ...');
-        await new Promise((r) => setTimeout(r, 650));
+        const waitStart = Date.now();
+        let requeried = false;
+        while (discoveredRooms.size === 0 && Date.now() - waitStart < 2200) {
+          await new Promise((r) => setTimeout(r, 150));
+          if (!requeried && Date.now() - waitStart > 700) {
+            requeried = true;
+            requestDirectoryScan();
+          }
+        }
+        // Give other hosts a brief moment to answer too, so we can pick the best tag match
+        if (discoveredRooms.size > 0) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        if (activeRoomCode !== roomBeforeScan) return; // user switched rooms manually while we waited
       }
 
       const scored = Array.from(discoveredRooms.values())
@@ -5287,16 +5402,18 @@
             type: 'room_heartbeat_ping',
             uid: currentUser.uid,
             hostUid: currentUser.uid,
+            joinedAt: roomMembers.get(currentUser.uid)?.joinedAt || now,
             ts: now
           });
           return;
         }
 
-        // Send heartbeat ping to room
+        // Send heartbeat ping to room (joinedAt lets an early self-elected newcomer yield host)
         publishJson(topicRoom(activeRoomCode), {
           type: 'room_heartbeat_ping',
           uid: currentUser.uid,
           hostUid: currentUser.uid,
+          joinedAt: roomMembers.get(currentUser.uid)?.joinedAt || now,
           ts: now
         });
 
