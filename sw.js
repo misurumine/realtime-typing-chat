@@ -1,9 +1,10 @@
-const CACHE_NAME = 'livetype-pwa-v24';
+const CACHE_NAME = 'livetype-pwa-v27';
 const ASSETS = [
   './',
   './index.html',
   './css/style.css',
   './js/p2p-file-transfer.js',
+  './js/voice-chat.js',
   './js/app.js',
   './manifest.json',
   './assets/icons/icon.svg',

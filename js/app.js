@@ -58,6 +58,8 @@
       if (
         e.target.closest('#floatingStreamWindow') ||
         e.target.closest('#btnToggleScreenShare') ||
+        e.target.closest('#btnToggleVoice') ||
+        e.target.closest('#btnVoiceMute') ||
         e.target.closest('.btn-stream-card-trigger') ||
         e.target.closest('#p2pSendModal') ||
         e.target.closest('#p2pReceiveModal') ||
@@ -1613,6 +1615,29 @@
         rtcConfig: RTC_CONFIG
       });
     }
+    syncVoiceChatEngine();
+  }
+
+  // --- Sync Group Voice Chat Engine (WebRTC mesh audio) ---
+  function syncVoiceChatEngine() {
+    if (window.VoiceChat && currentUser) {
+      window.VoiceChat.init({
+        getCurrentUser: () => currentUser,
+        getActiveRoomCode: () => activeRoomCode,
+        getRoomMembers: () => roomMembers,
+        topicInbox,
+        topicRoom,
+        publishJson,
+        sanitizeUid,
+        sanitizeUsername,
+        showToast,
+        playNotificationSound,
+        rtcConfig: RTC_CONFIG,
+        onStateChange: () => {
+          if (activeRoomCode) renderAllLiveCards();
+        }
+      });
+    }
   }
 
   // --- Serverless Realtime Network Engine (MQTT over WSS) ---
@@ -1713,14 +1738,21 @@
       }
       if (!data || typeof data !== 'object' || Array.isArray(data)) return;
 
-      if (currentUser && topic === topicInbox(currentUser.uid)) {
-        handleInboxMessage(data);
-      } else if (topic === topicDirectory()) {
-        handleDirectoryMessage(data);
-      } else if (topic.startsWith(`${TOPIC_PREFIX}/presence/`)) {
-        handlePresenceMessage(data);
-      } else if (activeRoomCode && topic === topicRoom(activeRoomCode)) {
-        handleRoomMessage(data);
+      // CRITICAL: an exception thrown here propagates into mqtt.js's packet parser and permanently
+      // stalls the receive stream (client still looks "connected" and can publish, but never
+      // receives again). Always contain handler errors.
+      try {
+        if (currentUser && topic === topicInbox(currentUser.uid)) {
+          handleInboxMessage(data);
+        } else if (topic === topicDirectory()) {
+          handleDirectoryMessage(data);
+        } else if (topic.startsWith(`${TOPIC_PREFIX}/presence/`)) {
+          handlePresenceMessage(data);
+        } else if (activeRoomCode && topic === topicRoom(activeRoomCode)) {
+          handleRoomMessage(data);
+        }
+      } catch (err) {
+        console.error('MQTT message handler error (contained):', data && data.type, err);
       }
     });
 
@@ -2285,6 +2317,11 @@
       return;
     }
 
+    // Group Voice Chat WebRTC Signaling (offer / answer / ICE)
+    if (window.VoiceChat && window.VoiceChat.handleInboxMessage(data)) {
+      return;
+    }
+
     // 1. Someone pinged us to check if we are online -> reply directly to their inbox & presence
     if (data.type === 'ping_status' && senderUid) {
       if (!friendsMap.has(senderUid)) {
@@ -2526,6 +2563,11 @@
         incomingFriendRequests.delete(removedUid);
         renderFriendRequestsUI();
       }
+      return;
+    }
+
+    // Group Voice Chat Room Broadcasts (join / state / leave)
+    if (window.VoiceChat && window.VoiceChat.handleRoomMessage(data)) {
       return;
     }
 
@@ -2808,6 +2850,9 @@
           streamerAvatar: currentUser.avatar
         });
       }
+
+      // If we are in the voice room, announce so the newcomer sees who is talking
+      if (window.VoiceChat) window.VoiceChat.announce();
       return;
     }
 
@@ -2844,6 +2889,7 @@
       }
       if (cleanSenderUid === activeRoomHostUid) {
         lastHostHeartbeatReceivedAt = now;
+        syncRoomPublicFromHost(cleanSenderUid, data);
       }
       if (data.sortMode && ['activity', 'length', 'length_1s', 'stable'].includes(data.sortMode)) {
         activeRoomSortMode = data.sortMode;
@@ -2915,6 +2961,8 @@
         }
       }
 
+      syncRoomPublicFromHost(hostUid, data);
+
       // Host lists members we have never heard of -> we missed their sync, request roster
       if (data.order.some((uid) => {
         const cleanUid = sanitizeUid(uid);
@@ -2970,8 +3018,10 @@
             const hName = sanitizeUsername(data.newHostName || designatedNextHost, designatedNextHost);
             showToast(`👑 หัวห้องเดิมออกจากห้อง สิทธิ์หัวห้องถูกส่งต่อไปยัง ${hName}`);
           }
-        } else {
-          // If no designated next host or not in room, elect immediately via takeover
+        } else if (activeRoomHostUid === leavingUid) {
+          // No designated next host (e.g. tab closed) and removeMemberFromRoom() did not already
+          // elect one -> elect now. Running takeover a second time would treat the freshly
+          // elected host as the "old host" and delete them from their own roster.
           handleHostTimeoutTakeover();
         }
       }
@@ -4199,6 +4249,7 @@
     if (window.P2PFileTransfer) {
       window.P2PFileTransfer.cancelActiveTransfer('ปิดแท็บ การส่งไฟล์ถูกยกเลิก');
     }
+    if (window.VoiceChat) window.VoiceChat.leave({ silent: true });
     if (activeRoomCode && currentUser) {
       publishJson(topicRoom(activeRoomCode), {
         type: 'member_leave',
@@ -4621,6 +4672,7 @@
       isHost: Boolean(activeRoomHostUid === currentUser.uid),
       hostUid: activeRoomHostUid,
       sortMode: activeRoomSortMode || 'activity',
+      roomPublic: isRoomPublic,
       ...(extra || {})
     };
   }
@@ -4699,6 +4751,7 @@
     if (window.P2PFileTransfer) {
       window.P2PFileTransfer.cancelActiveTransfer('คุณออกจากห้อง การส่งไฟล์ถูกยกเลิก');
     }
+    if (window.VoiceChat) window.VoiceChat.resetForRoomExit();
     stopRoomHeartbeat();
     stopRoomSortInterval();
     cleanupStreamState();
@@ -4802,6 +4855,9 @@
       updateRoomHostUi();
     } else {
       activeRoomHostUid = null;
+      // Drop a stale visibility from a previous room; the host's sync sets the real value shortly.
+      // (If nobody answers we become host of what is effectively a new room, which starts public.)
+      applyRoomPublicState(true);
       updateRoomHostUi();
       // Start discovery timer for joining via direct link/code to an empty room
       hostDiscoveryTimer = setTimeout(() => {
@@ -4849,13 +4905,32 @@
     showToast(`เข้าสู่ห้อง ${activeRoomCode} แล้ว`);
   }
 
+  // Public/private is a property of the ROOM, owned by its host and synced to every member (via
+  // room_order_sync / member_sync). It used to be a per-device flag, so after a host change a private
+  // room could be announced publicly by the new host (or a public room could vanish from discovery).
+  function applyRoomPublicState(isPublic) {
+    isRoomPublic = Boolean(isPublic);
+    if (btnToggleRoomPublic) {
+      if (isRoomPublic) {
+        btnToggleRoomPublic.classList.add('public');
+        btnToggleRoomPublic.textContent = '🌐 ห้องสาธารณะ (ค้นหาเจอด้วย Tag)';
+      } else {
+        btnToggleRoomPublic.classList.remove('public');
+        btnToggleRoomPublic.textContent = '🔒 ห้องส่วนตัว (เข้าได้เฉพาะรหัส/คำเชิญ)';
+      }
+    }
+  }
+
+  // Adopt the room's visibility from a packet sent by the current host
+  function syncRoomPublicFromHost(senderUid, data) {
+    if (!data || typeof data.roomPublic !== 'boolean') return;
+    if (!senderUid || senderUid !== activeRoomHostUid || senderUid === currentUser?.uid) return;
+    if (data.roomPublic !== isRoomPublic) applyRoomPublicState(data.roomPublic);
+  }
+
   function createNewRoom() {
     // New rooms start public; a previous room's private setting must not hide this one from discovery
-    isRoomPublic = true;
-    if (btnToggleRoomPublic) {
-      btnToggleRoomPublic.classList.add('public');
-      btnToggleRoomPublic.textContent = '🌐 ห้องสาธารณะ (ค้นหาเจอด้วย Tag)';
-    }
+    applyRoomPublicState(true);
     activeRoomHostUid = currentUser ? currentUser.uid : null;
     activeRoomSortMode = 'activity';
     joinRoomByCode(generateRoomCode(), true);
@@ -4918,18 +4993,21 @@
 
   if (btnToggleRoomPublic) {
     btnToggleRoomPublic.addEventListener('click', () => {
-      isRoomPublic = !isRoomPublic;
+      // Only the host owns the room's visibility (members would otherwise desync it / send room_closed)
+      if (activeRoomCode && currentUser && activeRoomHostUid && activeRoomHostUid !== currentUser.uid) {
+        showToast('เฉพาะหัวห้องเท่านั้นที่เปลี่ยนห้องเป็นสาธารณะ/ส่วนตัวได้');
+        return;
+      }
+      applyRoomPublicState(!isRoomPublic);
       if (isRoomPublic) {
-        btnToggleRoomPublic.classList.add('public');
-        btnToggleRoomPublic.textContent = '🌐 ห้องสาธารณะ (ค้นหาเจอด้วย Tag)';
         broadcastActiveRoomToDirectory();
         showToast('เปิดห้องเป็นสาธารณะแล้ว คนที่มี Tag ตรงกับคุณจะค้นหาห้องนี้เจอ');
       } else {
-        btnToggleRoomPublic.classList.remove('public');
-        btnToggleRoomPublic.textContent = '🔒 ห้องส่วนตัว (เข้าได้เฉพาะรหัส/คำเชิญ)';
         broadcastRoomClosedToDirectory(activeRoomCode);
         showToast('เปลี่ยนเป็นห้องส่วนตัวแล้ว จะไม่แสดงในหน้าค้นหา Tag');
       }
+      // Push the new visibility to members right away so a future host keeps it
+      syncHostRoomOrder();
     });
   }
 
@@ -5282,6 +5360,8 @@
 
       const isLeftHost = Boolean(cleanUid === activeRoomHostUid);
 
+      if (window.VoiceChat) window.VoiceChat.removeMember(cleanUid);
+
       if (cleanUid === activeStreamerUid) {
         if (isWatching) stopWatchingStream();
         activeStreamerUid = null;
@@ -5503,6 +5583,7 @@
       uid: currentUser.uid,
       hostUid: currentUser.uid,
       sortMode: activeRoomSortMode || 'activity',
+      roomPublic: isRoomPublic,
       order: orderUids,
       ts: Date.now()
     });
@@ -6065,6 +6146,17 @@
         statusPillHtml = `<span class="typing-status-pill idle" id="status-pill-${safeMemberUid}">💤 Non-Active</span>`;
       }
 
+      // Group Voice Chat badge + per-member volume (0-200%)
+      let voiceHtml = '';
+      const voiceState = window.VoiceChat ? window.VoiceChat.getMemberState(member.uid) : null;
+      if (voiceState && voiceState.inVoice) {
+        const micLabel = voiceState.muted ? '🔇 ปิดไมค์' : '🎙️ ห้องเสียง';
+        voiceHtml = `<span class="voice-card-badge ${voiceState.muted ? 'is-muted' : ''}" title="${voiceState.muted ? 'อยู่ในห้องเสียง (ปิดไมค์อยู่)' : 'อยู่ในห้องเสียง'}">${micLabel}</span>`;
+        if (!isSelf && voiceState.selfInVoice) {
+          voiceHtml += `<label class="voice-volume-control" title="ปรับเสียงของ ${escapeHtml(member.username)} (0-200%)"><span class="voice-volume-icon">${voiceState.volume === 0 ? '🔈' : '🔊'}</span><input type="range" class="voice-volume-slider" min="0" max="200" step="5" value="${voiceState.volume}" data-uid="${safeMemberUid}" aria-label="ระดับเสียงของ ${escapeHtml(member.username)}" /><span class="voice-volume-value">${voiceState.volume}%</span></label>`;
+        }
+      }
+
       // Stream Icon Badge next to profile if member is streaming
       let streamBadgeHtml = '';
       if (info.isStreamer) {
@@ -6080,7 +6172,7 @@
       const card = document.createElement('div');
       card.id = `live-card-${safeMemberUid}`;
       card.style.order = index;
-      card.className = `live-card ${isSelf ? 'is-self' : ''} ${info.isStreamer ? 'is-streamer' : ''} ${hasContent ? 'actively-typing' : ''} ${info.tier === 2 ? 'is-active-engagement' : ''} ${info.tier === 3 ? 'is-idle' : ''}`;
+      card.className = `live-card ${isSelf ? 'is-self' : ''} ${voiceState && voiceState.inVoice ? 'in-voice' : ''} ${voiceState && voiceState.speaking ? 'is-speaking' : ''} ${info.isStreamer ? 'is-streamer' : ''} ${hasContent ? 'actively-typing' : ''} ${info.tier === 2 ? 'is-active-engagement' : ''} ${info.tier === 3 ? 'is-idle' : ''}`;
 
       card.innerHTML = `
         <!-- Left Side: User Profile Column -->
@@ -6103,6 +6195,7 @@
             ${translateActionHtml}
             ${sendFileActionHtml}
             ${muteMemberActionHtml}
+            ${voiceHtml}
             ${streamBadgeHtml}
             ${statusPillHtml}
           </div>
@@ -6168,6 +6261,19 @@
           } else {
             console.error('[P2P] window.P2PFileTransfer is not loaded yet');
           }
+        });
+      }
+
+      const voiceSlider = card.querySelector('.voice-volume-slider');
+      if (voiceSlider) {
+        const valueEl = card.querySelector('.voice-volume-value');
+        const iconEl = card.querySelector('.voice-volume-icon');
+        voiceSlider.addEventListener('click', (e) => e.stopPropagation());
+        voiceSlider.addEventListener('input', () => {
+          const v = parseInt(voiceSlider.value, 10) || 0;
+          if (valueEl) valueEl.textContent = `${v}%`;
+          if (iconEl) iconEl.textContent = v === 0 ? '🔈' : '🔊';
+          if (window.VoiceChat) window.VoiceChat.setMemberVolume(member.uid, v);
         });
       }
 

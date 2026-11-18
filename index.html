@@ -525,6 +525,16 @@
                   <span class="upload-text stream-text">ไลฟ์สด</span>
                 </button>
 
+                <button id="btnToggleVoice" type="button" class="btn-upload-image btn-voice-action" title="เข้าห้องคุยด้วยเสียงกับเพื่อนในห้อง">
+                  <span class="upload-icon voice-icon">🎧</span>
+                  <span class="upload-text voice-text">คุยเสียง</span>
+                </button>
+
+                <button id="btnVoiceMute" type="button" class="btn-upload-image btn-voice-action btn-voice-mute hidden" title="ปิดไมค์">
+                  <span class="upload-icon voice-icon">🎙️</span>
+                  <span class="upload-text voice-text">ไมค์เปิด</span>
+                </button>
+
                 <textarea
                   id="liveTypingInput"
                   class="live-textarea"
@@ -1122,6 +1132,17 @@
 
             <button type="button" id="btnP2PRemoveFile" class="btn-icon p2p-btn-remove" title="เปลี่ยนไฟล์">✕</button>
           </div>
+
+          <!-- Parallel connections (IDM-style). Helps on high-latency internet links; no effect on LAN. -->
+          <label for="p2pParallelConnSelect" style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; font-size: 0.85rem;">
+            <span>⚡ การเชื่อมต่อขนาน <span style="opacity: 0.7;">(ทดลอง: ลองเพิ่มถ้าส่งข้ามเน็ตแล้วช้า)</span></span>
+            <select id="p2pParallelConnSelect" style="padding: 4px 8px; border-radius: 8px;">
+              <option value="1">1 เส้น (ค่าเริ่มต้น)</option>
+              <option value="2">2 เส้น</option>
+              <option value="3">3 เส้น</option>
+              <option value="4">4 เส้น</option>
+            </select>
+          </label>
         </div>
 
         <!-- Waiting State: Waiting for recipient to accept (1s retry loop & 30s timeout) -->
@@ -1273,7 +1294,8 @@
   <!-- Content Safety: Adult Content (NSFW lazy-loads TFJS on demand) & Fast Cached Profanity Filter -->
   <script src="./js/content-filter.js?v=3.2"></script>
   <!-- P2P Unlimited File Transfer Module (WebRTC DataChannel + Native TCP + File System Access API) -->
-  <script src="./js/p2p-file-transfer.js?v=3.2"></script>
-  <script src="./js/app.js?v=3.5"></script>
+  <script src="./js/p2p-file-transfer.js?v=3.5"></script>
+  <script src="./js/voice-chat.js?v=1.0"></script>
+  <script src="./js/app.js?v=3.7"></script>
 </body>
 </html>

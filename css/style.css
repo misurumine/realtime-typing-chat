@@ -2655,6 +2655,102 @@ kbd {
   color: #fff !important;
 }
 
+/* Group Voice Chat Toolbar Buttons */
+.btn-voice-action {
+  white-space: nowrap;
+}
+
+.btn-voice-action:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.btn-voice-action.has-voice {
+  background: var(--primary-soft) !important;
+  border-color: var(--primary-border) !important;
+  color: var(--primary-text) !important;
+}
+
+.btn-voice-action.in-voice {
+  background: rgba(239, 68, 68, 0.22) !important;
+  border-color: #ef4444 !important;
+  color: #fca5a5 !important;
+}
+
+.btn-voice-action.in-voice:hover {
+  background: rgba(239, 68, 68, 0.42) !important;
+  color: #fff !important;
+}
+
+.btn-voice-mute {
+  background: rgba(16, 185, 129, 0.2) !important;
+  border-color: #10b981 !important;
+  color: #6ee7b7 !important;
+}
+
+.btn-voice-mute.is-muted {
+  background: rgba(239, 68, 68, 0.22) !important;
+  border-color: #ef4444 !important;
+  color: #fca5a5 !important;
+}
+
+/* Group Voice Chat Card Badge, Speaking Ring & Per-Member Volume */
+.voice-card-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(16, 185, 129, 0.5);
+  color: #6ee7b7;
+}
+
+.voice-card-badge.is-muted {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+}
+
+.live-card .live-card-avatar-wrap .avatar-md {
+  transition: box-shadow 0.12s ease;
+}
+
+.live-card.is-speaking .live-card-avatar-wrap .avatar-md {
+  box-shadow: 0 0 0 3px var(--success), 0 0 14px 3px rgba(16, 185, 129, 0.6);
+}
+
+.live-card.is-speaking {
+  border-color: rgba(16, 185, 129, 0.7) !important;
+}
+
+.voice-volume-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.voice-volume-slider {
+  width: 78px;
+  accent-color: var(--success);
+  cursor: pointer;
+}
+
+.voice-volume-value {
+  min-width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Discord-Style Media & Emote Picker Popover */
 .gif-picker-popover {
   position: absolute;
